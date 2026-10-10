@@ -1,15 +1,27 @@
-# Kairos
+<p align="center">
+  <img src="docs/images/kairos.png" alt="Kairos logo" width="300">
+</p>
 
-**A modern temporal and numeric PDDL planner in C++20, usable as a library and as an
-executable.**
+<h1 align="center">Kairos</h1>
+
+<p align="center">
+  <b>A modern temporal and numeric PDDL planner in C++20, usable as a library and as an
+  executable.</b>
+</p>
+
+<p align="center">
+  <a href="https://github.com/PlanSys2/kairos/actions/workflows/ci.yml"><img src="https://github.com/PlanSys2/kairos/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
+  <img src="https://img.shields.io/badge/C%2B%2B-20-informational.svg" alt="C++20">
+</p>
 
 Kairos aims to be a reference PDDL planner: broad language coverage, efficient on large problems,
 robust, and easy to embed. It is developed within the [PlanSys2](https://github.com/PlanSys2)
 organization and will become a planner for PlanSys2, but it does not depend on ROS.
 
 > **Status: early development.** The core infrastructure is in place (build system, CI,
-> diagnostics, cancellation and memory budget, logging). The PDDL front-end is next, then the
-> validator, grounding and search. Nothing can be planned yet.
+> diagnostics, cancellation and memory budget, logging) and the PDDL lexer is done. The parser is
+> next, then the validator, grounding and search. Nothing can be planned yet.
 
 ## Why another planner?
 
@@ -133,10 +145,13 @@ and ThreadSanitizer, on ARM64, and inside a 512 MB cgroup.
 ```
 include/kairos/   public API (the only installed headers)
 src/core/         ids, symbols, diagnostics, budget, memory queries, logger
+src/pddl/         PDDL front-end (lexer so far)
 src/api/          implementation of the public API
 tests/            one directory per module, plus an install test (find_package)
 tools/lint/       cpplint and uncrustify configuration
 cmake/            compiler options, lint tests, package config
+fuzz/             fuzz targets and seed corpus (also replayed as tests)
+docs/             documentation and images
 ```
 
 Internal modules are static libraries linked into `libkairos`; only symbols marked `KAIROS_API`

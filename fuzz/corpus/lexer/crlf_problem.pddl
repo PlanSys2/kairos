@@ -1,0 +1,5 @@
+(define (problem p) (:domain d)
+  (:objects r1 r2 - robot)
+  (:init (at r1 kitchen) (= (battery r1) 100.5) (at 10 (open door)))
+  (:goal (and (at r2 kitchen)))
+  (:metric minimize (+ (total-time) (* 2 (energy)))))

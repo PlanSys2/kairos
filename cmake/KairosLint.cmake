@@ -17,7 +17,8 @@
 set(_lint_dirs
   ${PROJECT_SOURCE_DIR}/include
   ${PROJECT_SOURCE_DIR}/src
-  ${PROJECT_SOURCE_DIR}/tests)
+  ${PROJECT_SOURCE_DIR}/tests
+  ${PROJECT_SOURCE_DIR}/fuzz)
 
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND)
@@ -34,7 +35,8 @@ if(KAIROS_UNCRUSTIFY)
   file(GLOB_RECURSE _lint_files CONFIGURE_DEPENDS
     ${PROJECT_SOURCE_DIR}/include/*.hpp
     ${PROJECT_SOURCE_DIR}/src/*.hpp ${PROJECT_SOURCE_DIR}/src/*.cpp
-    ${PROJECT_SOURCE_DIR}/tests/*.hpp ${PROJECT_SOURCE_DIR}/tests/*.cpp)
+    ${PROJECT_SOURCE_DIR}/tests/*.hpp ${PROJECT_SOURCE_DIR}/tests/*.cpp
+    ${PROJECT_SOURCE_DIR}/fuzz/*.cpp)
   add_test(NAME uncrustify
     COMMAND ${KAIROS_UNCRUSTIFY} -c ${PROJECT_SOURCE_DIR}/tools/lint/uncrustify.cfg
       --check -q ${_lint_files})

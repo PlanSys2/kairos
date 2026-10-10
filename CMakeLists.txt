@@ -48,6 +48,10 @@ if(KAIROS_BUILD_TESTS)
   include(KairosLint)
 endif()
 
+if(KAIROS_BUILD_TESTS OR KAIROS_BUILD_FUZZERS)
+  add_subdirectory(fuzz)
+endif()
+
 # Installation and package config
 include(CMakePackageConfigHelpers)
 

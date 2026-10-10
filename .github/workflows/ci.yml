@@ -39,7 +39,7 @@ jobs:
             build_type: Release
             sanitize: ""
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: |
@@ -75,7 +75,7 @@ jobs:
     name: tests in a 512 MB cgroup
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install dependencies
         run: |
           sudo apt-get update
@@ -88,3 +88,22 @@ jobs:
         run: >
           sudo systemd-run --scope -p MemoryMax=512M -p MemorySwapMax=0
           ctest --test-dir build --output-on-failure -LE lint
+
+  fuzz:
+    name: libFuzzer (2 min per target)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang
+      - name: Build fuzzers
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo -DKAIROS_BUILD_TESTS=OFF -DKAIROS_BUILD_FUZZERS=ON
+          cmake --build build --target lexer_fuzzer
+      - name: Fuzz the lexer
+        run: |
+          mkdir -p corpus-work
+          ./build/fuzz/lexer_fuzzer -max_total_time=120 -max_len=4096 corpus-work fuzz/corpus/lexer

@@ -52,6 +52,7 @@ function(kairos_add_module name)
   target_compile_definitions(${name} PRIVATE kairos_EXPORTS)
   target_link_libraries(${name} PUBLIC ${ARG_DEPENDS})
   kairos_configure_target(${name})
+  set_property(GLOBAL APPEND PROPERTY KAIROS_MODULES ${name})
   # Only a static libkairos needs the module archives at link time
   if(NOT KAIROS_SHARED)
     install(TARGETS ${name} EXPORT kairosTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
@@ -59,6 +60,7 @@ function(kairos_add_module name)
 endfunction()
 
 add_subdirectory(core)
+add_subdirectory(pddl)
 
 target_sources(kairos PRIVATE api/version.cpp)
 target_include_directories(kairos PUBLIC
@@ -70,7 +72,7 @@ if(NOT KAIROS_SHARED)
   target_compile_definitions(kairos PUBLIC KAIROS_STATIC_DEFINE)
 endif()
 # Whole archives: public functions defined in modules must end up in libkairos.so
-set(KAIROS_MODULES kairos_core)
+get_property(KAIROS_MODULES GLOBAL PROPERTY KAIROS_MODULES)
 if(KAIROS_SHARED)
   foreach(module ${KAIROS_MODULES})
     target_link_libraries(kairos PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,${module}>")

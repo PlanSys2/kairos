@@ -29,6 +29,12 @@ function(kairos_configure_target target)
     target_link_options(${target} PRIVATE -fsanitize=${_sanitizers})
   endif()
 
+  # Fuzzing: instrument library code too, so libFuzzer gets coverage feedback from it
+  if(KAIROS_BUILD_FUZZERS)
+    target_compile_options(${target} PRIVATE -fsanitize=fuzzer-no-link,address,undefined -g)
+    target_link_options(${target} PRIVATE -fsanitize=address,undefined)
+  endif()
+
   if(KAIROS_COVERAGE)
     target_compile_options(${target} PRIVATE --coverage -O0 -g)
     target_link_options(${target} PRIVATE --coverage)
