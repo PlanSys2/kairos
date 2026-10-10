@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/images/kairos.png" alt="Kairos logo" width="300">
+  <img src="docs/images/kairos_white.png" alt="Kairos logo" width="450">
 </p>
 
 <h1 align="center">Kairos</h1>
