@@ -48,3 +48,8 @@ kairos_add_fuzzer(parser_fuzzer
   SOURCES parser_fuzzer.cpp
   DEPENDS kairos_pddl
   CORPUS ${CMAKE_CURRENT_SOURCE_DIR}/corpus/parser)
+
+kairos_add_fuzzer(plan_fuzzer
+  SOURCES plan_fuzzer.cpp
+  DEPENDS kairos_plan
+  CORPUS ${CMAKE_CURRENT_SOURCE_DIR}/corpus/plan)

@@ -190,6 +190,7 @@ include/kairos/   public API (the only installed headers)
 src/core/         ids, symbols, diagnostics, budget, memory queries, logger
 src/pddl/         PDDL front-end: lexer, parser, syntax tree, printer
 src/semantic/     semantic analysis: types, declarations, features used
+src/plan/         plans: reading plans of other planners, IPC/POPF/JSON output
 src/api/          implementation of the public API
 tests/            one directory per module, plus an install test (find_package)
 tools/lint/       cpplint and uncrustify configuration

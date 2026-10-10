@@ -1,0 +1,8 @@
+Number of literals: 7
+Constructing lookup tables:
+;;;; Solution Found
+; States evaluated: 12
+; Cost: 10.002
+; Time 0.01
+0.000: (askcharge leia entrance chargingroom)  [5.000]
+5.001: (charge leia chargingroom)  [5.000]

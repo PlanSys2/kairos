@@ -60,6 +60,7 @@ function(kairos_add_module name)
 endfunction()
 
 add_subdirectory(core)
+add_subdirectory(plan)
 add_subdirectory(pddl)
 add_subdirectory(semantic)
 

@@ -39,6 +39,7 @@ function(kairos_add_test name)
 endfunction()
 
 add_subdirectory(core)
+add_subdirectory(plan)
 add_subdirectory(pddl)
 add_subdirectory(semantic)
 add_subdirectory(api)

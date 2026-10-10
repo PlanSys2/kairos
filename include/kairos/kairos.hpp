@@ -21,6 +21,7 @@
 #include "kairos/check.hpp"
 #include "kairos/diagnostics.hpp"
 #include "kairos/log.hpp"
+#include "kairos/plan.hpp"
 #include "kairos/result.hpp"
 #include "kairos/version.hpp"
 
