@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-test:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gcc-release
+            os: ubuntu-24.04
+            cxx: g++
+            build_type: Release
+            sanitize: ""
+          - name: clang-release
+            os: ubuntu-24.04
+            cxx: clang++
+            build_type: Release
+            sanitize: ""
+          - name: gcc-asan-ubsan
+            os: ubuntu-24.04
+            cxx: g++
+            build_type: Debug
+            sanitize: "address;undefined"
+          - name: clang-tsan
+            os: ubuntu-24.04
+            cxx: clang++
+            build_type: Debug
+            sanitize: "thread"
+          - name: gcc-arm64
+            os: ubuntu-24.04-arm
+            cxx: g++
+            build_type: Release
+            sanitize: ""
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libgtest-dev uncrustify python3 clang
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DKAIROS_WARNINGS_AS_ERRORS=ON
+          "-DKAIROS_SANITIZE=${{ matrix.sanitize }}"
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        env:
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Install and use from another project
+        if: matrix.sanitize == ''
+        run: |
+          cmake --install build --prefix "$PWD/install"
+          cmake -S tests/install -B build-consumer -G Ninja \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_PREFIX_PATH="$PWD/install"
+          cmake --build build-consumer
+          LD_LIBRARY_PATH="$PWD/install/lib" ./build-consumer/kairos_consumer
+
+  memory-limited:
+    name: tests in a 512 MB cgroup
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libgtest-dev uncrustify python3
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+      - name: Test under MemoryMax=512M
+        run: >
+          sudo systemd-run --scope -p MemoryMax=512M -p MemorySwapMax=0
+          ctest --test-dir build --output-on-failure -LE lint

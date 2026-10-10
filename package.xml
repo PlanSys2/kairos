@@ -1,0 +1,22 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>kairos</name>
+  <version>0.1.0</version>
+  <description>Modern temporal and numeric PDDL planner, usable as a library and as an executable</description>
+  <maintainer email="fmrico@gmail.com">Francisco Martín Rico</maintainer>
+  <license>Apache-2.0</license>
+
+  <url type="repository">https://github.com/PlanSys2/kairos</url>
+  <author email="fmrico@gmail.com">Francisco Martín Rico</author>
+
+  <buildtool_depend>cmake</buildtool_depend>
+
+  <test_depend>gtest</test_depend>
+  <test_depend>python3</test_depend>
+  <test_depend>uncrustify</test_depend>
+
+  <export>
+    <build_type>cmake</build_type>
+  </export>
+</package>
