@@ -37,11 +37,17 @@ struct PlanStep
   double duration = 0.0;      // 0 for instantaneous actions
   std::string name;           // lower case, e.g. "move"
   std::vector<std::string> args;  // lower case, e.g. {"r1", "kitchen", "hall"}
+  uint32_t line = 0;          // line in the plan file, when read with parse_plan (0 otherwise)
 
   /// @brief "(move r1 kitchen hall)".
   KAIROS_API std::string action() const;
 
-  bool operator==(const PlanStep &) const = default;
+  /// @brief Same action, time and duration (the source line is not compared).
+  bool operator==(const PlanStep & other) const
+  {
+    return time == other.time && duration == other.duration && name == other.name &&
+           args == other.args;
+  }
 };
 
 struct Plan

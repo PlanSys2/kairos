@@ -268,6 +268,7 @@ Result<Plan> parse_plan(std::string_view text, std::string_view filename)
     }
 
     PlanStep step;
+    step.line = line_number - 1;
     bool timed = false;
     if (r.peek() != '(') {
       // "t:" or "n:" prefix

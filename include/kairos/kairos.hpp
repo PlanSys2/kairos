@@ -23,6 +23,7 @@
 #include "kairos/log.hpp"
 #include "kairos/plan.hpp"
 #include "kairos/result.hpp"
+#include "kairos/validate.hpp"
 #include "kairos/version.hpp"
 
 #endif  // KAIROS__KAIROS_HPP_

@@ -95,6 +95,15 @@ TEST(PlanReadTest, IpcTemporal)
   EXPECT_DOUBLE_EQ(p.steps[1].duration, 2.5);
 }
 
+TEST(PlanReadTest, StepsRememberTheirLine)
+{
+  Plan p = read_ok("; header\n\n0: (a) [1]\n; note\n2: (b) [1]\n");
+  EXPECT_EQ(p.steps[0].line, 3u);
+  EXPECT_EQ(p.steps[1].line, 5u);
+  Plan popf = read_ok("noise\n;;;; Solution Found\n0.000: (a)  [1.000]\n");
+  EXPECT_EQ(popf.steps[0].line, 3u);
+}
+
 TEST(PlanReadTest, TimedWithoutDurations)
 {
   // Instantaneous actions at given times (temporal planners write these for snap actions)

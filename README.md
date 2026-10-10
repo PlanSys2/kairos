@@ -22,8 +22,9 @@ organization and will become a planner for PlanSys2, but it does not depend on R
 > **Status: early development.** The core infrastructure is in place (build system, CI,
 > diagnostics, cancellation and memory budget, logging), the PDDL front-end parses the whole of
 > PDDL 3.1 and PDDL+ (13,149 of 13,152 public benchmark files; the other 3 are broken), and
-> domains and problems can be checked (`kairos::check_domain`, `kairos::check_problem`). The
-> validator is next, then grounding and search. Nothing can be planned yet.
+> domains and problems can be checked (`kairos::check_domain`, `kairos::check_problem`), and plans
+> can be read, written and validated (`kairos::validate_plan`, same verdicts as VAL on 515 test
+> plans). Grounding and search are next. Nothing can be planned yet.
 
 ## Why another planner?
 
@@ -191,6 +192,7 @@ src/core/         ids, symbols, diagnostics, budget, memory queries, logger
 src/pddl/         PDDL front-end: lexer, parser, syntax tree, printer
 src/semantic/     semantic analysis: types, declarations, features used
 src/plan/         plans: reading plans of other planners, IPC/POPF/JSON output
+src/validate/     plan validator, independent of the planner
 src/api/          implementation of the public API
 tests/            one directory per module, plus an install test (find_package)
 tools/lint/       cpplint and uncrustify configuration
