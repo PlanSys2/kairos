@@ -48,6 +48,7 @@ struct ValidateOptions
   // Interfering happenings closer than epsilon: an error if true, a warning if false. PDDL 2.1
   // asks for the separation, but VAL does not enforce it; false keeps VAL's verdicts.
   bool strict_epsilon = false;
+  bool check_goal = true;            // false: only check that the plan is executable
   std::string plan_filename = "plan";
 };
 

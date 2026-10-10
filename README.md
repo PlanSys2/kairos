@@ -24,7 +24,9 @@ organization and will become a planner for PlanSys2, but it does not depend on R
 > PDDL 3.1 and PDDL+ (13,149 of 13,152 public benchmark files; the other 3 are broken), and
 > domains and problems can be checked (`kairos::check_domain`, `kairos::check_problem`), and plans
 > can be read, written and validated (`kairos::validate_plan`, same verdicts as VAL on 515 test
-> plans). Grounding and search are next. Nothing can be planned yet.
+> plans). Tasks are normalized into a lifted representation (disjunctions, existentials,
+> derived predicates, durative actions, PDDL+), checked against the validator. Grounding and
+> search are next. Nothing can be planned yet.
 
 ## Why another planner?
 

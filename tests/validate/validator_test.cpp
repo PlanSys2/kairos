@@ -146,6 +146,16 @@ TEST(ValidateSequentialTest, StepErrors)
     "validate.type_mismatch");
 }
 
+TEST(ValidateSequentialTest, ExecutableWithoutReachingTheGoal)
+{
+  auto plan = parse_plan("(pick r1 box1 a)\n(move r1 a b)\n");
+  ValidateOptions o;
+  o.check_goal = false;
+  EXPECT_TRUE(validate_plan(kRobots, kRobotsProblem, *plan, o).valid());
+  o.check_goal = true;
+  EXPECT_FALSE(validate_plan(kRobots, kRobotsProblem, *plan, o).valid());
+}
+
 TEST(ValidateSequentialTest, EmptyPlan)
 {
   const char * already = "(define (problem p) (:domain robots) (:objects r1 - robot a - room)"

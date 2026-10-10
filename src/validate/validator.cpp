@@ -1589,7 +1589,7 @@ void Validator::finish()
 {
   report_.makespan = makespan_;
   const auto & p = w_.problem;
-  if (p.goal.valid()) {
+  if (p.goal.valid() && w_.options.check_goal) {
     Bindings b;
     Evaluator::Ctx c{state_};
     c.prefs = &report_.violated_preferences;
