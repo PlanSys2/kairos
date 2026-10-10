@@ -104,6 +104,25 @@ TEST(ValidateSequentialTest, ValidPlanWithConditionalEffectsAndMetric)
   EXPECT_DOUBLE_EQ(r.makespan, 4.0);
 }
 
+TEST(ValidateSequentialTest, TotalCostStartsAtZeroWhenNotInitialized)
+{
+  // As FD and the IPC do (IPC 2014 tetris leaves it out); other fluents stay undefined
+  const char * domain =
+    "(define (domain c) (:requirements :action-costs) (:predicates (done))"
+    " (:functions (total-cost) - number (other) - number)"
+    " (:action fin :parameters () :precondition () :effect (and (done)"
+    "   (increase (total-cost) 3)))"
+    " (:action bad :parameters () :precondition () :effect (increase (other) 1)))";
+  const char * problem =
+    "(define (problem p) (:domain c) (:init) (:goal (done)) (:metric minimize (total-cost)))";
+  auto r = check(domain, problem, "(fin)\n");
+  EXPECT_TRUE(r.valid()) << dump(r);
+  ASSERT_TRUE(r.metric.has_value());
+  EXPECT_DOUBLE_EQ(*r.metric, 3.0);
+  auto u = check(domain, problem, "(bad)\n(fin)\n");
+  EXPECT_EQ(error_code(u), "validate.undefined_fluent");
+}
+
 TEST(ValidateSequentialTest, GoalNotReached)
 {
   auto r = check(kRobots, kRobotsProblem, "(pick r1 box1 a)\n(move r1 a b)\n");

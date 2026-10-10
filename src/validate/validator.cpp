@@ -1027,6 +1027,12 @@ void Validator::initial_state()
       state_.objects[key] = ev.object_of(v.term, c, none);
     }
   }
+  // Action costs: (total-cost) starts at 0 when the problem does not say (as FD and the IPC do)
+  if (auto tc = w_.dm.functions.find("total-cost");
+    tc && w_.dm.functions.items[*tc].params.empty() && w_.dm.functions.items[*tc].numeric)
+  {
+    state_.numbers.try_emplace(Key{tc->value()}, 0.0);
+  }
 }
 
 bool Validator::interfere(const EventInfo & a, const EventInfo & b) const

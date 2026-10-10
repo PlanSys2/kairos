@@ -35,10 +35,12 @@ bool Condition::operator==(const Condition & other) const
          foralls == other.foralls;
 }
 
-PredicateId Task::add_predicate(const std::string & name, bool is_derived)
+PredicateId Task::add_predicate(
+  const std::string & name, bool is_derived, std::vector<TypeSpec> params)
 {
   predicate_names.push_back(name);
   derived.push_back(is_derived);
+  predicate_params.push_back(std::move(params));
   return PredicateId(static_cast<uint32_t>(predicate_names.size() - 1));
 }
 
@@ -298,6 +300,40 @@ CompareOp negate(CompareOp op)
   return op;
 }
 
+
+// Negation of a formula already in negation normal form
+NF negated(const NF & n)
+{
+  NF out = n;
+  switch (n.kind) {
+    case NF::Kind::True: out.kind = NF::Kind::False; break;
+    case NF::Kind::False: out.kind = NF::Kind::True; break;
+    case NF::Kind::And: out.kind = NF::Kind::Or; break;
+    case NF::Kind::Or: out.kind = NF::Kind::And; break;
+    case NF::Kind::Forall: out.kind = NF::Kind::Exists; break;
+    case NF::Kind::Exists: out.kind = NF::Kind::Forall; break;
+    case NF::Kind::Lit: out.lit.positive = !n.lit.positive; break;
+    case NF::Kind::Cmp: out.cmp.op = negate(n.cmp.op); break;
+  }
+  for (auto & c : out.children) {
+    c = negated(c);
+  }
+  return out;
+}
+
+// A conjunction of literals, comparisons and foralls: one clause without existentials
+bool conjunctive(const NF & n)
+{
+  switch (n.kind) {
+    case NF::Kind::True: case NF::Kind::Lit: case NF::Kind::Cmp: case NF::Kind::Forall:
+      return true;
+    case NF::Kind::And:
+      return std::all_of(n.children.begin(), n.children.end(), conjunctive);
+    default:
+      return false;
+  }
+}
+
 Condition to_condition(const std::vector<Item> & items)
 {
   Condition c;
@@ -546,19 +582,24 @@ private:
     free_vars(node, free_set);
     std::vector<uint32_t> free(free_set.begin(), free_set.end());
 
-    PredicateId pred = task_.add_predicate(
-      "kairos-aux-" + std::to_string(aux_counter_++), true);
     std::vector<Variable> table;
+    std::vector<TypeSpec> params;
     VarMap m;
     for (uint32_t v : free) {
       m.emplace(v, static_cast<uint32_t>(table.size()));
       table.push_back(owner.at(v));
+      params.push_back(owner.at(v).types);
     }
+    PredicateId pred = task_.add_predicate(
+      "kairos-aux-" + std::to_string(aux_counter_++), true, std::move(params));
     NF body = node;
     remap_into(body, m, owner, table);
     // Top level: each disjunct is a rule, without limit (else an aux for a big "or" would be
     // that same "or" again, forever)
+    bool saved = in_rule_;
+    in_rule_ = true;
     Clauses clauses = dnf(body, table, true);
+    in_rule_ = saved;
     for (const auto & cl : clauses) {
       task_.axioms.push_back(make_rule(pred, table, free.size(), cl));
     }
@@ -627,6 +668,10 @@ private:
           return Clauses{Clause{{it}, {}}};
         }
       case NF::Kind::Exists: {
+          if (!in_rule_ && n.vars.size() > options_.max_hidden_variables) {
+            // Each witness would be a copy of the action: an auxiliary predicate instead
+            return aux_clauses(n, owner);
+          }
           Clauses cs = dnf(n.children.at(0), owner);
           for (auto & c : cs) {
             c.exist.insert(c.exist.end(), n.vars.begin(), n.vars.end());
@@ -634,6 +679,19 @@ private:
           return cs;
         }
       case NF::Kind::Forall: {
+          if (!in_axiom_ && !conjunctive(n.children.at(0))) {
+            // forall x phi = not exists x (not phi): the auxiliary predicate gets the
+            // existential, whose body binds x with positive atoms (as FD's translator does).
+            // Not inside axioms: it could close a cycle through negation.
+            NF ex;
+            ex.kind = NF::Kind::Exists;
+            ex.time = n.time;
+            ex.vars = n.vars;
+            ex.children.push_back(negated(n.children.at(0)));
+            Item it = make_aux(ex, owner);
+            it.lit.positive = false;
+            return Clauses{Clause{{it}, {}}};
+          }
           Clauses body = dnf(n.children.at(0), owner);
           Item it;
           it.kind = Item::Kind::Forall;
@@ -1013,9 +1071,11 @@ private:
       }
       uint32_t arity = static_cast<uint32_t>(owner.size());
       NF body = to_nf(s, dv.body, true, TimeTag::None, owner, scope);
+      in_axiom_ = in_rule_ = true;
       for (const auto & cl : dnf(body, owner)) {
         task_.axioms.push_back(make_rule(pred, owner, arity, cl));
       }
+      in_axiom_ = in_rule_ = false;
     }
   }
 
@@ -1071,6 +1131,16 @@ private:
     }
     std::stable_sort(task_.timed_events.begin(), task_.timed_events.end(),
       [](const TimedEvent & a, const TimedEvent & b) {return a.time < b.time;});
+    // Action costs: (total-cost) starts at 0 when the problem does not say (as FD and the IPC do)
+    if (auto tc = dm_.functions.find("total-cost");
+      tc && dm_.functions.items[*tc].params.empty() && dm_.functions.items[*tc].numeric &&
+      std::none_of(task_.init_fluents.begin(), task_.init_fluents.end(),
+      [&](const InitFluent & f) {return f.function == *tc;}))
+    {
+      InitFluent f;
+      f.function = *tc;
+      task_.init_fluents.push_back(f);
+    }
 
     if (p_.goal.valid()) {
       std::vector<Variable> owner;
@@ -1103,6 +1173,8 @@ private:
   const NormalizeOptions & options_;
   Task & task_;
   size_t aux_counter_ = 0;
+  bool in_axiom_ = false;  // normalizing the body of a derived predicate
+  bool in_rule_ = false;   // the body of any axiom: existentials are rule variables
 
 public:
   void run_all()
@@ -1110,12 +1182,12 @@ public:
     task_.domain_name = dm_.name;
     task_.problem_name = pm_.name;
     for (const auto & p : dm_.predicates.items) {
-      task_.predicate_names.push_back(p.name);
-      task_.derived.push_back(p.derived);
+      task_.add_predicate(p.name, p.derived, p.params);
     }
     for (const auto & f : dm_.functions.items) {
       task_.function_names.push_back(f.name);
       task_.numeric.push_back(f.numeric);
+      task_.function_params.push_back(f.params);
     }
     for (const auto & o : pm_.objects.items) {
       task_.object_names.push_back(o.name);

@@ -34,6 +34,9 @@ struct NormalizeOptions
   // Disjunctions with at most this many cases split the action into copies; bigger ones
   // become auxiliary derived predicates (as Fast Downward's translator does)
   size_t max_disjuncts = 16;
+  // An exists in a precondition with at most this many variables makes them hidden
+  // parameters (one action copy per witness); bigger ones become auxiliary derived predicates
+  size_t max_hidden_variables = 1;
 };
 
 /**
@@ -42,8 +45,9 @@ struct NormalizeOptions
  * - Conditions to negation normal form, as conjunctions of literals, comparisons and
  *   foralls; imply becomes or; negated comparisons are inverted.
  * - Disjunctions: few cases split the action into copies; many become auxiliary derived
- *   predicates. Existentials in preconditions become hidden parameters; elsewhere, free
- *   variables of axiom rules.
+ *   predicates. Small existentials in preconditions become hidden parameters; bigger ones and
+ *   those elsewhere, existential variables of axiom rules. forall with a disjunctive body
+ *   becomes not exists (not body) outside axioms, so the auxiliary rule binds its variables.
  * - Effects flattened, each with its forall variables, condition and timing; conditions of
  *   numeric effects are never split (it would apply them twice).
  * - Durative actions split into start, over-all and end conditions, timed and continuous

@@ -231,8 +231,10 @@ struct Task
   // Symbols, shared with the semantic model (predicates include auxiliary ones)
   std::vector<std::string> predicate_names;
   std::vector<bool> derived;  // per predicate
+  std::vector<std::vector<TypeSpec>> predicate_params;
   std::vector<std::string> function_names;
   std::vector<bool> numeric;  // per function
+  std::vector<std::vector<TypeSpec>> function_params;
   std::vector<std::string> object_names;
   std::vector<TypeSpec> object_types;
   sem::TypeHierarchy types;
@@ -254,7 +256,8 @@ struct Task
   bool has_soft_goals = false;        // preferences were set aside (handled from F4)
   bool has_trajectory_constraints = false;
 
-  PredicateId add_predicate(const std::string & name, bool is_derived);
+  PredicateId add_predicate(
+    const std::string & name, bool is_derived, std::vector<TypeSpec> params = {});
 };
 
 }  // namespace kairos::lifted

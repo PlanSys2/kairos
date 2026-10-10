@@ -30,6 +30,7 @@
 #include "semantic/analyzer.hpp"
 #include "support/lifted_simulator.hpp"
 #include "support/pddl_helpers.hpp"
+#include "support/task_helpers.hpp"
 
 namespace kairos::lifted
 {
@@ -37,40 +38,12 @@ namespace
 {
 
 using kairos::testing::dump;
+using kairos::testing::normalize_text;
 using kairos::testing::read_file;
 using testing::Simulator;
 using testing::SimState;
 
 // Keeps the parsed inputs alive with the task
-struct Normalized
-{
-  ast::Domain domain;
-  ast::Problem problem;
-  sem::DomainModel dm;
-  sem::ProblemModel pm;
-  Task task;
-};
-
-std::unique_ptr<Normalized> normalize_text(
-  const std::string & domain, const std::string & problem, const NormalizeOptions & o = {})
-{
-  auto n = std::make_unique<Normalized>();
-  auto d = pddl::parse_domain(domain);
-  EXPECT_TRUE(d.ok()) << dump(d.diagnostics());
-  n->domain = std::move(d).value();
-  auto p = pddl::parse_problem(problem);
-  EXPECT_TRUE(p.ok()) << dump(p.diagnostics());
-  n->problem = std::move(p).value();
-  auto dm = sem::analyze_domain(n->domain);
-  EXPECT_TRUE(dm.ok()) << dump(dm.diagnostics());
-  n->dm = std::move(dm).value();
-  auto pm = sem::analyze_problem(n->problem, n->domain, n->dm);
-  EXPECT_TRUE(pm.ok()) << dump(pm.diagnostics());
-  n->pm = std::move(pm).value();
-  n->task = normalize(n->domain, n->dm, n->problem, n->pm, o);
-  return n;
-}
-
 std::string cond(const Task & t, const Condition & c, const std::vector<Variable> & v)
 {
   return to_string(t, c, v);
@@ -169,6 +142,28 @@ TEST(NormalizeTest, ExistentialsBecomeHiddenParameters)
   EXPECT_EQ(cond(n->task, a.precondition, a.variables), "(r ?x ?y)");
 }
 
+TEST(NormalizeTest, ExistentialsWithSeveralVariablesBecomeAuxiliaryPredicates)
+{
+  auto n = normalize_text(domain_with(
+      "(:action act :parameters (?x - item) :precondition (exists (?y ?w - item)"
+      " (and (r ?x ?y) (r ?y ?w))) :effect (q ?x))"), kProblem);
+  const Task & t = n->task;
+  const Action & a = t.actions.at(0);
+  EXPECT_EQ(a.hidden, 0u);
+  EXPECT_EQ(cond(t, a.precondition, a.variables), "(kairos-aux-0 ?x)");
+  ASSERT_EQ(t.axioms.size(), 1u);
+  EXPECT_EQ(t.axioms[0].existential, 2u);
+
+  // The limit is an option
+  NormalizeOptions o;
+  o.max_hidden_variables = 2;
+  auto m = normalize_text(domain_with(
+      "(:action act :parameters (?x - item) :precondition (exists (?y ?w - item)"
+      " (and (r ?x ?y) (r ?y ?w))) :effect (q ?x))"), kProblem, o);
+  EXPECT_EQ(m->task.actions.at(0).hidden, 2u);
+  EXPECT_TRUE(m->task.axioms.empty());
+}
+
 TEST(NormalizeTest, ForallStaysWhenItsBodyIsConjunctive)
 {
   auto n = normalize_text(domain_with(
@@ -179,15 +174,43 @@ TEST(NormalizeTest, ForallStaysWhenItsBodyIsConjunctive)
   EXPECT_TRUE(n->task.axioms.empty());
 }
 
-TEST(NormalizeTest, ForallWithDisjunctiveBodyUsesAnAuxiliaryPredicate)
+TEST(NormalizeTest, ForallWithDisjunctiveBodyBecomesANegatedExistential)
 {
+  // forall y (p y | r x y) = not exists y (not p y & not r x y)
   auto n = normalize_text(domain_with(
       "(:action act :parameters (?x - item) :precondition (forall (?y - item) (or (p ?y)"
       " (r ?x ?y))))"), kProblem);
-  const Action & a = n->task.actions.at(0);
-  ASSERT_EQ(a.precondition.foralls.size(), 1u);
-  EXPECT_EQ(n->task.axioms.size(), 2u);  // aux(?x ?y) :- p ?y | r ?x ?y
-  EXPECT_EQ(n->task.axioms[0].head_arity, 2u);
+  const Task & t = n->task;
+  const Action & a = t.actions.at(0);
+  EXPECT_TRUE(a.precondition.foralls.empty());
+  EXPECT_EQ(cond(t, a.precondition, a.variables), "(not (kairos-aux-0 ?x))");
+  ASSERT_EQ(t.axioms.size(), 1u);
+  EXPECT_EQ(t.axioms[0].head_arity, 1u);
+  EXPECT_EQ(t.axioms[0].existential, 1u);
+  EXPECT_EQ(cond(t, t.axioms[0].body, t.axioms[0].variables), "(and (not (p ?y)) (not (r ?x ?y)))");
+}
+
+TEST(NormalizeTest, ForallWithDisjunctiveBodyInsideAxiomsKeepsAPositiveAuxiliary)
+{
+  // Negating there could close a cycle through negation (d depends on itself)
+  auto n = normalize_text(
+    "(define (domain d) (:requirements :adl :derived-predicates) (:predicates (p ?x) (d ?x))"
+    " (:derived (d ?x) (forall (?y) (or (p ?y) (d ?y)))))",
+    "(define (problem pr) (:domain d) (:objects a b) (:init) (:goal (d a)))");
+  const Task & t = n->task;
+  ASSERT_EQ(t.axioms.size(), 3u);  // d :- forall y aux(y); aux(y) :- p y | d y
+  size_t foralls = 0;
+  for (const auto & ax : t.axioms) {
+    if (t.predicate_names[ax.head.index()] == "d") {
+      foralls += ax.body.foralls.size();
+    }
+  }
+  EXPECT_EQ(foralls, 1u);
+  for (const auto & ax : t.axioms) {
+    for (const auto & l : ax.body.literals) {
+      EXPECT_TRUE(l.positive);
+    }
+  }
 }
 
 TEST(NormalizeTest, NegatedForallIsAnExistential)
@@ -372,7 +395,7 @@ struct Walk
 {
   std::string domain;
   std::string problem;
-  std::unique_ptr<Normalized> n;
+  std::unique_ptr<kairos::testing::Normalized> n;
   std::unique_ptr<Simulator> sim;
   std::string prefix;
   SimState state;
