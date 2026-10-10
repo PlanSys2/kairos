@@ -102,8 +102,12 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo -DKAIROS_BUILD_TESTS=OFF -DKAIROS_BUILD_FUZZERS=ON
-          cmake --build build --target lexer_fuzzer
+          cmake --build build --target lexer_fuzzer parser_fuzzer
       - name: Fuzz the lexer
         run: |
           mkdir -p corpus-work
           ./build/fuzz/lexer_fuzzer -max_total_time=120 -max_len=4096 corpus-work fuzz/corpus/lexer
+      - name: Fuzz the parser
+        run: |
+          mkdir -p corpus-parser
+          ./build/fuzz/parser_fuzzer -max_total_time=120 -max_len=8192 corpus-parser fuzz/corpus/parser

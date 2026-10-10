@@ -43,3 +43,8 @@ kairos_add_fuzzer(lexer_fuzzer
   SOURCES lexer_fuzzer.cpp
   DEPENDS kairos_pddl
   CORPUS ${CMAKE_CURRENT_SOURCE_DIR}/corpus/lexer)
+
+kairos_add_fuzzer(parser_fuzzer
+  SOURCES parser_fuzzer.cpp
+  DEPENDS kairos_pddl
+  CORPUS ${CMAKE_CURRENT_SOURCE_DIR}/corpus/parser)

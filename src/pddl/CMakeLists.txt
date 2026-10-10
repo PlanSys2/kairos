@@ -15,5 +15,7 @@
 kairos_add_module(kairos_pddl
   SOURCES
     lexer.cpp
+    parser.cpp
+    printer.cpp
   DEPENDS
     kairos_core)

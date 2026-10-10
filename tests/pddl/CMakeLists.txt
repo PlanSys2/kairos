@@ -14,6 +14,12 @@
 
 kairos_add_test(pddl_tests
   SOURCES
+    corpus_test.cpp
     lexer_test.cpp
+    parser_domain_test.cpp
+    parser_problem_test.cpp
+    parser_property_test.cpp
+    printer_test.cpp
   DEPENDS
     kairos_pddl)
+target_compile_definitions(pddl_tests PRIVATE KAIROS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data")

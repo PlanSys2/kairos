@@ -1,0 +1,16 @@
+; Every problem construct Kairos parses.
+(define (problem full-1)
+  (:domain full-syntax)
+  (:requirements :typing :timed-initial-literals)
+  (:objects r1 r2 - robot g1 - gripper kitchen - room hall - corridor c1 - charger)
+  (:init
+    (at r1 kitchen) (free g1) (connected kitchen hall)
+    (= (battery r1) 80.5) (= (speed r1) 2) (= energy 0)
+    (= (distance kitchen hall) 12)
+    (= (holder g1) r1)
+    (at 10 (busy))
+    (at 20.5 (not (busy)))
+    (at 30 (= (speed r1) 3)))
+  (:goal (and (at r1 hall) (preference pg (at r2 kitchen))))
+  (:constraints (sometime (busy)))
+  (:metric minimize (+ (* 2 (total-time)) (energy) (is-violated pg))))

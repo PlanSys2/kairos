@@ -99,7 +99,7 @@ TEST(LexerTest, VariablesAndKeywords)
 
 TEST(LexerTest, Operators)
 {
-  for (std::string_view op : {"+", "-", "*", "/", "<", "<=", ">", ">=", "="}) {
+  for (std::string_view op : {"+", "-", "*", "/", "<", "<=", ">", ">=", "=", "^"}) {
     Token t = single(op);
     EXPECT_EQ(t.kind, K::Operator) << op;
     EXPECT_EQ(t.text, op);

@@ -55,7 +55,7 @@ constexpr std::array<uint8_t, 256> make_classes()
     t[static_cast<unsigned char>(c)] |= kName;
   }
   t[static_cast<unsigned char>('-')] = kName | kOperator;
-  for (char c : std::string_view("+*/<>=")) {
+  for (char c : std::string_view("+*/<>=^")) {
     t[static_cast<unsigned char>(c)] |= kOperator;
   }
   return t;
@@ -69,7 +69,7 @@ bool is_digit(char c) {return c >= '0' && c <= '9';}
 bool is_operator_word(std::string_view w)
 {
   return w == "+" || w == "-" || w == "*" || w == "/" || w == "<" || w == "<=" || w == ">" ||
-         w == ">=" || w == "=";
+         w == ">=" || w == "=" || w == "^";
 }
 
 // [-+]? digits ('.' digits)? ([eE] [-+]? digits)?

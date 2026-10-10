@@ -20,8 +20,9 @@ robust, and easy to embed. It is developed within the [PlanSys2](https://github.
 organization and will become a planner for PlanSys2, but it does not depend on ROS.
 
 > **Status: early development.** The core infrastructure is in place (build system, CI,
-> diagnostics, cancellation and memory budget, logging) and the PDDL lexer is done. The parser is
-> next, then the validator, grounding and search. Nothing can be planned yet.
+> diagnostics, cancellation and memory budget, logging) and the PDDL front-end parses the whole of
+> PDDL 3.1 and PDDL+ (13,149 of 13,152 public benchmark files; the other 3 are broken). Semantic
+> checks are next, then the validator, grounding and search. Nothing can be planned yet.
 
 ## Why another planner?
 
@@ -59,8 +60,12 @@ A sketch of where the API is going (not implemented yet):
 ```cpp
 #include <kairos/kairos.hpp>
 
+// From files...
 auto domain  = kairos::load_domain("domain.pddl");
 auto problem = kairos::load_problem("problem.pddl", *domain);
+// ...or from strings already in memory
+auto domain2  = kairos::parse_domain(domain_text);
+auto problem2 = kairos::parse_problem(problem_text, *domain2);
 
 // Anytime: first plan as soon as possible, better ones through the callback
 kairos::Planner planner;
@@ -70,6 +75,14 @@ auto search = planner.start(*problem, {.timeout = std::chrono::seconds(60)},
   });
 auto first = search.wait_first(std::chrono::seconds(5));
 auto best = search.wait();
+```
+
+The executable prints the plan to stdout in the usual IPC format (messages go to stderr):
+
+```bash
+$ kairos domain.pddl problem.pddl
+0.000: (move r1 kitchen bedroom) [5.000]
+5.001: (pick r1 cup bedroom) [2.000]
 ```
 
 ```bash
@@ -145,7 +158,7 @@ and ThreadSanitizer, on ARM64, and inside a 512 MB cgroup.
 ```
 include/kairos/   public API (the only installed headers)
 src/core/         ids, symbols, diagnostics, budget, memory queries, logger
-src/pddl/         PDDL front-end (lexer so far)
+src/pddl/         PDDL front-end: lexer, parser, syntax tree, printer
 src/api/          implementation of the public API
 tests/            one directory per module, plus an install test (find_package)
 tools/lint/       cpplint and uncrustify configuration

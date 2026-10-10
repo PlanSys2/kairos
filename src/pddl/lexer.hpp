@@ -36,7 +36,7 @@ enum class TokenKind : uint8_t
   Variable,    // ?x
   Keyword,     // :action
   Number,      // 12, -1.5, 2e3
-  Operator,    // + - * / < <= > >= =
+  Operator,    // + - * / < <= > >= = ^
   ContinuousT,  // #t
   End,         // end of input (returned forever once reached)
   Error        // see Token::error
