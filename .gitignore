@@ -1,7 +1,7 @@
-build/
-build-*/
-install/
-log/
+/build/
+/build-*/
+/install/
+/log/
 .cache/
 compile_commands.json
 __pycache__/
