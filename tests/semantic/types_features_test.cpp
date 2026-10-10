@@ -135,6 +135,8 @@ TEST(TypeHierarchyCycleTest, SelfParent)
 
 TEST(TypeHierarchyCycleTest, DeepChainHasNoRecursionLimit)
 {
+  // Also a memory check: precomputing ancestor sets would need ~200 million entries here
+  // (it was killed in the 512 MB CI job)
   TypeHierarchy h;
   TypeId prev = h.object();
   for (int i = 0; i < 20000; ++i) {
@@ -144,6 +146,26 @@ TEST(TypeHierarchyCycleTest, DeepChainHasNoRecursionLimit)
   }
   EXPECT_FALSE(h.finalize().has_value());
   EXPECT_TRUE(h.is_subtype(prev, *h.find("t0")));
+  EXPECT_FALSE(h.is_subtype(*h.find("t0"), prev));
+  EXPECT_TRUE(h.compatible({*h.find("t5")}, {prev}));
+}
+
+TEST(TypeHierarchyCycleTest, DiamondWithMultipleInheritance)
+{
+  // d derives from a and b, which both derive from top
+  TypeHierarchy h;
+  TypeId top = h.declare("top", {});
+  TypeId a = h.declare("a", {});
+  TypeId b = h.declare("b", {});
+  TypeId d = h.declare("d", {});
+  h.add_parent(a, top);
+  h.add_parent(b, top);
+  h.add_parent(d, a);
+  h.add_parent(d, b);
+  ASSERT_FALSE(h.finalize().has_value());
+  EXPECT_TRUE(h.is_subtype(d, top));
+  EXPECT_TRUE(h.compatible({a}, {b}));  // d is both
+  EXPECT_FALSE(h.is_subtype(a, b));
 }
 
 TEST(FeatureSetTest, AddContainsMergeMinus)

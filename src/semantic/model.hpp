@@ -65,13 +65,14 @@ public:
   std::optional<TypeId> find(std::string_view name) const;
   void add_parent(TypeId type, TypeId parent);
 
-  /// @brief Computes ancestor sets; returns a type on a cycle, if there is one.
+  /// @brief Gives parentless types object as parent; returns a type on a cycle, if any.
   std::optional<TypeId> finalize();
 
   const TypeInfo & operator[](TypeId id) const {return types_[id];}
   size_t size() const {return types_.size();}
 
-  /// @brief a is b or a descendant of b (needs finalize()).
+  /// @brief a is b or a descendant of b. Walks up the parents: time proportional to the
+  /// depth of the hierarchy, no precomputed tables (a deep hierarchy costs no memory).
   bool is_subtype(TypeId a, TypeId b) const;
 
   /// @brief An object of type `object_types` belongs to `required`.
@@ -86,7 +87,7 @@ public:
 private:
   IdVector<TypeId, TypeInfo> types_;
   std::unordered_map<std::string, TypeId> index_;
-  std::vector<std::set<TypeId>> ancestors_;  // reflexive
+  bool multiple_inheritance_ = false;  // some type has several parents
 };
 
 struct ObjectInfo

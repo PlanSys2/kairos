@@ -15,6 +15,7 @@
 #include "semantic/model.hpp"
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
 #include <utility>
 
@@ -61,10 +62,10 @@ std::optional<TypeId> TypeHierarchy::finalize()
     if (t != object() && types_[t].parents.empty()) {
       types_[t].parents.push_back(object());
     }
+    multiple_inheritance_ = multiple_inheritance_ || types_[t].parents.size() > 1;
   }
-  // Iterative DFS with colors: 0 new, 1 on stack, 2 done
-  ancestors_.assign(types_.size(), {});
-  std::vector<int> color(types_.size(), 0);
+  // Cycle detection: iterative DFS with colors (0 new, 1 on stack, 2 done)
+  std::vector<uint8_t> color(types_.size(), 0);
   for (TypeId start : types_.ids()) {
     if (color[start.index()] != 0) {
       continue;
@@ -85,11 +86,6 @@ std::optional<TypeId> TypeHierarchy::finalize()
         }
         continue;
       }
-      auto & anc = ancestors_[t.index()];
-      anc.insert(t);
-      for (TypeId p : parents) {
-        anc.insert(ancestors_[p.index()].begin(), ancestors_[p.index()].end());
-      }
       color[t.index()] = 2;
       stack.pop_back();
     }
@@ -102,10 +98,38 @@ bool TypeHierarchy::is_subtype(TypeId a, TypeId b) const
   if (a == b || b == object()) {
     return true;
   }
-  if (a.index() >= ancestors_.size()) {
+  if (!types_.contains(a)) {
     return false;
   }
-  return ancestors_[a.index()].count(b) != 0;
+  if (!multiple_inheritance_) {
+    // A chain: follow the single parent
+    for (TypeId t = a; t != object(); t = types_[t].parents.front()) {
+      if (t == b) {
+        return true;
+      }
+      if (types_[t].parents.empty()) {
+        return false;
+      }
+    }
+    return false;
+  }
+  // Several parents: walk up with a visited set (needed for diamonds)
+  std::vector<TypeId> pending{a};
+  std::vector<bool> seen(types_.size(), false);
+  while (!pending.empty()) {
+    TypeId t = pending.back();
+    pending.pop_back();
+    if (t == b) {
+      return true;
+    }
+    for (TypeId p : types_[t].parents) {
+      if (!seen[p.index()]) {
+        seen[p.index()] = true;
+        pending.push_back(p);
+      }
+    }
+  }
+  return false;
 }
 
 bool TypeHierarchy::fits(const TypeSpec & object_types, const TypeSpec & required) const
@@ -133,10 +157,12 @@ bool TypeHierarchy::compatible(const TypeSpec & a, const TypeSpec & b) const
       if (is_subtype(x, y) || is_subtype(y, x)) {
         return true;
       }
-      // A common descendant
-      for (size_t t = 0; t < ancestors_.size(); ++t) {
-        if (ancestors_[t].count(x) != 0 && ancestors_[t].count(y) != 0) {
-          return true;
+      // Unrelated types can only share a descendant with multiple inheritance
+      if (multiple_inheritance_) {
+        for (TypeId t : types_.ids()) {
+          if (is_subtype(t, x) && is_subtype(t, y)) {
+            return true;
+          }
         }
       }
     }
