@@ -161,6 +161,19 @@ TEST(PlanReadTest, EmptyPlans)
   EXPECT_TRUE(read_ok(";;;; Solution Found\n; Cost: 0\n").steps.empty());
 }
 
+TEST(PlanReadTest, AnExplicitZeroDurationMakesThePlanTemporal)
+{
+  // Found by the fuzzer: "[0]" made the plan temporal only when a time was out of order, so
+  // writing and reading it again changed its kind
+  Plan p = read_ok("(b x) [0]\n1: (a)\n");
+  EXPECT_TRUE(p.temporal);
+  Plan again = read_ok(to_string(p, PlanFormat::Ipc));
+  EXPECT_TRUE(again.temporal);
+  EXPECT_EQ(again.steps.size(), 2u);
+  EXPECT_TRUE(read_ok("0: (a) [0]\n1: (b) [0]\n").temporal);
+  EXPECT_FALSE(read_ok("0: (a)\n1: (b)\n").temporal);
+}
+
 TEST(PlanReadTest, LineEndingsAndNumberFormats)
 {
   Plan p = read_ok("1e-3: (a) [2E0]\r\n0.5: (b) [.5]\r\n");
@@ -303,6 +316,50 @@ TEST(PlanRoundTripTest, RandomPlans)
       EXPECT_NEAR(back.steps[i].time, p.steps[i].time, 1e-6);
     }
   }
+}
+
+// The fuzzer's invariant, on random mutations of real plans: a plan that reads must read back
+// identically after being written
+TEST(PlanPropertyTest, MutatedPlansKeepTheRoundTripInvariant)
+{
+  const std::vector<std::string> seeds = {
+    "0.000: (move r1 kitchen hall) [5.000]\n5.001: (pick r1 cup hall) [2.000]\n",
+    "(pick-up a)\n(stack a b)\n; cost = 2\n",
+    "0: (a x)\n1: (b y)\n",
+    "noise\n;;;; Solution Found\n; Cost: 3\n0.000: (a)  [1.000]\n1.001: (b c)  [2.000]\n",
+  };
+  const std::string alphabet = "0123456789.:;()[] \nabe-";
+  std::mt19937 rng(5);
+  std::uniform_int_distribution<size_t> pick_seed(0, seeds.size() - 1);
+  std::uniform_int_distribution<size_t> pick_char(0, alphabet.size() - 1);
+  std::uniform_int_distribution<int> kind(0, 2);
+  int parsed = 0;
+  for (int i = 0; i < 5000; ++i) {
+    std::string text = seeds[pick_seed(rng)];
+    for (int e = 0; e < 3 && !text.empty(); ++e) {
+      std::uniform_int_distribution<size_t> at(0, text.size() - 1);
+      size_t pos = at(rng);
+      switch (kind(rng)) {
+        case 0: text.erase(pos, 1); break;
+        case 1: text.insert(pos, 1, alphabet[pick_char(rng)]); break;
+        default: text[pos] = alphabet[pick_char(rng)]; break;
+      }
+    }
+    auto first = parse_plan(text);
+    if (!first.ok()) {
+      EXPECT_TRUE(has_errors(first.diagnostics()));
+      continue;
+    }
+    ++parsed;
+    auto again = parse_plan(to_string(*first, PlanFormat::Ipc, 9));
+    ASSERT_TRUE(again.ok()) << text;
+    ASSERT_EQ(again->temporal, first->temporal) << text;
+    ASSERT_EQ(again->steps.size(), first->steps.size()) << text;
+    for (size_t k = 0; k < first->steps.size(); ++k) {
+      ASSERT_EQ(again->steps[k].action(), first->steps[k].action()) << text;
+    }
+  }
+  EXPECT_GT(parsed, 100);
 }
 
 TEST(PlanReadTest, LargePlan)

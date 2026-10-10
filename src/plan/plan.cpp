@@ -251,6 +251,7 @@ Result<Plan> parse_plan(std::string_view text, std::string_view filename)
   std::vector<Diagnostic> errors;
   bool any_timed = false;
   bool any_untimed = false;
+  bool any_duration = false;  // some step has "[d]", even "[0]"
   uint32_t line_number = first_line;
   size_t pos = 0;
   while (pos <= text.size() && errors.size() < 50) {
@@ -338,6 +339,7 @@ Result<Plan> parse_plan(std::string_view text, std::string_view filename)
       }
       step.duration = *d;
       timed = true;
+      any_duration = true;
     }
     if (!r.at_end()) {
       errors.push_back(r.error("plan.syntax", "unexpected text after the action"));
@@ -351,16 +353,14 @@ Result<Plan> parse_plan(std::string_view text, std::string_view filename)
     return Result<Plan>::failure(std::move(errors));
   }
 
-  // "n: (a)" without durations is still sequential when the times are 0, 1, 2...
-  bool numbered = any_timed && !any_untimed;
-  if (numbered) {
-    bool has_duration = std::any_of(plan.steps.begin(), plan.steps.end(),
-        [](const PlanStep & s) {return s.duration > 0;});
+  // Temporal if any step writes a duration (even [0]); "n: (a)" lines without durations are
+  // still sequential when the times count 0, 1, 2... in order
+  if (any_timed && !any_untimed) {
     bool counting = true;
     for (size_t i = 0; i < plan.steps.size(); ++i) {
       counting = counting && plan.steps[i].time == static_cast<double>(i);
     }
-    plan.temporal = has_duration || !counting;
+    plan.temporal = any_duration || !counting;
   }
   if (!plan.temporal) {
     for (size_t i = 0; i < plan.steps.size(); ++i) {
