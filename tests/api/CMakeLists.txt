@@ -15,6 +15,7 @@
 # Links only against the public library: checks what users actually get
 kairos_add_test(api_tests
   SOURCES
+    check_test.cpp
     public_api_test.cpp
   DEPENDS
     kairos::kairos)

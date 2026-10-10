@@ -117,6 +117,7 @@ public:
       case ast::ExprKind::Mul: op("*", e.children); return;
       case ast::ExprKind::Div: op("/", e.children); return;
       case ast::ExprKind::Pow: op("^", e.children); return;
+      case ast::ExprKind::Math: op(symbols_.name(e.name), e.children); return;
       case ast::ExprKind::Neg: op("-", e.children); return;
     }
   }

@@ -1,4 +1,5 @@
-; Every syntactic construct Kairos parses, in one domain. Not meant to make sense.
+; Every syntactic construct Kairos parses, in one domain. Semantically valid, though not a
+; sensible model.
 (define (domain Full-Syntax)
   (:requirements :strips :typing :adl :fluents :durative-actions :duration-inequalities
                  :derived-predicates :timed-initial-literals :preferences :constraints
@@ -6,7 +7,7 @@
   (:types robot gripper - object
           room corridor - place
           charger - (either room corridor))
-  (:constants dock - room home)
+  (:constants dock home - room g1 - gripper r1 - robot spare)
   (:predicates
     (at ?r - robot ?p - place)
     (free ?g - gripper)
@@ -18,7 +19,7 @@
     (battery ?r - robot)
     (distance ?a ?b - place) - number
     (speed ?r - robot)
-    (energy)
+    (energy) - number
     (holder ?g - gripper) - robot)
 
   (:constraints (and

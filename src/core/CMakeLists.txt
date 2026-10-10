@@ -18,6 +18,7 @@ kairos_add_module(kairos_core
     diagnostics.cpp
     log.cpp
     memory_info.cpp
+    suggest.cpp
     symbol_table.cpp
   DEPENDS
     Threads::Threads)

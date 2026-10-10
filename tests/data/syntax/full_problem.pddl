@@ -2,7 +2,7 @@
 (define (problem full-1)
   (:domain full-syntax)
   (:requirements :typing :timed-initial-literals)
-  (:objects r1 r2 - robot g1 - gripper kitchen - room hall - corridor c1 - charger)
+  (:objects r2 - robot kitchen - room hall - corridor c1 - charger)
   (:init
     (at r1 kitchen) (free g1) (connected kitchen hall)
     (= (battery r1) 80.5) (= (speed r1) 2) (= energy 0)

@@ -18,6 +18,7 @@
 #ifndef KAIROS__KAIROS_HPP_
 #define KAIROS__KAIROS_HPP_
 
+#include "kairos/check.hpp"
 #include "kairos/diagnostics.hpp"
 #include "kairos/log.hpp"
 #include "kairos/result.hpp"

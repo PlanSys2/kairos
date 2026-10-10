@@ -49,6 +49,7 @@ struct TypedName
   Symbol name;
   std::vector<Symbol> types;  // empty: no type given; several: (either ...)
   Loc loc;
+  Loc type_loc;  // where the type is written (unknown if no type)
 };
 
 // --- Terms -----------------------------------------------------------------------------------
@@ -84,7 +85,8 @@ enum class ExprKind : uint8_t
   Duration,     // ?duration
   TotalTime,    // total-time or (total-time)
   ContinuousT,  // #t
-  IsViolated    // (is-violated pref), metrics only
+  IsViolated,   // (is-violated pref), metrics only
+  Math          // (sin e), (cos e), (abs e)...: ENHSP built-ins, name in `name`
 };
 
 struct Expr

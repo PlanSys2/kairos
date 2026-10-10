@@ -40,4 +40,5 @@ endfunction()
 
 add_subdirectory(core)
 add_subdirectory(pddl)
+add_subdirectory(semantic)
 add_subdirectory(api)

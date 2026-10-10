@@ -78,6 +78,19 @@ KAIROS_API std::string_view to_string(Severity severity);
 /// @brief "file:line:column: severity: message [code]"; the position part is omitted if unknown.
 KAIROS_API std::string to_string(const Diagnostic & diagnostic);
 
+/**
+ * @brief Like to_string(), followed by the offending source line and a caret under the column,
+ * as compilers do:
+ *
+ *     domain.pddl:7:5: error: expected '(' starting a formula, found keyword ':effect'
+ *         7 |     :effect (robot_at ?r ?to))
+ *           |     ^
+ *
+ * `source` is the text of the file the diagnostic refers to. Without a usable location only
+ * the first line is produced.
+ */
+KAIROS_API std::string to_string(const Diagnostic & diagnostic, std::string_view source);
+
 /// @brief True if any diagnostic is an error.
 KAIROS_API bool has_errors(const std::vector<Diagnostic> & diagnostics);
 

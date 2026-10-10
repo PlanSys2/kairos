@@ -70,6 +70,52 @@ TEST(DiagnosticsTest, FormatWithoutLocationOrCode)
   EXPECT_EQ(to_string(Diagnostic::error("", "msg")), "error: msg");
 }
 
+TEST(DiagnosticsTest, FormatWithSourceExcerpt)
+{
+  const std::string source = "(define (domain d)\n  (:predicates (p))\n  (:action a :bad 1))\n";
+  auto d = Diagnostic::error("parse.unknown_key", "unknown key :bad", SourceLocation{"d", 3, 15});
+  EXPECT_EQ(to_string(d, source),
+    "d:3:15: error: unknown key :bad [parse.unknown_key]\n"
+    " 3 |   (:action a :bad 1))\n"
+    "   |               ^");
+}
+
+TEST(DiagnosticsTest, ExcerptKeepsTabsAligned)
+{
+  auto d = Diagnostic::error("e", "m", SourceLocation{"f", 1, 3});
+  EXPECT_EQ(to_string(d, "\t\tx"), "f:1:3: error: m [e]\n 1 | \t\tx\n   | \t\t^");
+}
+
+TEST(DiagnosticsTest, ExcerptWithCrLfCrAndBom)
+{
+  auto d = Diagnostic::error("e", "m", SourceLocation{"f", 3, 1});
+  EXPECT_EQ(to_string(d, "\xEF\xBB\xBF" "a\r\nb\rc\r\nd"), "f:3:1: error: m [e]\n 3 | c\n   | ^");
+}
+
+TEST(DiagnosticsTest, ExcerptWithWideLineNumbers)
+{
+  std::string source;
+  for (int i = 1; i <= 120; ++i) {
+    source += "line" + std::to_string(i) + "\n";
+  }
+  auto d = Diagnostic::error("e", "m", SourceLocation{"f", 120, 2});
+  EXPECT_EQ(to_string(d, source), "f:120:2: error: m [e]\n 120 | line120\n     |  ^");
+}
+
+TEST(DiagnosticsTest, ExcerptFallsBackWhenTheLocationIsUnusable)
+{
+  auto beyond = Diagnostic::error("e", "m", SourceLocation{"f", 9, 1});
+  EXPECT_EQ(to_string(beyond, "one line"), "f:9:1: error: m [e]");
+  auto no_location = Diagnostic::error("e", "m");
+  EXPECT_EQ(to_string(no_location, "text"), "error: m [e]");
+  auto line_only = Diagnostic::error("e", "m", SourceLocation{"f", 1, 0});
+  EXPECT_EQ(to_string(line_only, "abc"), "f:1: error: m [e]\n 1 | abc");
+  auto column_past_end = Diagnostic::error("e", "m", SourceLocation{"f", 1, 40});
+  EXPECT_EQ(to_string(column_past_end, "abc"), "f:1:40: error: m [e]\n 1 | abc");
+  auto end_of_line = Diagnostic::error("e", "m", SourceLocation{"f", 1, 4});
+  EXPECT_EQ(to_string(end_of_line, "abc"), "f:1:4: error: m [e]\n 1 | abc\n   |    ^");
+}
+
 TEST(DiagnosticsTest, HasErrors)
 {
   EXPECT_FALSE(has_errors({}));

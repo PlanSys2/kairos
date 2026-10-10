@@ -55,6 +55,9 @@ enum class FileKind : uint8_t {Domain, Problem, Unknown};
 /// @brief Looks at "(define (domain" or "(define (problem" without parsing the rest.
 FileKind detect_file_kind(std::string_view text);
 
+/// @brief ENHSP's built-in unary math functions: sin cos tan asin acos atan abs.
+bool is_math_function(std::string_view name);
+
 /// @brief Requirement names Kairos knows (with the colon, lower case).
 bool is_known_requirement(std::string_view name);
 

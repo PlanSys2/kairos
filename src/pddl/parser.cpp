@@ -21,6 +21,7 @@
 #include <utility>
 #include <vector>
 
+#include "core/suggest.hpp"
 #include "pddl/lexer.hpp"
 #include "pddl/printer.hpp"
 
@@ -49,6 +50,31 @@ struct ParseError
 struct Abort
 {
 };
+
+// Thrown while recovering when a new section starts inside an unclosed one: unwinds to the
+// top level, which parses the new section normally
+struct Restart
+{
+};
+
+constexpr std::array<std::string_view, 12> kDomainSections = {
+  ":requirements", ":types", ":constants", ":predicates", ":functions", ":constraints",
+  ":action", ":durative-action", ":derived", ":process", ":event", ":constraint"};
+
+constexpr std::array<std::string_view, 8> kProblemSections = {
+  ":domain", ":requirements", ":objects", ":init", ":goal", ":constraints", ":metric",
+  ":length"};
+
+constexpr std::array<std::string_view, 3> kActionKeys = {":parameters", ":precondition",
+  ":effect"};
+constexpr std::array<std::string_view, 4> kDurativeKeys = {":parameters", ":duration",
+  ":condition", ":effect"};
+
+template<size_t N>
+std::vector<std::string> to_vector(const std::array<std::string_view, N> & a)
+{
+  return std::vector<std::string>(a.begin(), a.end());
+}
 
 // Where formulas may use timed operators, modal operators and preferences
 struct GdContext
@@ -121,6 +147,7 @@ private:
     } catch (const ParseError &) {
       // Error in the file header: nothing sensible to recover
     } catch (const Abort &) {
+    } catch (const Restart &) {
     }
   }
 
@@ -165,16 +192,26 @@ private:
     uint64_t consumed = consumed_;
     try {
       body();
+    } catch (const Restart &) {
+      if (depth > 2) {
+        throw;  // only a top-level section handler resumes
+      }
     } catch (const ParseError &) {
-      if (depth_ >= depth) {
-        recover(depth);
-      } else if (consumed_ == consumed) {
-        const Token & t = peek();
-        if (t.kind == TokenKind::End) {
-          eof_error(t);
+      try {
+        if (depth_ >= depth) {
+          recover(depth);
+        } else if (consumed_ == consumed) {
+          const Token & t = peek();
+          if (t.kind == TokenKind::End) {
+            eof_error(t);
+          }
+          if (t.kind != TokenKind::RParen) {
+            raw_next();
+          }
         }
-        if (t.kind != TokenKind::RParen) {
-          raw_next();
+      } catch (const Restart &) {
+        if (depth > 2) {
+          throw;
         }
       }
     }
@@ -198,13 +235,35 @@ private:
     while (depth_ >= depth) {
       Token t = raw_next();
       if (t.kind == TokenKind::End) {
-        if (!eof_reported_) {
-          eof_reported_ = true;
-          add(Diagnostic::error("parse.unexpected_end", "unexpected end of input", where(t)));
-        }
-        throw Abort{};
+        eof_error(t);
+      }
+      // "(:action ..." while skipping inside a section: the previous section was not closed.
+      // Resume at the top level with this new section instead of swallowing it.
+      if (t.kind == TokenKind::LParen && depth_ > 2 && starts_section(peek())) {
+        add(
+          Diagnostic::note(
+            "parse.resuming", "a new section starts here: the previous one was probably not "
+            "closed", where(t)));
+        depth_ = 1;
+        open_.resize(1);
+        pushed_ = t;
+        throw Restart{};
       }
     }
+  }
+
+  bool starts_section(const Token & t) const
+  {
+    if (t.kind != TokenKind::Keyword) {
+      return false;
+    }
+    std::string k = SymbolTable::to_lower(t.text);
+    if (domain_ != nullptr) {
+      return std::find(kDomainSections.begin(), kDomainSections.end(), k) !=
+             kDomainSections.end();
+    }
+    return std::find(kProblemSections.begin(), kProblemSections.end(), k) !=
+           kProblemSections.end();
   }
 
   // --- Tokens --------------------------------------------------------------------------------
@@ -212,12 +271,22 @@ private:
   // Next token, tracking depth, without reporting lexer errors (used when skipping)
   Token raw_next()
   {
-    Token t = lexer_.next();
+    Token t;
+    if (pushed_) {
+      t = *pushed_;
+      pushed_.reset();
+    } else {
+      t = lexer_.next();
+    }
     ++consumed_;
     if (t.kind == TokenKind::LParen) {
       ++depth_;
+      open_.push_back(t);
     } else if (t.kind == TokenKind::RParen && depth_ > 0) {
       --depth_;
+      if (!open_.empty()) {
+        open_.pop_back();
+      }
     }
     return t;
   }
@@ -236,7 +305,7 @@ private:
     return t;
   }
 
-  const Token & peek() {return lexer_.peek();}
+  const Token & peek() {return pushed_ ? *pushed_ : lexer_.peek();}
 
   bool at_close()
   {
@@ -305,6 +374,11 @@ private:
     if (!eof_reported_) {
       eof_reported_ = true;
       add(Diagnostic::error("parse.unexpected_end", "unexpected end of input", where(t)));
+      if (!open_.empty()) {
+        add(
+          Diagnostic::note(
+            "parse.unclosed", "this '(' is never closed", where(open_.back())));
+      }
     }
     throw Abort{};
   }
@@ -320,7 +394,16 @@ private:
     std::string found = t.kind == TokenKind::LParen || t.kind == TokenKind::RParen ?
       std::string(to_string(t.kind)) :
       std::string(to_string(t.kind)) + " '" + std::string(t.text) + "'";
-    error("parse.unexpected_token", "expected " + expected + ", found " + found, t);
+    add(Diagnostic::error("parse.unexpected_token", "expected " + expected + ", found " + found,
+      where(t)));
+    // Inside a formula or list, a keyword or '(' where something else was expected usually
+    // means a missing ')'
+    if ((t.kind == TokenKind::Keyword || t.kind == TokenKind::LParen) && open_.size() > 2) {
+      add(
+        Diagnostic::note(
+          "parse.maybe_unclosed", "this '(' may be missing its ')'", where(open_.back())));
+    }
+    throw ParseError{};
   }
 
   Symbol intern(const Token & t) {return symbols_.intern(t.text);}
@@ -360,13 +443,16 @@ private:
       if (is_glued_type(t)) {
         // "?x -robot": the type was written without a space after '-'
         Token glued = next();
-        assign_type(result, untyped_from, {symbols_.intern(glued.text.substr(1))}, glued);
+        ast::Loc type_loc{glued.line, glued.column + 1};
+        assign_type(result, untyped_from, {symbols_.intern(glued.text.substr(1))}, glued,
+          type_loc);
       } else if (t.kind == element) {
         Token name = next();
-        result.push_back(ast::TypedName{intern(name), {}, loc_of(name)});
+        result.push_back(ast::TypedName{intern(name), {}, loc_of(name), {}});
       } else if (t.kind == TokenKind::Operator && t.text == "-") {
         Token dash = next();
-        assign_type(result, untyped_from, parse_type(), dash);
+        ast::Loc type_loc = loc_of(peek());
+        assign_type(result, untyped_from, parse_type(), dash, type_loc);
       } else {
         unexpected(t, what);
       }
@@ -383,13 +469,14 @@ private:
   // Gives `types` to the names added since `untyped_from`
   void assign_type(
     std::vector<ast::TypedName> & list, size_t & untyped_from, const std::vector<Symbol> & types,
-    const Token & at)
+    const Token & at, ast::Loc type_loc)
   {
     if (untyped_from == list.size()) {
       warning("parse.type_without_names", "type given to an empty list of names; ignored", at);
     }
     for (size_t i = untyped_from; i < list.size(); ++i) {
       list[i].types = types;
+      list[i].type_loc = type_loc;
     }
     untyped_from = list.size();
   }
@@ -439,6 +526,15 @@ private:
       return add_term(std::move(term));
     }
     unexpected(t, "term");
+  }
+
+  ast::TermId name_term(const Token & t)
+  {
+    ast::Term term;
+    term.kind = ast::TermKind::Name;
+    term.name = intern(t);
+    term.loc = loc_of(t);
+    return add_term(std::move(term));
   }
 
   std::vector<ast::TermId> parse_terms_until_close()
@@ -542,6 +638,20 @@ private:
         e.kind = ast::ExprKind::IsViolated;
         e.name = intern(expect(TokenKind::Name, "preference name"));
         expect(TokenKind::RParen, "')'");
+        return add_expr(std::move(e));
+      }
+      if (is_math_function(name.text)) {
+        // ENHSP built-ins take a numeric expression, not terms
+        e.kind = ast::ExprKind::Math;
+        e.name = intern(name);
+        while (!at_close()) {
+          e.children.push_back(parse_expr());
+        }
+        next();
+        if (e.children.size() != 1) {
+          error("parse.operator_arity", "'" + std::string(name.text) + "' takes one operand",
+            name);
+        }
         return add_expr(std::move(e));
       }
       e.kind = ast::ExprKind::Function;
@@ -655,21 +765,27 @@ private:
       expect(TokenKind::RParen, "')' closing 'preference'");
       return add_formula(std::move(f));
     }
-    if (ctx.timed || ctx.constraints) {
-      if (iequals(w, "at") && (peek_is_word("end") || (ctx.timed && peek_is_word("start")))) {
-        f.kind = peek_is_word("end") ? ast::FormulaKind::AtEnd : ast::FormulaKind::AtStart;
-        next();
+    // "(at start (...))", "(at end (...))", "(over all (...))" are timed conditions; where they
+    // are not allowed, the semantic analysis says so. "(at start x)" is still an atom.
+    if ((iequals(w, "at") && (peek_is_word("start") || peek_is_word("end"))) ||
+      (iequals(w, "over") && peek_is_word("all")))
+    {
+      Token second = next();
+      if (peek().kind == TokenKind::LParen) {
+        f.kind = iequals(w, "over") ? ast::FormulaKind::OverAll :
+          iequals(second.text, "end") ? ast::FormulaKind::AtEnd : ast::FormulaKind::AtStart;
         f.children.push_back(parse_gd(inner));
         expect(TokenKind::RParen, "')' closing the timed condition");
         return add_formula(std::move(f));
       }
-      if (ctx.timed && iequals(w, "over") && peek_is_word("all")) {
-        next();
-        f.kind = ast::FormulaKind::OverAll;
-        f.children.push_back(parse_gd(inner));
-        expect(TokenKind::RParen, "')' closing 'over all'");
-        return add_formula(std::move(f));
+      f.kind = ast::FormulaKind::Atom;
+      f.name = intern(word);
+      f.args.push_back(name_term(second));
+      while (!at_close()) {
+        f.args.push_back(parse_term());
       }
+      next();
+      return add_formula(std::move(f));
     }
     if (ctx.constraints) {
       if (auto modal = parse_modal(word, f)) {
@@ -773,11 +889,22 @@ private:
       expect(TokenKind::RParen, "')' closing 'when'");
       return add_effect(std::move(e));
     }
-    if (timed && iequals(w, "at") && (peek_is_word("start") || peek_is_word("end"))) {
-      e.kind = peek_is_word("start") ? ast::EffectKind::AtStart : ast::EffectKind::AtEnd;
+    if (iequals(w, "at") && (peek_is_word("start") || peek_is_word("end"))) {
+      Token second = next();
+      if (peek().kind == TokenKind::LParen) {
+        e.kind = iequals(second.text, "start") ? ast::EffectKind::AtStart :
+          ast::EffectKind::AtEnd;
+        e.children.push_back(parse_effect(false));
+        expect(TokenKind::RParen, "')' closing the timed effect");
+        return add_effect(std::move(e));
+      }
+      e.kind = ast::EffectKind::Add;  // the predicate "at" with first argument start/end
+      e.name = intern(word);
+      e.args.push_back(name_term(second));
+      while (!at_close()) {
+        e.args.push_back(parse_term());
+      }
       next();
-      e.children.push_back(parse_effect(false));
-      expect(TokenKind::RParen, "')' closing the timed effect");
       return add_effect(std::move(e));
     }
     if (auto op = assign_op(w)) {
@@ -865,7 +992,8 @@ private:
       Token r = expect(TokenKind::Keyword, "requirement");
       std::string lower = SymbolTable::to_lower(r.text);
       if (!is_known_requirement(lower)) {
-        warning("parse.unknown_requirement", "unknown requirement " + lower, r);
+        warning("parse.unknown_requirement", "unknown requirement " + lower +
+          did_you_mean(lower, to_vector(kKnownRequirements)), r);
       }
       out.push_back(ast::Requirement{intern(r), loc_of(r)});
     }
@@ -917,7 +1045,8 @@ private:
       expect(TokenKind::RParen, "')' closing :derived");
       d.derived.push_back(std::move(derived));
     } else {
-      error("parse.unknown_section", "unknown domain section " + std::string(k), keyword);
+      error("parse.unknown_section", "unknown domain section " + std::string(k) +
+        did_you_mean(SymbolTable::to_lower(k), to_vector(kDomainSections)), keyword);
     }
   }
 
@@ -986,7 +1115,8 @@ private:
         a.effect = parse_effect(false);
       } else {
         error("parse.unknown_key",
-          "unknown key " + k + " in " + (process_or_event ? "process or event" : "action"), key);
+          "unknown key " + k + " in " + (process_or_event ? "process or event" : "action") +
+          did_you_mean(k, to_vector(kActionKeys)), key);
       }
     }
     next();
@@ -1041,7 +1171,8 @@ private:
       } else if (k == ":effect") {
         a.effect = parse_effect(true);
       } else {
-        error("parse.unknown_key", "unknown key " + k + " in durative action", key);
+        error("parse.unknown_key", "unknown key " + k + " in durative action" +
+          did_you_mean(k, to_vector(kDurativeKeys)), key);
       }
     }
     if (!a.duration.valid()) {
@@ -1111,7 +1242,8 @@ private:
       warning("parse.ignored_section", ":length is ignored", keyword);
       recover(depth_);
     } else {
-      error("parse.unknown_section", "unknown problem section " + std::string(k), keyword);
+      error("parse.unknown_section", "unknown problem section " + std::string(k) +
+        did_you_mean(SymbolTable::to_lower(k), to_vector(kProblemSections)), keyword);
     }
   }
 
@@ -1174,10 +1306,22 @@ private:
   uint32_t depth_ = 0;
   uint32_t errors_ = 0;
   uint64_t consumed_ = 0;  // tokens consumed so far, to detect progress
+  std::vector<Token> open_;  // '(' tokens not closed yet, innermost last
+  std::optional<Token> pushed_;  // a '(' given back by recover()
   bool eof_reported_ = false;
 };
 
 }  // namespace
+
+bool is_math_function(std::string_view name)
+{
+  for (std::string_view f : {"sin", "cos", "tan", "asin", "acos", "atan", "abs"}) {
+    if (iequals(name, f)) {
+      return true;
+    }
+  }
+  return false;
+}
 
 bool is_known_requirement(std::string_view name)
 {

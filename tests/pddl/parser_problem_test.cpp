@@ -225,7 +225,7 @@ TEST(ParserProblemTest, FullSyntaxProblem)
     kairos::testing::read_file(kairos::testing::data_path("syntax/full_problem.pddl")));
   ASSERT_TRUE(r.ok()) << dump(r.diagnostics());
   EXPECT_TRUE(r.diagnostics().empty()) << dump(r.diagnostics());
-  EXPECT_EQ(r->objects.size(), 6u);
+  EXPECT_EQ(r->objects.size(), 4u);
   EXPECT_EQ(r->init.size(), 11u);
   EXPECT_TRUE(r->goal.valid());
   EXPECT_TRUE(r->constraints.valid());

@@ -61,8 +61,9 @@ endfunction()
 
 add_subdirectory(core)
 add_subdirectory(pddl)
+add_subdirectory(semantic)
 
-target_sources(kairos PRIVATE api/version.cpp)
+target_sources(kairos PRIVATE api/check.cpp api/version.cpp)
 target_include_directories(kairos PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${KAIROS_GENERATED_INCLUDE_DIR}>

@@ -21,6 +21,7 @@ kairos_add_test(core_tests
     logger_test.cpp
     memory_info_test.cpp
     result_test.cpp
+    suggest_test.cpp
     symbol_table_test.cpp
   DEPENDS
     kairos_core)

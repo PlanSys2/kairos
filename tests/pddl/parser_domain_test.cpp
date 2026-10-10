@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -446,7 +447,7 @@ TEST(ParserDomainTest, HeaderErrors)
   EXPECT_EQ(errors_of("(define (domain))"),
     (std::vector<std::string>{"parse.unexpected_token@1:16"}));
   EXPECT_EQ(errors_of("(define (domain d)"),
-    (std::vector<std::string>{"parse.unexpected_end@1:19"}));
+    (std::vector<std::string>{"parse.unexpected_end@1:19", "parse.unclosed@1:1"}));
 }
 
 TEST(ParserDomainTest, TruncatedInputs)
@@ -454,7 +455,12 @@ TEST(ParserDomainTest, TruncatedInputs)
   // Every prefix of a valid domain fails cleanly with exactly one end-of-input error
   std::string full = kairos::testing::read_file(kairos::testing::data_path(
         "syntax/full_domain.pddl"));
-  for (size_t n = 0; n + 1 < full.size(); n += 7) {
+  for (size_t n = 0; n + 1 < full.size(); ++n) {
+    // Cut only between words: a cut inside a word changes the word, which is another error
+    char next = full[n];
+    if (next != ' ' && next != '\n' && next != '(' && next != ')') {
+      continue;
+    }
     auto r = parse_domain(full.substr(0, n));
     ASSERT_FALSE(r.ok()) << "prefix of length " << n << " parsed";
     int ends = 0;
@@ -575,6 +581,103 @@ TEST(ParserDomainTest, TooManyErrors)
   EXPECT_EQ(limited.diagnostics().size(), 4u);
 }
 
+// --- Helpful diagnostics -------------------------------------------------------------------
+
+std::vector<Diagnostic> diagnostics_of(std::string_view text)
+{
+  return parse_domain(text, "d.pddl").diagnostics();
+}
+
+std::string message_of(const std::vector<Diagnostic> & ds, const std::string & code)
+{
+  for (const auto & d : ds) {
+    if (d.code == code) {
+      return d.message;
+    }
+  }
+  return "<no " + code + ">";
+}
+
+TEST(ParserDiagnosticsTest, MissingParenthesisInsideAFormula)
+{
+  // The '(and' is not closed: the error shows at ':effect', the note points at the '(and'
+  auto found = codes(diagnostics_of(
+      "(define (domain d)\n"
+      " (:predicates (p) (q))\n"
+      " (:action a\n"
+      "  :precondition (and (p)\n"
+      "  :effect (q))\n"
+      " (:action b :effect (p)))\n"));
+  EXPECT_EQ(found, (std::vector<std::string>{
+        "parse.unexpected_token@5:3", "parse.maybe_unclosed@4:17", "parse.resuming@6:2"}));
+}
+
+TEST(ParserDiagnosticsTest, ParsingResumesAtTheNextSection)
+{
+  // After resuming, the following sections are parsed normally: an error there is reported
+  auto found = codes(diagnostics_of(
+      "(define (domain d)\n"
+      " (:action a :precondition (and (p) :effect (q))\n"
+      " (:action b :effect (p) :bogus 1))\n"));
+  EXPECT_EQ(found[0], "parse.unexpected_token@2:36");
+  EXPECT_NE(std::find(found.begin(), found.end(), "parse.resuming@3:2"), found.end());
+  EXPECT_NE(std::find(found.begin(), found.end(), "parse.unknown_key@3:25"), found.end());
+}
+
+TEST(ParserDiagnosticsTest, ResumingInsideTheInitOfAProblem)
+{
+  auto r = parse_problem(
+    "(define (problem p) (:domain d)\n"
+    " (:init (at r1 kitchen) (= (f) 3\n"
+    " (:goal (at r1 hall)))\n");
+  ASSERT_FALSE(r.ok());
+  auto found = codes(r.diagnostics());
+  EXPECT_NE(std::find(found.begin(), found.end(), "parse.resuming@3:2"), found.end())
+    << dump(r.diagnostics());
+}
+
+TEST(ParserDiagnosticsTest, UnexpectedEndPointsAtTheUnclosedParenthesis)
+{
+  auto found = codes(diagnostics_of(
+      "(define (domain d)\n (:predicates (p)\n (:action a :effect (p)))"));
+  EXPECT_EQ(found.back(), "parse.unclosed@1:1");
+}
+
+TEST(ParserDiagnosticsTest, NoUnclosedHintForAMissingName)
+{
+  // "(:action :parameters" lacks the name; no parenthesis is missing
+  auto found = codes(diagnostics_of("(define (domain d) (:action :parameters ()))"));
+  EXPECT_EQ(found, (std::vector<std::string>{"parse.unexpected_token@1:29"}));
+}
+
+TEST(ParserDiagnosticsTest, Suggestions)
+{
+  EXPECT_EQ(message_of(diagnostics_of("(define (domain d) (:predicate (p)))"),
+    "parse.unknown_section"), "unknown domain section :predicate (did you mean ':predicates'?)");
+  EXPECT_EQ(message_of(diagnostics_of("(define (domain d) (:action a :precondtion (p)))"),
+    "parse.unknown_key"), "unknown key :precondtion in action (did you mean ':precondition'?)");
+  EXPECT_EQ(message_of(diagnostics_of(
+      "(define (domain d) (:durative-action a :duraton (= ?duration 1)))"), "parse.unknown_key"),
+    "unknown key :duraton in durative action (did you mean ':duration'?)");
+  EXPECT_EQ(message_of(diagnostics_of("(define (domain d) (:requirements :durative-action))"),
+    "parse.unknown_requirement"),
+    "unknown requirement :durative-action (did you mean ':durative-actions'?)");
+  auto problem = parse_problem("(define (problem p) (:domain d) (:goals (p)))");
+  EXPECT_EQ(message_of(problem.diagnostics(), "parse.unknown_section"),
+    "unknown problem section :goals (did you mean ':goal'?)");
+  EXPECT_EQ(message_of(diagnostics_of("(define (domain d) (:frobnicate))"),
+    "parse.unknown_section"), "unknown domain section :frobnicate");
+}
+
+TEST(ParserDiagnosticsTest, MathBuiltins)
+{
+  auto d = parse_ok(with_action(
+      "(:action a :precondition (> (+ (sin (theta)) (ABS (- (x) 3))) 0))"));
+  EXPECT_EQ(text(d, d.actions[0].precondition), "(> (+ (sin (theta)) (abs (- (x) 3))) 0)");
+  EXPECT_EQ(errors_of(with_action("(:action a :precondition (> (cos 1 2) 0))")),
+    (std::vector<std::string>{"parse.operator_arity@1:49"}));
+}
+
 TEST(ParserDomainTest, FullSyntaxDomain)
 {
   auto r = parse_domain(
@@ -586,7 +689,7 @@ TEST(ParserDomainTest, FullSyntaxDomain)
   EXPECT_EQ(name(d, d.name), "full-syntax");
   EXPECT_EQ(d.requirements.size(), 13u);
   EXPECT_EQ(d.types.size(), 5u);
-  EXPECT_EQ(d.constants.size(), 2u);
+  EXPECT_EQ(d.constants.size(), 5u);
   EXPECT_EQ(d.predicates.size(), 6u);
   EXPECT_EQ(d.functions.size(), 5u);
   EXPECT_TRUE(d.constraints.valid());

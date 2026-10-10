@@ -20,9 +20,10 @@ robust, and easy to embed. It is developed within the [PlanSys2](https://github.
 organization and will become a planner for PlanSys2, but it does not depend on ROS.
 
 > **Status: early development.** The core infrastructure is in place (build system, CI,
-> diagnostics, cancellation and memory budget, logging) and the PDDL front-end parses the whole of
-> PDDL 3.1 and PDDL+ (13,149 of 13,152 public benchmark files; the other 3 are broken). Semantic
-> checks are next, then the validator, grounding and search. Nothing can be planned yet.
+> diagnostics, cancellation and memory budget, logging), the PDDL front-end parses the whole of
+> PDDL 3.1 and PDDL+ (13,149 of 13,152 public benchmark files; the other 3 are broken), and
+> domains and problems can be checked (`kairos::check_domain`, `kairos::check_problem`). The
+> validator is next, then grounding and search. Nothing can be planned yet.
 
 ## Why another planner?
 
@@ -92,6 +93,27 @@ kairos validate domain.pddl problem.pddl plan.txt
 kairos domain.pddl problem.pddl --debug=search,ground
 ```
 
+## Checking PDDL
+
+Already available: validate a domain, a problem on its own, or a problem against its domain,
+without planning. Errors say where, in which action, and suggest fixes:
+
+```cpp
+#include <kairos/kairos.hpp>
+
+kairos::CheckReport report = kairos::check_problem(problem_text, domain_text, "problem.pddl");
+for (const auto & d : report.diagnostics) {
+  std::cerr << kairos::to_string(d, problem_text) << "\n";
+}
+```
+
+```
+problem.pddl:3:20: error: in the initial state: argument 1 of 'robot_at' must be robot, 'kitchen' is room [semantic.type_mismatch]
+ 3 |   (:init (robot_at kitchen r1))
+   |                    ^
+problem.pddl:3:10: note: arguments 1 and 2 of 'robot_at' seem to be swapped [semantic.swapped_arguments]
+```
+
 ## Building
 
 Plain CMake, no ROS required:
@@ -143,6 +165,14 @@ ctest --test-dir build -L unit         # unit tests only
 ctest --test-dir build -L lint         # cpplint and uncrustify
 ```
 
+The external corpus tests parse and check about 13,000 public PDDL files (IPC 1998-2026, ENHSP
+benchmarks). They are skipped unless the corpus is downloaded:
+
+```bash
+tools/fetch_corpus.sh                  # into ~/.cache/kairos/corpus, at pinned commits
+KAIROS_PDDL_CORPUS=~/.cache/kairos/corpus ctest --test-dir build -R External
+```
+
 The lint tests apply the same rules as ROS 2 `ament_cpplint` and `ament_uncrustify`, using copies
 of their tools in [tools/lint](tools/lint), so they work without ROS. To fix formatting:
 
@@ -159,9 +189,11 @@ and ThreadSanitizer, on ARM64, and inside a 512 MB cgroup.
 include/kairos/   public API (the only installed headers)
 src/core/         ids, symbols, diagnostics, budget, memory queries, logger
 src/pddl/         PDDL front-end: lexer, parser, syntax tree, printer
+src/semantic/     semantic analysis: types, declarations, features used
 src/api/          implementation of the public API
 tests/            one directory per module, plus an install test (find_package)
 tools/lint/       cpplint and uncrustify configuration
+tools/fetch_corpus.sh  downloads the public PDDL benchmark collections used by corpus tests
 cmake/            compiler options, lint tests, package config
 fuzz/             fuzz targets and seed corpus (also replayed as tests)
 docs/             documentation and images

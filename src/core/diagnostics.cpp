@@ -84,6 +84,47 @@ std::string to_string(const Diagnostic & diagnostic)
   return out;
 }
 
+std::string to_string(const Diagnostic & diagnostic, std::string_view source)
+{
+  std::string out = to_string(diagnostic);
+  if (!diagnostic.location || diagnostic.location->line == 0) {
+    return out;
+  }
+  // Find the line (same line-break rules as the lexer: \n, \r\n and \r)
+  uint32_t line = 1;
+  size_t start = source.starts_with("\xEF\xBB\xBF") ? 3 : 0;
+  size_t i = start;
+  while (line < diagnostic.location->line && i < source.size()) {
+    char c = source[i++];
+    if (c == '\r' && i < source.size() && source[i] == '\n') {
+      ++i;
+    }
+    if (c == '\n' || c == '\r') {
+      ++line;
+      start = i;
+    }
+  }
+  if (line != diagnostic.location->line || start > source.size()) {
+    return out;
+  }
+  size_t end = start;
+  while (end < source.size() && source[end] != '\n' && source[end] != '\r') {
+    ++end;
+  }
+  std::string_view text = source.substr(start, end - start);
+  std::string number = std::to_string(diagnostic.location->line);
+  out += "\n " + number + " | " + std::string(text);
+  if (diagnostic.location->column > 0 && diagnostic.location->column <= text.size() + 1) {
+    // Keep tabs so the caret lines up with the text above
+    std::string pad;
+    for (size_t k = 0; k + 1 < diagnostic.location->column; ++k) {
+      pad += text[k] == '\t' ? '\t' : ' ';
+    }
+    out += "\n " + std::string(number.size(), ' ') + " | " + pad + "^";
+  }
+  return out;
+}
+
 bool has_errors(const std::vector<Diagnostic> & diagnostics)
 {
   return std::any_of(
