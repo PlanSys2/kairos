@@ -211,8 +211,18 @@ of their tools in [tools/lint](tools/lint), so they work without ROS. To fix for
 uncrustify -c tools/lint/uncrustify.cfg --replace --no-backup <files>
 ```
 
+Coverage of the library and the executable, with [gcovr](https://gcovr.com) 8 and the settings in
+[gcovr.cfg](gcovr.cfg) (at least 90 % of the lines, or it fails):
+
+```bash
+cmake -S . -B build-cov -DCMAKE_BUILD_TYPE=Debug -DKAIROS_COVERAGE=ON
+cmake --build build-cov && ctest --test-dir build-cov -LE lint
+gcovr build-cov --html-details coverage/index.html
+```
+
 CI builds with GCC and Clang, runs the tests under AddressSanitizer, UndefinedBehaviorSanitizer
-and ThreadSanitizer, on ARM64, and inside a 512 MB cgroup.
+and ThreadSanitizer, on ARM64, and inside a 512 MB cgroup, and measures coverage (the report is
+in each run's summary and as an artifact).
 
 ## Repository layout
 

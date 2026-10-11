@@ -1064,8 +1064,8 @@ const PairCase kPlanSys2[] = {
   {"plansys2_tests__test_2", "plansys2_tests__problem_2"},
 };
 
-// Sanitizers slow everything down several times
-#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+// Sanitizers and coverage (unoptimized, instrumented) slow everything down several times
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || defined(KAIROS_COVERAGE_BUILD)
 constexpr double kSlowdown = 10.0;
 #elif defined(__has_feature)
 #if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)

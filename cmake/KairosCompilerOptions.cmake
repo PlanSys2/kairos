@@ -35,8 +35,10 @@ function(kairos_configure_target target)
     target_link_options(${target} PRIVATE -fsanitize=address,undefined)
   endif()
 
+  # Coverage: atomic counters, since some tests run several threads
   if(KAIROS_COVERAGE)
-    target_compile_options(${target} PRIVATE --coverage -O0 -g)
+    target_compile_options(${target} PRIVATE --coverage -fprofile-update=atomic -O0 -g)
     target_link_options(${target} PRIVATE --coverage)
+    target_compile_definitions(${target} PRIVATE KAIROS_COVERAGE_BUILD)  # timing tests relax
   endif()
 endfunction()

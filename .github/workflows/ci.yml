@@ -89,6 +89,38 @@ jobs:
           sudo systemd-run --scope -p MemoryMax=512M -p MemorySwapMax=0
           ctest --test-dir build --output-on-failure -LE lint
 
+  coverage:
+    name: coverage (lines >= 90 %)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libgtest-dev uncrustify python3 pipx
+          pipx install gcovr==8.6
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build with coverage
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DKAIROS_COVERAGE=ON
+          cmake --build build
+      - name: Test
+        run: ctest --test-dir build --output-on-failure -LE lint --parallel 4
+      - name: Report (gcovr.cfg sets the threshold)
+        run: |
+          mkdir -p coverage
+          status=0
+          gcovr build --html-details coverage/index.html --markdown coverage/report.md \
+            --cobertura coverage/coverage.xml || status=$?
+          cat coverage/report.md >> "$GITHUB_STEP_SUMMARY"
+          exit $status
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/
+
   fuzz:
     name: libFuzzer (2 min per target)
     runs-on: ubuntu-24.04
