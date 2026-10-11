@@ -92,6 +92,8 @@ jobs:
   coverage:
     name: coverage (lines >= 90 %)
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write  # the badge, on the badges branch
     steps:
       - uses: actions/checkout@v5
       - name: Install dependencies
@@ -120,6 +122,28 @@ jobs:
         with:
           name: coverage-report
           path: coverage/
+      - name: Publish the badge (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          # Shields.io endpoint JSON on an orphan branch with a single commit
+          python3 - <<'PY'
+          import json
+          import xml.etree.ElementTree as ET
+          rate = float(ET.parse('coverage/coverage.xml').getroot().get('line-rate')) * 100
+          color = 'brightgreen' if rate >= 90 else 'yellow' if rate >= 80 else 'red'
+          badge = {'schemaVersion': 1, 'label': 'coverage', 'message': '%.1f%%' % rate,
+                   'color': color}
+          json.dump(badge, open('coverage.json', 'w'))
+          PY
+          mkdir badge && mv coverage.json badge/ && cd badge
+          git init -q -b badges
+          git add coverage.json
+          git -c user.name=github-actions -c user.email=github-actions@users.noreply.github.com \
+            commit -q -m "Coverage badge for ${GITHUB_SHA}"
+          git push -q -f "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            badges
 
   fuzz:
     name: libFuzzer (2 min per target)
