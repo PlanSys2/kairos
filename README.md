@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/PlanSys2/kairos/actions/workflows/ci.yml"><img src="https://github.com/PlanSys2/kairos/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/PlanSys2/kairos/actions/workflows/ci.yml"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlanSys2/kairos/badges/coverage.json" alt="Coverage"></a>
+  <a href="https://github.com/PlanSys2/kairos/actions/workflows/ci.yml"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlanSys2/kairos/badges/coverage.json&amp;cacheSeconds=3600" alt="Coverage"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/C%2B%2B-20-informational.svg" alt="C++20">
 </p>
