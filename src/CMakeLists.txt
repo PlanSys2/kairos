@@ -70,6 +70,7 @@ add_subdirectory(sas)
 add_subdirectory(state)
 add_subdirectory(heuristics)
 add_subdirectory(search)
+add_subdirectory(temporal)
 add_subdirectory(orchestrator)
 
 target_sources(kairos PRIVATE api/check.cpp api/planner.cpp api/validate.cpp api/version.cpp)
