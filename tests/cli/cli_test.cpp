@@ -56,6 +56,16 @@ const char * kTimed =
 
 const char * kTimedProblem = "(define (problem x) (:domain timed) (:init (p)) (:goal (q)))\n";
 
+const char * kContinuous =
+  "(define (domain flow) (:requirements :durative-actions :fluents :continuous-effects)"
+  " (:predicates (done)) (:functions (level))"
+  " (:durative-action fill :parameters () :duration (= ?duration 5) :condition ()"
+  "  :effect (and (increase (level) (* #t 2)) (at end (done)))))\n";
+
+const char * kContinuousProblem =
+  "(define (problem x) (:domain flow) (:init (= (level) 0)) (:goal (done)))\n";
+
+
 const char * kBroken = "(define (domain robots)\n (:predicates (at ?r)\n";
 
 // Twelve pigeons, eleven holes: unsolvable and slow to prove
@@ -261,6 +271,26 @@ TEST_F(CliTest, PopfFormatPrintsOnlyTheBestOfAnAnytimeSearch)
   EXPECT_TRUE(contains(popf.out, "; Cost: 10.000"));
 }
 
+TEST_F(CliTest, TemporalPlans)
+{
+  write("t.pddl", kTimed);
+  write("tp.pddl", kTimedProblem);
+  std::string args = "'" + path("t.pddl") + "' '" + path("tp.pddl") + "'";
+  Outcome ipc = run(args);
+  ASSERT_EQ(ipc.code, 0) << ipc.err;
+  EXPECT_EQ(ipc.out, "; cost = 1\n; makespan = 1.000\n0.000: (a) [1.000]\n");
+  // The format of the PlanSys2 POPF plugin, read back by our plan reader
+  Outcome popf = run(args + " --format popf");
+  ASSERT_EQ(popf.code, 0) << popf.err;
+  EXPECT_EQ(popf.out, ";;;; Solution Found\n; Cost: 1.000\n0.000: (a)  [1.000]\n");
+  auto plan = kairos::parse_plan(popf.out);
+  ASSERT_TRUE(plan.ok());
+  EXPECT_TRUE(plan->temporal);
+  // And it validates
+  write("plan.txt", ipc.out);
+  EXPECT_EQ(run("validate " + args + " '" + path("plan.txt") + "'").code, 0);
+}
+
 TEST_F(CliTest, JsonFormatIsOneObjectPerPlan)
 {
   Outcome r = run(solve_args() + " --format json");
@@ -344,12 +374,12 @@ TEST_F(CliTest, MemoryLimitExitsTwelve)
 
 TEST_F(CliTest, UnsupportedExitsThirteen)
 {
-  write("t.pddl", kTimed);
-  write("tp.pddl", kTimedProblem);
-  Outcome r = run("'" + path("t.pddl") + "' '" + path("tp.pddl") + "'");
+  write("c.pddl", kContinuous);
+  write("cp.pddl", kContinuousProblem);
+  Outcome r = run("'" + path("c.pddl") + "' '" + path("cp.pddl") + "'");
   EXPECT_EQ(r.code, 13);
   EXPECT_TRUE(contains(r.err, "unsupported"));
-  EXPECT_EQ(run(solve_args() + " --engine m2").code, 13);
+  EXPECT_EQ(run(solve_args() + " --engine m3").code, 13);
 }
 
 TEST_F(CliTest, InvalidInputExitsTwo)
@@ -421,8 +451,12 @@ TEST_F(CliTest, CheckVariants)
   write("t.pddl", kTimed);
   Outcome t = run("check '" + path("t.pddl") + "'");
   EXPECT_EQ(t.code, 0);
-  EXPECT_TRUE(contains(t.err, "warning"));
-  EXPECT_TRUE(contains(t.err, "valid, not plannable yet"));
+  EXPECT_TRUE(contains(t.err, "valid, plannable"));  // durative actions: engine M2
+  write("c.pddl", kContinuous);
+  Outcome c = run("check '" + path("c.pddl") + "'");
+  EXPECT_EQ(c.code, 0);
+  EXPECT_TRUE(contains(c.err, "warning"));
+  EXPECT_TRUE(contains(c.err, "valid, not plannable yet"));
 
   write("broken.pddl", kBroken);
   Outcome b = run("check '" + path("broken.pddl") + "'");

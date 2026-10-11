@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
@@ -95,6 +96,15 @@ const char * kDurative =
   " (:predicates (p) (q))\n"
   " (:durative-action a :parameters () :duration (= ?duration 1)\n"
   "  :condition (at start (p)) :effect (at end (q))))\n";
+
+const char * kContinuous =
+  "(define (domain flow) (:requirements :durative-actions :fluents :continuous-effects)"
+  " (:predicates (done)) (:functions (level))"
+  " (:durative-action fill :parameters () :duration (= ?duration 5) :condition ()"
+  "  :effect (and (increase (level) (* #t 2)) (at end (done)))))\n";
+
+const char * kContinuousProblem =
+  "(define (problem x) (:domain flow) (:init (= (level) 0)) (:goal (done)))\n";
 
 const char * kDurativeProblem =
   "(define (problem x) (:domain timed) (:init (p)) (:goal (q)))";
@@ -236,7 +246,10 @@ TEST(PlannerApiTest, ChecksProblemsAgainstAParsedDomain)
 
   auto timed = parse_domain(kDurative);
   ASSERT_TRUE(timed.ok());
-  CheckReport t = check_problem(kDurativeProblem, *timed);
+  EXPECT_TRUE(check_problem(kDurativeProblem, *timed).plannable);
+  auto flow = parse_domain(kContinuous);
+  ASSERT_TRUE(flow.ok());
+  CheckReport t = check_problem(kContinuousProblem, *flow);
   EXPECT_TRUE(t.valid);
   EXPECT_FALSE(t.plannable);
   EXPECT_TRUE(has_code(t.diagnostics, "unsupported."));
@@ -340,7 +353,7 @@ TEST(PlannerApiTest, SearchProvesUnsolvability)
 
 TEST(PlannerApiTest, UnsupportedFeaturesAreReported)
 {
-  Problem p = problem(kDurative, kDurativeProblem);
+  Problem p = problem(kContinuous, kContinuousProblem);
   SolveResult r = Planner().solve(p, quick());
   EXPECT_EQ(r.status, Status::Unsupported);
   EXPECT_TRUE(has_code(r.diagnostics, "unsupported."));
@@ -351,6 +364,134 @@ TEST(PlannerApiTest, UnsupportedFeaturesAreReported)
   SolveResult e = Planner().solve(classic, m3);
   EXPECT_EQ(e.status, Status::Unsupported);
   EXPECT_TRUE(has_code(e.diagnostics, "unsupported.engine"));
+}
+
+// --- Temporal planning (engine M2) -----------------------------------------------------------
+
+const char * kTwoRobots =
+  "(define (domain robots) (:requirements :typing :durative-actions)"
+  " (:types robot room)"
+  " (:predicates (at ?r - robot ?l - room) (connected ?a ?b - room) (cleaned ?l - room))"
+  " (:durative-action move :parameters (?r - robot ?a ?b - room) :duration (= ?duration 5)"
+  "  :condition (and (at start (at ?r ?a)) (over all (connected ?a ?b)))"
+  "  :effect (and (at start (not (at ?r ?a))) (at end (at ?r ?b))))"
+  " (:durative-action clean :parameters (?r - robot ?l - room) :duration (= ?duration 3)"
+  "  :condition (over all (at ?r ?l)) :effect (at end (cleaned ?l))))";
+
+const char * kTwoRobotsProblem =
+  "(define (problem p) (:domain robots) (:objects r1 r2 - robot a b c d - room)"
+  " (:init (at r1 a) (at r2 c) (connected a b) (connected c d))"
+  " (:goal (and (cleaned b) (cleaned d))))";
+
+TEST(PlannerApiTest, DurativeActionsWithEngineM2)
+{
+  Problem p = problem(kDurative, kDurativeProblem);
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_TRUE(r.plan);
+  EXPECT_TRUE(r.plan->temporal);
+  ASSERT_EQ(r.plan->steps.size(), 1u);
+  EXPECT_EQ(r.plan->steps[0].action(), "(a)");
+  EXPECT_EQ(r.plan->steps[0].time, 0.0);
+  EXPECT_EQ(r.plan->steps[0].duration, 1.0);
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+  // M2 does not prove makespans optimal
+  EXPECT_NE(r.stop_reason, StopReason::ProvenOptimal);
+}
+
+TEST(PlannerApiTest, IndependentWorkOverlaps)
+{
+  // Each robot moves and cleans: 8 time units each, both at once
+  Problem p = problem(kTwoRobots, kTwoRobotsProblem);
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_EQ(r.plan->steps.size(), 4u);
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+  EXPECT_NEAR(r.plan->makespan(), 8.001, 1e-9);  // clean starts epsilon after the move ends
+  EXPECT_NEAR(*r.plan->cost, 8.001, 1e-9);       // no metric: the makespan
+}
+
+TEST(PlannerApiTest, EnginesAndDurativeActions)
+{
+  Problem p = problem(kDurative, kDurativeProblem);
+  SolveOptions m1 = quick();
+  m1.engine = Engine::M1;
+  SolveResult r1 = Planner().solve(p, m1);
+  EXPECT_EQ(r1.status, Status::Unsupported);
+  EXPECT_TRUE(has_code(r1.diagnostics, "unsupported.engine"));
+  SolveOptions m2 = quick();
+  m2.engine = Engine::M2;
+  EXPECT_EQ(Planner().solve(p, m2).status, Status::Solved);
+}
+
+TEST(PlannerApiTest, RequiredConcurrencyIsNotPlannedYet)
+{
+  // The fuse can only be mended while the match burns
+  const char * cellar =
+    "(define (domain cellar) (:requirements :typing :durative-actions)"
+    " (:types match fuse)"
+    " (:predicates (unused ?m - match) (light ?m - match) (mended ?f - fuse) (handfree))"
+    " (:durative-action light-match :parameters (?m - match) :duration (= ?duration 8)"
+    "  :condition (at start (unused ?m))"
+    "  :effect (and (at start (not (unused ?m))) (at start (light ?m))"
+    "   (at end (not (light ?m)))))"
+    " (:durative-action mend :parameters (?f - fuse ?m - match) :duration (= ?duration 5)"
+    "  :condition (and (at start (handfree)) (over all (light ?m)))"
+    "  :effect (and (at start (not (handfree))) (at end (handfree)) (at end (mended ?f)))))";
+  Problem p = problem(cellar,
+      "(define (problem p) (:domain cellar) (:objects m1 - match f1 - fuse)"
+      " (:init (unused m1) (handfree)) (:goal (mended f1)))");
+  SolveResult r = Planner().solve(p, quick());
+  EXPECT_EQ(r.status, Status::Unsupported);
+  EXPECT_TRUE(has_code(r.diagnostics, "unsupported.required_concurrency"));
+  // Forcing M2: no plan, and that proves nothing
+  SolveOptions m2 = quick();
+  m2.engine = Engine::M2;
+  SolveResult f = Planner().solve(p, m2);
+  EXPECT_EQ(f.status, Status::Unsupported);
+  EXPECT_TRUE(has_code(f.diagnostics, "orchestrator.forced_m2"));
+  EXPECT_TRUE(has_code(f.diagnostics, "unsupported.m2_incomplete"));
+}
+
+TEST(PlannerApiTest, TemporallySimpleIpcDomains)
+{
+  // M2 on the temporally simple domains of IPC 2011: plans validate, or time runs out; never
+  // an invalid plan
+  const char * dir = std::getenv("KAIROS_PDDL_CORPUS");
+  if (dir == nullptr) {
+    GTEST_SKIP() << "KAIROS_PDDL_CORPUS not set";
+  }
+  fs::path base = fs::path(dir) / "potassco_pddl-instances" / "ipc-2011" / "domains";
+  size_t solved = 0;
+  for (const char * d : {"crew-planning-temporal-satisficing", "elevator-temporal-satisficing",
+      "floor-tile-temporal-satisficing", "openstacks-temporal-satisficing",
+      "parc-printer-temporal-satisficing", "parking-temporal-satisficing",
+      "peg-solitaire-temporal-satisficing", "sokoban-temporal-satisficing",
+      "storage-temporal-satisficing"})
+  {
+    fs::path folder = base / d;
+    fs::path domain = folder / "domain.pddl";
+    if (!fs::exists(domain)) {
+      domain = folder / "domains" / "domain-1.pddl";
+    }
+    auto dm = load_domain(domain);
+    ASSERT_TRUE(dm.ok()) << d;
+    auto pr = load_problem(folder / "instances" / "instance-1.pddl", *dm);
+    ASSERT_TRUE(pr.ok()) << d;
+    SolveOptions o;
+    o.timeout = 20s;
+    o.anytime = false;
+    SolveResult r = Planner().solve(*pr, o);
+    EXPECT_TRUE(r.status == Status::Solved || r.status == Status::Timeout ||
+      r.status == Status::OutOfMemory) << d << ": " << to_string(r.status) <<
+      (r.diagnostics.empty() ? "" : " " + r.diagnostics[0].message);
+    if (r.status == Status::Solved) {
+      ++solved;
+      EXPECT_TRUE(r.plan->temporal) << d;
+      EXPECT_TRUE(validate(*pr, *r.plan).valid()) << d;
+    }
+  }
+  EXPECT_GE(solved, 6u);
 }
 
 TEST(PlannerApiTest, TimesOut)

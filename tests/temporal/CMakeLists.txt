@@ -14,6 +14,7 @@
 
 kairos_add_test(temporal_tests
   SOURCES
+    compress_test.cpp
     profile_test.cpp
     stn_test.cpp
   DEPENDS

@@ -14,6 +14,8 @@
 
 #include "temporal/profile.hpp"
 
+#include <algorithm>
+#include <optional>
 #include <set>
 #include <string>
 #include <utility>
@@ -42,14 +44,19 @@ struct Reads
     whole.insert(o.whole.begin(), o.whole.end());
     nums.insert(o.nums.begin(), o.nums.end());
   }
-  // Something that holds while the variable has value x
-  bool sees(sas::VarId v, uint32_t x) const
+  // Something that holds while the variable has value x, between `before` (if known) and
+  // `after`, and neither before nor after: only then must it overlap the action
+  bool sees(sas::VarId v, uint32_t x, std::optional<uint32_t> before, uint32_t after) const
   {
-    if (whole.count(v) || facts.count({v, x})) {
+    if (whole.count(v)) {
+      return true;
+    }
+    if (facts.count({v, x}) && x != after && (!before || x != *before)) {
       return true;
     }
     for (auto it = not_facts.lower_bound({v, 0}); it != not_facts.end() && it->first == v; ++it) {
-      if (it->second != x) {
+      uint32_t w = it->second;
+      if (w != x && after == w && (!before || *before == w)) {
         return true;
       }
     }
@@ -175,12 +182,13 @@ TemporalProfile analyze(const sas::Task & task)
   for (const auto & ax : task.axioms) {
     instant.condition(ax.body);
   }
-  auto seen_by_others = [&](size_t self, sas::VarId v, uint32_t x) {
-      if (instant.sees(v, x)) {
+  auto seen_by_others = [&](
+    size_t self, sas::VarId v, uint32_t x, std::optional<uint32_t> before, uint32_t after) {
+      if (instant.sees(v, x, before, after)) {
         return true;
       }
       for (size_t b = 0; b < durative_reads.size(); ++b) {
-        if (b != self && durative_reads[b].sees(v, x)) {
+        if (b != self && durative_reads[b].sees(v, x, before, after)) {
           return true;
         }
       }
@@ -211,8 +219,28 @@ TemporalProfile analyze(const sas::Task & task)
       if (!end_vars.count(v) || e.facts.count({v, x})) {
         continue;
       }
-      // The value between start and end: does anything else need it?
-      bool seen = x == UINT32_MAX ? seen_by_others(a, v, UINT32_MAX - 1) : seen_by_others(a, v, x);
+      // Already the value before the action (its start condition asks it): nothing new to see
+      bool before = std::any_of(
+        da.at_start.facts.begin(), da.at_start.facts.end(),
+        [&](const sas::Fact & f) {return f.var == v && f.value == x;});
+      if (before) {
+        continue;
+      }
+      // The value between start and end: does anything else need it then, and only then?
+      std::optional<uint32_t> value_before;
+      for (const auto & f : da.at_start.facts) {
+        if (f.var == v) {
+          value_before = f.value;
+        }
+      }
+      uint32_t value_after = UINT32_MAX;
+      for (const auto & [w, y] : e.facts) {
+        if (w == v) {
+          value_after = y;
+        }
+      }
+      bool seen = seen_by_others(
+        a, v, x == UINT32_MAX ? UINT32_MAX - 1 : x, value_before, value_after);
       if (seen) {
         p.simple = false;
         p.reasons.push_back(

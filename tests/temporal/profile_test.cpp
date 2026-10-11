@@ -90,13 +90,45 @@ TEST(TemporalProfileTest, MovingRobotsAreSimple)
 
 TEST(TemporalProfileTest, NeedingTheIntermediateValueIsNotSimple)
 {
-  // Someone acts on a robot while it is in transit
-  std::string domain = kRobots;
-  domain.insert(domain.size() - 1,
+  // A photo of the robot in transit: only possible while it moves
+  const char * domain =
+    "(define (domain robots) (:requirements :typing :durative-actions)"
+    " (:types robot room)"
+    " (:predicates (at ?r - robot ?l - room) (in-transit ?r - robot) (photo ?r - robot))"
+    " (:durative-action move :parameters (?r - robot ?a ?b - room) :duration (= ?duration 5)"
+    "  :condition (at start (at ?r ?a))"
+    "  :effect (and (at start (not (at ?r ?a))) (at start (in-transit ?r))"
+    "   (at end (not (in-transit ?r))) (at end (at ?r ?b))))"
+    " (:durative-action shoot :parameters (?r - robot) :duration (= ?duration 1)"
+    "  :condition (over all (in-transit ?r)) :effect (at end (photo ?r))))";
+  auto p = profile(domain,
+      "(define (problem p) (:domain robots) (:objects r1 - robot a b - room) (:init (at r1 a))"
+      " (:goal (photo r1)))");
+  EXPECT_FALSE(p.simple);
+  // Needing the robot not to be in a room: before or after the move does it
+  std::string other = kRobots;
+  other.insert(other.size() - 1,
     " (:durative-action wave :parameters (?r - robot ?l - room) :duration (= ?duration 1)"
     "  :condition (at start (not (at ?r ?l))) :effect (at end (cleaned ?l)))");
-  auto p = profile(domain, kRobotsProblem);
-  EXPECT_FALSE(p.simple);
+  auto q = profile(other, kRobotsProblem);
+  EXPECT_TRUE(q.simple) << (q.reasons.empty() ? "" : q.reasons[0]);
+}
+
+TEST(TemporalProfileTest, AValueThatHeldBeforeTheActionIsNothingNew)
+{
+  // Starts by adding what its start condition already needs, deletes it at end (PlanSys2's
+  // domain_1_ok moves a person "from r1 to r2" like that, also with r1 == r2)
+  const char * domain =
+    "(define (domain d) (:requirements :typing :durative-actions) (:types p r)"
+    " (:predicates (at ?p - p ?r - r) (seen ?p - p))"
+    " (:durative-action stay :parameters (?p - p ?r - r) :duration (= ?duration 5)"
+    "  :condition (at start (at ?p ?r))"
+    "  :effect (and (at start (at ?p ?r)) (at end (not (at ?p ?r)))))"
+    " (:durative-action look :parameters (?p - p ?r - r) :duration (= ?duration 1)"
+    "  :condition (at start (at ?p ?r)) :effect (at end (seen ?p))))";
+  auto p = profile(domain,
+      "(define (problem x) (:domain d) (:objects j - p a - r) (:init (at j a)) (:goal (seen j)))");
+  EXPECT_TRUE(p.simple) << (p.reasons.empty() ? "" : p.reasons[0]);
 }
 
 TEST(TemporalProfileTest, ABorrowedResource)

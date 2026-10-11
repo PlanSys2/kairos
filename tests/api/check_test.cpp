@@ -52,14 +52,35 @@ TEST(CheckApiTest, ValidDomain)
 {
   CheckReport r = check_domain(kDomain);
   EXPECT_TRUE(r.valid);
-  // Correct PDDL, but durative actions cannot be planned yet: warnings only
+  EXPECT_TRUE(r.plannable);  // durative actions: engine M2
+  EXPECT_TRUE(r.diagnostics.empty());
+  EXPECT_TRUE(has(r.features, "durative-actions"));
+  EXPECT_TRUE(has(r.features, "typing"));
+}
+
+const char * kContinuous =
+  "(define (domain flow) (:requirements :durative-actions :fluents :continuous-effects)"
+  " (:predicates (done)) (:functions (level))"
+  " (:durative-action fill :parameters () :duration (= ?duration 5) :condition ()"
+  "  :effect (and (increase (level) (* #t 2)) (at end (done)))))\n";
+
+const char * kContinuousProblem =
+  "(define (problem x) (:domain flow) (:init (= (level) 0)) (:goal (done)))\n";
+
+TEST(CheckApiTest, NotPlannableYet)
+{
+  // Correct PDDL Kairos cannot plan with yet: warnings, not errors
+  CheckReport r = check_domain(kContinuous);
+  EXPECT_TRUE(r.valid);
   EXPECT_FALSE(r.plannable);
   ASSERT_FALSE(r.diagnostics.empty());
   for (const auto & d : r.diagnostics) {
     EXPECT_EQ(d.severity, Severity::Warning) << d.message;
   }
-  EXPECT_TRUE(has(r.features, "durative-actions"));
-  EXPECT_TRUE(has(r.features, "typing"));
+  EXPECT_EQ(r.diagnostics[0].code, "unsupported.continuous_effects");
+  CheckReport p = check_problem(kContinuousProblem, kContinuous, "problem.pddl");
+  EXPECT_TRUE(p.valid);
+  EXPECT_FALSE(p.plannable);
 }
 
 TEST(CheckApiTest, ClassicalDomainIsPlannable)
@@ -102,10 +123,8 @@ TEST(CheckApiTest, ProblemAgainstItsDomain)
 {
   CheckReport r = check_problem(kProblem, kDomain, "problem.pddl");
   EXPECT_TRUE(r.valid);
-  EXPECT_FALSE(r.plannable);
-  for (const auto & d : r.diagnostics) {
-    EXPECT_EQ(d.severity, Severity::Warning) << d.message;
-  }
+  EXPECT_TRUE(r.plannable);
+  EXPECT_TRUE(r.diagnostics.empty());
   EXPECT_TRUE(has(r.features, "durative-actions"));
 }
 

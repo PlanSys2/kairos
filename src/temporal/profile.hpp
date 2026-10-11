@@ -42,7 +42,8 @@ struct TemporalProfile
 /**
  * @brief Analyses the task, conservatively (after Cushing et al., IJCAI 2007): it may need
  * concurrency if a durative action leaves a value visible only while it runs (it changes a
- * variable at start and again at end) and another action reads that variable, or if timed
+ * variable at start and again at end) and another action needs it then and only then (not
+ * with the value before the action nor with the one after), or if timed
  * initial literals change what actions read. A false "may need" only costs time (M3 tries
  * too); a false "simple" would give plans the validator rejects.
  */
