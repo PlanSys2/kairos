@@ -28,7 +28,8 @@ organization and will become a planner for PlanSys2, but it does not depend on R
 > derived predicates, durative actions, PDDL+) and grounded by relaxed reachability in Datalog,
 > both checked against the validator; grounding gives the same atoms and actions as Fast
 > Downward's translator (fewer where its static filters are tighter), several times faster.
-> Search is next. Nothing can be planned yet.
+> Ground tasks become SAS+ tasks with mutex groups found by invariant synthesis (also for
+> durative actions), matching Fast Downward's. Search is next. Nothing can be planned yet.
 
 ## Why another planner?
 
