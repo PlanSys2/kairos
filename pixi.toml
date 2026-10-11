@@ -1,0 +1,29 @@
+# Conda package of Kairos built by pixi (pixi-build-cmake): `pixi publish --target-dir dist`
+# writes it to dist/, `pixi publish --to <channel>` uploads it. The version must match
+# CMakeLists.txt and package.xml (CMake checks it).
+[workspace]
+name = "kairos"
+channels = ["https://prefix.dev/conda-forge"]
+platforms = ["linux-64", "linux-aarch64"]
+preview = ["pixi-build"]
+
+# Built with GCC 14, so projects that link Kairos with GCC 14 or newer find every symbol
+[workspace.build-variants]
+c_compiler_version = ["14"]
+cxx_compiler_version = ["14"]
+
+[package]
+name = "kairos"
+version = "0.3.0"
+description = "A modern temporal and numeric PDDL planner in C++20, as a library and an executable"
+license = "Apache-2.0"
+homepage = "https://github.com/PlanSys2/kairos"
+repository = "https://github.com/PlanSys2/kairos"
+publish = true
+
+[package.build.backend]
+name = "pixi-build-cmake"
+version = "*"
+
+[package.build.config]
+extra-args = ["-DKAIROS_BUILD_TESTS=OFF"]

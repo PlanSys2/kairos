@@ -19,6 +19,20 @@ project(kairos
   DESCRIPTION "Modern temporal and numeric PDDL planner"
   LANGUAGES CXX)
 
+# The version lives in package.xml and pixi.toml too
+foreach(manifest package.xml pixi.toml)
+  file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${manifest}" _text)
+  if(manifest STREQUAL "package.xml")
+    string(REGEX MATCH "<version>([^<]+)</version>" _found "${_text}")
+  else()
+    string(REGEX MATCH "\nversion = \"([^\"]+)\"" _found "${_text}")
+  endif()
+  if(NOT CMAKE_MATCH_1 STREQUAL PROJECT_VERSION)
+    message(FATAL_ERROR
+      "${manifest} has version '${CMAKE_MATCH_1}', CMakeLists.txt has ${PROJECT_VERSION}")
+  endif()
+endforeach()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

@@ -7,3 +7,5 @@ compile_commands.json
 __pycache__/
 *.pyc
 /coverage/
+/.pixi/
+/dist/

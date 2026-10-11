@@ -14,6 +14,10 @@
   <a href="https://github.com/PlanSys2/kairos/actions/workflows/ci.yml"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/PlanSys2/kairos/badges/coverage.json&amp;cacheSeconds=3600" alt="Coverage"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/C%2B%2B-20-informational.svg" alt="C++20">
+  <img src="https://img.shields.io/badge/CMake-%E2%89%A5%203.24-064F8C?logo=cmake" alt="CMake 3.24 or newer">
+  <a href="https://pixi.sh"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json" alt="Powered by Pixi"></a>
+  <img src="https://img.shields.io/badge/platforms-Linux%20x86--64%20%7C%20ARM64-lightgrey" alt="Linux x86-64 and ARM64">
+  <img src="https://img.shields.io/badge/PDDL-3.1%20%7C%20PDDL%2B-8A2BE2" alt="PDDL 3.1 and PDDL+">
 </p>
 
 Kairos aims to be a reference PDDL planner: broad language coverage, efficient on large problems,
@@ -163,6 +167,15 @@ Inside a colcon workspace:
 ```bash
 colcon build --packages-select kairos
 colcon test --packages-select kairos
+```
+
+As a conda package, with [pixi](https://pixi.sh) and the `pixi-build-cmake` backend (see
+[pixi.toml](pixi.toml)); the package has the library, its headers, the CMake package and the
+executable:
+
+```bash
+pixi publish --target-dir dist                      # dist/kairos-<version>-<build>.conda
+pixi publish --to https://prefix.dev/<channel>      # or upload it to a channel
 ```
 
 Requirements:
