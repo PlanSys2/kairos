@@ -629,7 +629,11 @@ TEST(StateSpaceTest, BreadthFirstExpansionThroughput)
   double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
   EXPECT_EQ(expanded, 49u * 48u * 47u);  // three robots on distinct cells
   EXPECT_EQ(reg.size(), expanded);
+#ifdef KAIROS_COVERAGE_BUILD
+  EXPECT_LT(secs, 60.0);  // atomic counters on a CI runner: 22 s seen
+#else
   EXPECT_LT(secs, 10.0);  // generous: debug and sanitizer builds
+#endif
   RecordProperty(
     "states_per_second", std::to_string(static_cast<int>(static_cast<double>(expanded) / secs)));
 }

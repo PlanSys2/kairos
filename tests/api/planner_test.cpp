@@ -685,14 +685,14 @@ TEST(PlannerApiTest, DumpsIntermediateStructures)
   SolveOptions o = quick();
   o.dump_dir = dir;
   ASSERT_EQ(Planner().solve(p, o).status, Status::Solved);
-  for (const char * f : {"domain.pddl", "problem.pddl", "lifted.txt", "ground.txt", "sas.txt",
-      "plan-trace.txt"})
+  for (const char * f : {"ast-domain.pddl", "ast-problem.pddl", "lifted.txt", "ground.txt",
+      "sas.txt", "plan-trace.txt"})
   {
     EXPECT_TRUE(fs::exists(dir / f)) << f;
     EXPECT_GT(fs::file_size(dir / f), 0u) << f;
   }
   // The dumped PDDL parses again
-  std::ifstream in(dir / "domain.pddl");
+  std::ifstream in(dir / "ast-domain.pddl");
   std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
   EXPECT_TRUE(parse_domain(text).ok());
 
@@ -702,7 +702,7 @@ TEST(PlannerApiTest, DumpsIntermediateStructures)
   ASSERT_EQ(Planner().solve(p, o).status, Status::Solved);
   EXPECT_TRUE(fs::exists(only / "sas.txt"));
   EXPECT_FALSE(fs::exists(only / "ground.txt"));
-  EXPECT_FALSE(fs::exists(only / "domain.pddl"));
+  EXPECT_FALSE(fs::exists(only / "ast-domain.pddl"));
   fs::remove_all(dir);
   fs::remove_all(only);
 }
