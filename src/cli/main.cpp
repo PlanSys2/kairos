@@ -476,8 +476,22 @@ int solve_command(const Args & a)
   }
   // Plans as they come, unless the reader expects a single one (POPF format on stdout)
   bool anytime = o.anytime && (output || format != PlanFormat::Popf);
+  // Times rounded to 3 decimals can break a valid plan (an action that starts exactly when
+  // another ends, with durations such as 121.9775): then more decimals, as many as it needs
+  auto precision = [&](const kairos::Plan & plan) {
+      if (!plan.temporal || format == PlanFormat::Json) {
+        return 3;
+      }
+      for (int p : {3, 6, 9}) {
+        auto back = kairos::parse_plan(kairos::to_string(plan, PlanFormat::Ipc, p));
+        if (back.ok() && kairos::validate(*problem, *back).valid()) {
+          return p;
+        }
+      }
+      return 9;
+    };
   auto write = [&](const kairos::Plan & plan, uint32_t index) {
-      std::string text = kairos::to_string(plan, format);
+      std::string text = kairos::to_string(plan, format, precision(plan));
       if (output) {
         std::string file = anytime ? *output + "." + std::to_string(index + 1) : *output;
         std::ofstream(file) << text;

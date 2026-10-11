@@ -16,7 +16,10 @@
 kairos_add_test(api_tests
   SOURCES
     check_test.cpp
+    examples_test.cpp
     planner_test.cpp
     public_api_test.cpp
   DEPENDS
     kairos::kairos)
+target_compile_definitions(api_tests PRIVATE
+  KAIROS_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/docs/examples/pddls")

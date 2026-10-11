@@ -227,8 +227,10 @@ Interactions:
 | `popf` | PlanSys2's POPF plugin | `;;;; Solution Found`, `; Cost: 7.000`, then `0.000: (a x)  [0.000]` with the position as time | `;;;; Solution Found`, `; Cost: 9.000`, then `0.000: (a x)  [1.500]` |
 | `json` | scripts | one line per plan | one line per plan |
 
-Times and durations have 3 decimals in `ipc` and `popf`. The `ipc` cost comment has full
-precision.
+Times and durations have 3 decimals in `ipc` and `popf`, unless rounding to 3 decimals would
+make the plan invalid: then 6 (or 9), as many as it needs. That happens with durations such as
+121.9775 when an action starts exactly as another ends (the road trip example). The `ipc` cost
+comment has full precision.
 
 The examples below are complete outputs (`--no-anytime`, one plan) for two problems of
 [examples/pddls](examples/pddls): a temporal one (`domain_simple.pddl` with
@@ -571,7 +573,7 @@ heuristic of the preset.
 
 | Value | First plan | Use it when |
 |-------|-----------|-------------|
-| `auto` (default) | `lama`, or `lama-novelty` when the task has numeric conditions; the portfolio on M3 | almost always |
+| `auto` (default) | `lama`; with numeric conditions, `lama` for a quarter of the time and then `lama-novelty` (below); the portfolio on M3 | almost always |
 | `ff` | lazy greedy best-first search, FF heuristic, preferred operators | simple tasks; a cheap baseline |
 | `lama` | lazy greedy best-first search, FF and landmark-count heuristics in alternation, preferred operators (as LAMA) | classical tasks |
 | `eager-lama` | as `lama`, with eager search | when lazy search wastes evaluations (many children per state) |
@@ -579,7 +581,19 @@ heuristic of the preset.
 | `lama-novelty` | eager greedy search, FF and landmark count plus a novelty queue (width 2) | numeric tasks, M3 tasks |
 | `ehc` | enforced hill climbing with FF and helpful actions; falls back to lazy greedy search if it fails | tasks where greedy progress is reliable |
 
-With `-v`, `auto` shows its choice: `[orchestrator] search: lama (auto)`.
+With numeric conditions `auto` starts with lazy `lama`, which finds most first plans at once
+(robots carrying units of a resource: [the cooking examples](examples.md)), and moves on to
+`lama-novelty` if `lama` has no plan after a quarter of the time. On a temporal task headed for
+M3 (the M2 first plan, then the M3 portfolio), `lama-novelty` also improves the M2 plan for 40%
+of the time left before M3 starts: on large tasks M3 seldom improves in time, while improving in
+M2 and rescheduling does.
+
+When some actions cost 0 for the metric (moving or carrying, when only ingredients cost money),
+the heuristics see unit costs for the first plan and cost + 1 for the improving searches, as LAMA
+does; plans are still compared by the real metric.
+
+With `-v`, `auto` shows its choice: `[orchestrator] search: lama (auto)`, or
+`search: lama, then lama-novelty (auto)` with numeric conditions.
 
 ```bash
 kairos domain.pddl problem.pddl --search lama-novelty

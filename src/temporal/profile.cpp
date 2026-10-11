@@ -37,9 +37,16 @@ struct Reads
   std::set<std::pair<sas::VarId, uint32_t>> facts, not_facts;
   std::set<sas::VarId> whole;
   std::set<sas::NumVarId> nums;
+  // How each numeric variable is read: kUp, a larger value helps (n >= c); kDown, a smaller
+  // one does; kOther, anything else (equalities, effects, durations, non-linear)
+  static constexpr uint8_t kUp = 1, kDown = 2, kOther = 4;
+  std::map<sas::NumVarId, uint8_t> num_dirs;
 
   void merge(const Reads & o)
   {
+    for (const auto & [n, d] : o.num_dirs) {
+      num_dirs[n] |= d;
+    }
     facts.insert(o.facts.begin(), o.facts.end());
     not_facts.insert(o.not_facts.begin(), o.not_facts.end());
     whole.insert(o.whole.begin(), o.whole.end());
@@ -67,6 +74,7 @@ struct Reads
   {
     if (e.op == ground::ExprOp::Fluent) {
       nums.insert(static_cast<sas::NumVarId>(e.fluent));
+      num_dirs[static_cast<sas::NumVarId>(e.fluent)] |= kOther;
     }
     for (const auto & c : e.children) {
       expr(c);
@@ -86,8 +94,17 @@ struct Reads
       whole.insert(v.b);
     }
     for (const auto & n : c.numeric) {
-      expr(n.lhs);
-      expr(n.rhs);
+      bool lower = n.op == sas::CompareOp::Ge || n.op == sas::CompareOp::Gt;
+      bool upper = n.op == sas::CompareOp::Le || n.op == sas::CompareOp::Lt;
+      if (n.difference && (lower || upper)) {
+        for (const auto & [v, coef] : n.difference->terms) {
+          nums.insert(v);
+          num_dirs[v] |= (coef > 0.0) == lower ? kUp : kDown;
+        }
+      } else {
+        expr(n.lhs);
+        expr(n.rhs);
+      }
     }
   }
   void effect(const sas::Effect & e)
@@ -187,8 +204,15 @@ TemporalProfile analyze(const sas::Task & task)
   // "another action reads it" without going through all of them (linear in the actions)
   std::map<std::pair<sas::VarId, uint32_t>, size_t> fact_readers, not_fact_readers;
   std::map<sas::VarId, size_t> whole_readers;
-  std::map<sas::NumVarId, size_t> num_readers;
+  std::map<std::pair<sas::NumVarId, uint8_t>, size_t> num_dir_readers;
   for (const auto & r : durative_reads) {
+    for (const auto & [n, d] : r.num_dirs) {
+      for (uint8_t bit : {Reads::kUp, Reads::kDown, Reads::kOther}) {
+        if (d & bit) {
+          ++num_dir_readers[{n, bit}];
+        }
+      }
+    }
     for (const auto & f : r.facts) {
       ++fact_readers[f];
     }
@@ -197,9 +221,6 @@ TemporalProfile analyze(const sas::Task & task)
     }
     for (auto v : r.whole) {
       ++whole_readers[v];
-    }
-    for (auto n : r.nums) {
-      ++num_readers[n];
     }
   }
   // Readers besides `self`
@@ -226,8 +247,42 @@ TemporalProfile analyze(const sas::Task & task)
       return after != x && (!before || *before == after) &&
              others(not_fact_readers, std::make_pair(v, after), own.not_facts);
     };
-  auto read_by_others = [&](size_t self, sas::NumVarId n) {
-      return instant.nums.count(n) || others(num_readers, n, durative_reads[self].nums);
+  // How the others read n (Reads flags)
+  auto others_dirs = [&](size_t self, sas::NumVarId n) {
+      uint8_t d = 0;
+      if (auto it = instant.num_dirs.find(n); it != instant.num_dirs.end()) {
+        d = it->second;
+      }
+      const auto & own = durative_reads[self].num_dirs;
+      auto own_it = own.find(n);
+      uint8_t mine = own_it == own.end() ? 0 : own_it->second;
+      for (uint8_t bit : {Reads::kUp, Reads::kDown, Reads::kOther}) {
+        auto it = num_dir_readers.find({n, bit});
+        if (it != num_dir_readers.end() && it->second > ((mine & bit) ? 1u : 0u)) {
+          d |= bit;
+        }
+      }
+      return d;
+    };
+  // A start that lowers n, read by the others only as "large enough", shows them nothing
+  // they could use (e.g. stock taken at start and given back at end); same when raising
+  auto start_delta = [](const sas::DurativeAction & da, sas::NumVarId n) {
+      std::optional<double> delta;
+      for (const auto & e : da.effects) {
+        if (e.timing != sas::Timing::Start || e.kind != sas::Effect::Kind::Numeric ||
+          e.num != n)
+        {
+          continue;
+        }
+        bool constant = !e.continuous && e.value.linear && e.value.linear->terms.empty() &&
+          (e.op == ast::AssignOp::Increase || e.op == ast::AssignOp::Decrease);
+        if (!constant || delta) {
+          return std::optional<double>();  // unknown, or several changes
+        }
+        double c = e.value.linear->constant;
+        delta = e.op == ast::AssignOp::Increase ? c : -c;
+      }
+      return delta;
     };
   for (size_t a = 0; a < task.durative_actions.size(); ++a) {
     const auto & da = task.durative_actions[a];
@@ -275,7 +330,14 @@ TemporalProfile analyze(const sas::Task & task)
       }
     }
     for (auto n : s.nums) {
-      if (e.nums.count(n) && read_by_others(a, n)) {
+      if (!e.nums.count(n)) {
+        continue;
+      }
+      uint8_t d = others_dirs(a, n);
+      auto delta = start_delta(da, n);
+      bool harmless = d == 0 || (delta && *delta <= 0.0 && d == Reads::kUp) ||
+        (delta && *delta >= 0.0 && d == Reads::kDown);
+      if (!harmless) {
         p.simple = false;
         p.reasons.push_back(
           name + " changes a numeric fluent at start and at end, and other actions read it");

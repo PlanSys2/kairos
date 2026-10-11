@@ -21,6 +21,7 @@
 #include <map>
 #include <memory>
 #include <queue>
+#include <stdexcept>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -124,6 +125,10 @@ public:
     std::vector<uint32_t> out;
     for (StateId s = goal; (*this)[s].parent != kNoState; s = (*this)[s].parent) {
       out.push_back((*this)[s].action);
+      if (out.size() > blocks_.size() * kBlock) {
+        // Never grow without bound: a loop of parents is a bug, reported as such
+        throw std::logic_error("search: the parents of a state form a loop");
+      }
     }
     std::reverse(out.begin(), out.end());
     return out;
@@ -310,8 +315,16 @@ public:
   Engine(SearchContext & ctx, const EngineOptions & o)
   : ctx_(ctx), o_(o), space_(ctx.budget)
   {
+    std::vector<double> h_costs = ctx.costs;
+    for (auto & c : h_costs) {
+      if (o.heuristic_costs == EngineOptions::HeuristicCosts::One) {
+        c = 1.0;
+      } else if (o.heuristic_costs == EngineOptions::HeuristicCosts::PlusOne) {
+        c += 1.0;
+      }
+    }
     for (const auto & name : split(o.heuristic)) {
-      auto h = heuristics::make_heuristic(name, ctx.task, ctx.costs, ctx.budget);
+      auto h = heuristics::make_heuristic(name, ctx.task, h_costs, ctx.budget);
       if (!h) {
         hs_.clear();
         return;
@@ -437,6 +450,18 @@ private:
   }
 
   bool out_of_budget() {return ctx_.budget && ctx_.budget->exhausted();}
+
+  // Whether a is on the path to s: with g that depends on the path (the makespan), a cheaper
+  // way to a may go through its own descendants, and taking it would close a loop of parents
+  bool ancestor(StateId a, StateId s)
+  {
+    for (; s != kNoState; s = space_[s].parent) {
+      if (s == a) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   double step_cost(StateId parent, uint32_t op, StateId child, double g) const
   {
@@ -622,7 +647,7 @@ private:
           }
         }
         Node & mm = space_[t];
-        if (g2 < mm.g) {
+        if (g2 < mm.g && !(ctx_.path_cost && ancestor(t, e.state))) {
           if (mm.status == kClosed) {
             if (!o_.reopen) {
               continue;
@@ -821,12 +846,19 @@ Outcome run_engine(SearchContext & ctx, const EngineOptions & options)
 
 AnytimeResult anytime(SearchContext & ctx, const AnytimeOptions & options)
 {
-  Outcome o = run_engine(ctx, options.first);
+  bool zero_costs = options.adapt_zero_costs &&
+    std::any_of(ctx.costs.begin(), ctx.costs.end(), [](double c) {return c <= 0.0;});
+  EngineOptions first = options.first;
+  if (zero_costs && first.heuristic_costs == EngineOptions::HeuristicCosts::Real) {
+    first.heuristic_costs = EngineOptions::HeuristicCosts::One;
+  }
+  Outcome o = run_engine(ctx, first);
   if (o == Outcome::Failed && options.first.kind == EngineOptions::Kind::EnforcedHillClimbing &&
     options.fallback_after_ehc)
   {
     EngineOptions lazy;
     lazy.heuristic = options.first.heuristic;
+    lazy.heuristic_costs = first.heuristic_costs;
     o = run_engine(ctx, lazy);
   }
   switch (o) {
@@ -849,6 +881,9 @@ AnytimeResult anytime(SearchContext & ctx, const AnytimeOptions & options)
     w.weight = options.weights[std::min(i, options.weights.size() - 1)];
     w.heuristic = options.improve_heuristic;
     w.reopen = true;
+    if (zero_costs) {
+      w.heuristic_costs = EngineOptions::HeuristicCosts::PlusOne;
+    }
     o = run_engine(ctx, w);
     if (o == Outcome::Stopped) {
       return AnytimeResult::Stopped;

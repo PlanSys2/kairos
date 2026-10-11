@@ -889,7 +889,7 @@ std::string auto_choice(const Problem & p)
 
 TEST(PlannerApiTest, AutoSearchFollowsTheTask)
 {
-  // Classical: LAMA; numeric conditions: LAMA with novelty
+  // Classical: LAMA; numeric conditions: lazy LAMA, then LAMA with novelty
   EXPECT_EQ(auto_choice(problem(kBlocks, kBlocksProblem)), "search: lama (auto)");
   EXPECT_EQ(auto_choice(problem(kRoutes, kRoutesProblem)), "search: lama (auto)");  // costs only
   Problem numeric = problem(
@@ -897,7 +897,7 @@ TEST(PlannerApiTest, AutoSearchFollowsTheTask)
     " (:functions (x)) (:action inc :parameters () :precondition () :effect (increase (x) 1))"
     " (:action fin :parameters () :precondition (>= (x) 3) :effect (g)))",
     "(define (problem p) (:domain n) (:init (= (x) 0)) (:goal (g)))");
-  EXPECT_EQ(auto_choice(numeric), "search: lama-novelty (auto)");
+  EXPECT_EQ(auto_choice(numeric), "search: lama, then lama-novelty (auto)");
 }
 
 TEST(PlannerApiTest, UnknownSearchIsInvalidInput)

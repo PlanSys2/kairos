@@ -131,6 +131,10 @@ struct EngineOptions
   /// within the partition of the heuristic values, then by the first heuristic; 0: none.
   int novelty = 0;
   size_t novelty_memory = size_t{64} << 20;  // pairs stop being tracked past this
+  /// @brief Action costs the heuristics see (g always uses the real ones): as LAMA, unit
+  /// costs or cost + 1 keep zero-cost actions from making every plan look as good
+  enum class HeuristicCosts : uint8_t {Real, One, PlusOne};
+  HeuristicCosts heuristic_costs = HeuristicCosts::Real;
 };
 
 /// @brief Runs one engine until a plan, exhaustion, failure or the budget.
@@ -144,6 +148,9 @@ struct AnytimeOptions
   // Restarts with WA* of these weights (the last repeats while pruning by the bound)
   std::vector<double> weights = {5.0, 3.0, 2.0, 1.0};
   std::string improve_heuristic = "ff";
+  /// @brief With actions of cost 0: heuristics with unit costs for the first plan and cost + 1
+  /// for the improving restarts, as LAMA
+  bool adapt_zero_costs = true;
 };
 
 enum class AnytimeResult : uint8_t

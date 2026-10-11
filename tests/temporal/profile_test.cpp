@@ -173,6 +173,21 @@ TEST(TemporalProfileTest, OnlyOtherActionsCount)
   EXPECT_NE(s.reasons[0].find("only while it runs"), std::string::npos) << s.reasons[0];
 }
 
+TEST(TemporalProfileTest, ConsumableResourcesOfTheExamples)
+{
+  // Stock carried from zone to zone (also to the same zone) and battery: only "at least" reads,
+  // so no plan needs overlapping actions and M2 plans them
+  const std::string dir = KAIROS_EXAMPLES_DIR;
+  for (const char * problem : {"cooking_problem_simple.pddl", "cooking_problem_long.pddl"}) {
+    auto p = profile(
+      read_file(dir + "/cooking_domain.pddl"), read_file(dir + "/" + problem));
+    EXPECT_TRUE(p.simple) << problem << ": " << (p.reasons.empty() ? "" : p.reasons[0]);
+  }
+  auto c = profile(read_file(dir + "/cooking_cost_domain.pddl"),
+      read_file(dir + "/cooking_cost_problem_long.pddl"));
+  EXPECT_TRUE(c.simple) << (c.reasons.empty() ? "" : c.reasons[0]);
+}
+
 TEST(TemporalProfileTest, LinearInTheDurativeActions)
 {
   // 8 robots in 40 fully connected rooms: 12480 moves, each read by many others (it used to
@@ -210,7 +225,8 @@ TEST(TemporalProfileTest, LinearInTheDurativeActions)
 
 TEST(TemporalProfileTest, ABorrowedResource)
 {
-  // A tool taken at start and given back at end: others need it to be there
+  // A tool taken at start and given back at end: while it is out there are fewer, which helps
+  // nobody that needs one ("at least one"), so no plan needs the actions to overlap
   const char * domain =
     "(define (domain tools) (:requirements :fluents :durative-actions)"
     " (:predicates (done-a) (done-b)) (:functions (tools))"
@@ -220,9 +236,38 @@ TEST(TemporalProfileTest, ABorrowedResource)
     "   (at end (done-a))))"
     " (:durative-action b :parameters () :duration (= ?duration 2)"
     "  :condition (at start (>= (tools) 1)) :effect (at end (done-b))))";
-  auto p = profile(domain,
-      "(define (problem p) (:domain tools) (:init (= (tools) 1)) (:goal (and (done-a) (done-b))))");
-  EXPECT_FALSE(p.simple);
+  const char * problem =
+    "(define (problem p) (:domain tools) (:init (= (tools) 1)) (:goal (and (done-a) (done-b))))";
+  auto p = profile(domain, problem);
+  EXPECT_TRUE(p.simple) << (p.reasons.empty() ? "" : p.reasons[0]);
+
+  // Needing the tool out ("at most 0"): only while a runs
+  std::string missing = domain;
+  missing.replace(missing.rfind("(>= (tools) 1)"), 14, "(<= (tools) 0)");
+  auto q = profile(missing, problem);
+  EXPECT_FALSE(q.simple);
+  ASSERT_FALSE(q.reasons.empty());
+  EXPECT_NE(q.reasons[0].find("numeric"), std::string::npos) << q.reasons[0];
+
+  // Read with an equality, or by an effect: anything may need the intermediate value
+  std::string equal = domain;
+  equal.replace(equal.rfind("(>= (tools) 1)"), 14, "(= (tools) 1)");
+  EXPECT_FALSE(profile(equal, problem).simple);
+  std::string effect = domain;
+  effect.replace(effect.rfind("(at end (done-b))"), 17,
+    "(and (at end (done-b)) (at end (assign (score) (tools))))");
+  effect.replace(effect.find("(:functions (tools))"), 20, "(:functions (tools) (score))");
+  EXPECT_FALSE(profile(effect, problem).simple);
+
+  // Raising at start, read as "at most": symmetric
+  std::string raised = domain;
+  raised.replace(raised.find("(at start (decrease (tools) 1))"), 31,
+    "(at start (increase (tools) 1))");
+  raised.replace(raised.find("(at end (increase (tools) 1))"), 29, "(at end (decrease (tools) 1))");
+  raised.replace(raised.rfind("(>= (tools) 1)"), 14, "(<= (tools) 1)");
+  auto r = profile(raised, problem);
+  EXPECT_TRUE(r.simple) << (r.reasons.empty() ? "" : r.reasons[0]);
+
   // Nobody else reads it: compressing loses nothing
   const char * alone =
     "(define (domain tools) (:requirements :fluents :durative-actions)"
@@ -231,9 +276,9 @@ TEST(TemporalProfileTest, ABorrowedResource)
     "  :condition (at start (>= (tools) 1))"
     "  :effect (and (at start (decrease (tools) 1)) (at end (increase (tools) 1))"
     "   (at end (done-a)))))";
-  auto q = profile(alone,
+  auto a = profile(alone,
       "(define (problem p) (:domain tools) (:init (= (tools) 1)) (:goal (done-a)))");
-  EXPECT_TRUE(q.simple) << (q.reasons.empty() ? "" : q.reasons[0]);
+  EXPECT_TRUE(a.simple) << (a.reasons.empty() ? "" : a.reasons[0]);
 }
 
 TEST(TemporalProfileTest, TimedInitialLiteralsAndDurations)

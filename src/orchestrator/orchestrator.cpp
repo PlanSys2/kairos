@@ -523,6 +523,7 @@ SolveResult run(
       double share;      // of the time left when it starts (1: all)
       bool improve;
       bool makespan_g;   // g is the makespan of the partial plan (M3)
+      bool only_without_plan = false;  // skipped once an earlier phase found a plan
     };
     std::vector<Phase> phases;
     bool portfolio = options.search == "auto";
@@ -546,14 +547,29 @@ SolveResult run(
       } else {
         phases.push_back({Kind::Snap, options.search, 1.0, options.anytime, false});
       }
-    } else if (compressed) {
-      phases.push_back({Kind::Compressed, options.search, improver ? 0.0 : 1.0,
-          options.anytime && !improver, false});
+    } else {
+      Kind kind = compressed ? Kind::Compressed : Kind::Plain;
+      double share = improver ? 0.0 : 1.0;  // M2 before M3: until its first plan
+      bool improve = options.anytime && !improver;
+      const sas::Task & first_task = compressed ? compressed->task : sas_task;
+      if (portfolio && resolve_auto(first_task, false) == "lama-novelty") {
+        // Numeric: lazy LAMA finds most first plans at once (cooking, factory); eager search
+        // with novelty, the ones it misses
+        log.info(LogChannel::Orchestrator, "search: lama, then lama-novelty (auto)");
+        phases.push_back({kind, "lama", 0.25, improve, false});
+        if (improver) {
+          // Before M3: improving in M2 (each plan rescheduled) also shortens the makespan of
+          // large tasks, where M3 finds nothing better in time
+          phases.push_back({kind, "lama-novelty", 0.4, true, false});
+        } else {
+          phases.push_back({kind, "lama-novelty", share, improve, false, !improve});
+        }
+      } else {
+        phases.push_back({kind, options.search, share, improve, false});
+      }
       if (improver) {
         m3_portfolio(true);
       }
-    } else {
-      phases.push_back({Kind::Plain, options.search, 1.0, options.anytime, false});
     }
     const temporal::SnapTask * snap_task = snapped ? &*snapped : (improver ? &*improver : nullptr);
 
@@ -572,6 +588,9 @@ SolveResult run(
       const Phase & ph = phases[k];
       if (budget.check() != BudgetState::Ok || target_reached || no_improvement) {
         break;
+      }
+      if (ph.only_without_plan && res.plan) {
+        continue;
       }
       const sas::Task & task_k = ph.kind == Kind::Compressed ? compressed->task :
         (ph.kind == Kind::Snap ? snap_task->task : sas_task);
@@ -635,6 +654,9 @@ SolveResult run(
       ctx.prune_with_bound = prune;
       search::AnytimeOptions ao = *preset(chosen);
       ao.improve = ph.improve;
+      // Durations are what the search minimizes there: nothing to adapt (timed initial
+      // literals cost 0 but are forced)
+      ao.adapt_zero_costs = !time_metric;
       auto result = search::anytime(ctx, ao);
       stats.expanded += ctx.stats.expanded;
       stats.generated += ctx.stats.generated;

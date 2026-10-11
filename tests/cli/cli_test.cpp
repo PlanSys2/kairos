@@ -687,6 +687,26 @@ TEST_F(CliTest, ValidateVerdicts)
   EXPECT_EQ(run("validate " + solve_args()).code, 2);
 }
 
+TEST_F(CliTest, PrintedTemporalPlansStayValid)
+{
+  // Road trip: a move of 121.9775 ends exactly when a visit starts; with 3 decimals the printed
+  // plan would have the visit start before it, so the plan comes with more decimals
+  std::string dir = std::string(KAIROS_EXAMPLES_DIR) + "/";
+  std::string pair = "'" + dir + "road_trip_domain.pddl' '" + dir + "road_trip_problem.pddl'";
+  for (const char * format : {"ipc", "popf"}) {
+    Outcome r = run(pair + " --no-anytime --timeout 20 --format " + format);
+    ASSERT_EQ(r.code, 0) << r.err;
+    write("plan.txt", r.out);
+    Outcome v = run("validate " + pair + " '" + path("plan.txt") + "'");
+    EXPECT_EQ(v.code, 0) << format << ": " << v.err << r.out;
+    EXPECT_TRUE(contains(r.out, ".807521")) << r.out;  // six decimals
+  }
+  // Plans that survive 3 decimals keep them
+  Outcome f = run("'" + dir + "factory.pddl' '" + dir + "factory_problem_1.pddl' --no-anytime");
+  ASSERT_EQ(f.code, 0) << f.err;
+  EXPECT_TRUE(contains(f.out, "[5.000]")) << f.out;
+}
+
 TEST_F(CliTest, PlansSuaveInMilliseconds)
 {
   // The PlanSys2 example with derived predicates, end to end in the executable

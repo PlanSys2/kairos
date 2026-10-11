@@ -93,20 +93,28 @@ RelaxedGraph::RelaxedGraph(const sas::Task & task, const std::vector<double> & c
       }
     }
   }
-  // Which numeric nodes each action can move
-  for (uint32_t n = 0; n < num_.size(); ++n) {
-    std::set<sas::NumVarId> vars;
-    for (const auto & [v, coef] : num_[n].e.terms) {
-      vars.insert(v);
-    }
-    for (uint32_t a = 0; a < task.actions.size(); ++a) {
-      bool touches = std::any_of(
-        num_effects_[a].begin(), num_effects_[a].end(),
-        [&](const NumEffect & e) {return vars.count(e.var) > 0;});
-      if (touches) {
-        num_[n].contributors.push_back(a);
-        action_num_[a].push_back(n);
+  // Which numeric nodes each action can move (through the actions that change each variable)
+  std::map<sas::NumVarId, std::vector<uint32_t>> changers;
+  for (uint32_t a = 0; a < task.actions.size(); ++a) {
+    for (const auto & e : num_effects_[a]) {
+      auto & list = changers[e.var];
+      if (list.empty() || list.back() != a) {
+        list.push_back(a);
       }
+    }
+  }
+  for (uint32_t n = 0; n < num_.size(); ++n) {
+    std::vector<uint32_t> actions;
+    for (const auto & [v, coef] : num_[n].e.terms) {
+      if (auto it = changers.find(v); it != changers.end()) {
+        actions.insert(actions.end(), it->second.begin(), it->second.end());
+      }
+    }
+    std::sort(actions.begin(), actions.end());
+    actions.erase(std::unique(actions.begin(), actions.end()), actions.end());
+    for (uint32_t a : actions) {
+      num_[n].contributors.push_back(a);
+      action_num_[a].push_back(n);
     }
   }
   triggers_.assign(nodes_, {});
@@ -139,7 +147,14 @@ uint32_t RelaxedGraph::neg_node(sas::VarId var, uint32_t value)
 
 uint32_t RelaxedGraph::num_node(const sas::LinearExpr & e, bool strict)
 {
+  auto terms = e.terms;
+  std::sort(terms.begin(), terms.end());
+  auto key = std::make_tuple(strict, e.constant, std::move(terms));
+  if (auto it = num_ids_.find(key); it != num_ids_.end()) {
+    return it->second;
+  }
   uint32_t id = add_node();
+  num_ids_.emplace(std::move(key), id);
   node_num_[id] = static_cast<int32_t>(num_.size());
   num_node_id_.push_back(id);
   num_.push_back(NumNode{e, strict, {}});

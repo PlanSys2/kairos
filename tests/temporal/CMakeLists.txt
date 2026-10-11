@@ -21,4 +21,5 @@ kairos_add_test(temporal_tests
   DEPENDS
     kairos_temporal)
 target_compile_definitions(temporal_tests PRIVATE
-  KAIROS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data")
+  KAIROS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data"
+  KAIROS_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/docs/examples/pddls")

@@ -21,4 +21,5 @@ kairos_add_test(cli_tests
 add_dependencies(cli_tests kairos_cli)
 target_compile_definitions(cli_tests PRIVATE
   KAIROS_CLI="$<TARGET_FILE:kairos_cli>"
-  KAIROS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data")
+  KAIROS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data"
+  KAIROS_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/docs/examples/pddls")

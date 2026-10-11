@@ -18,6 +18,7 @@ the first one, `-v` to see progress and the time of the first plan, and validate
 - [SUAVE](#suave)
 - [Simple (talk to a person)](#simple-talk-to-a-person)
 - [Domains without a problem](#domains-without-a-problem)
+- [Results](#results)
 
 ## Cooking
 
@@ -196,3 +197,35 @@ only `factory.pddl` declares.
 ```bash
 kairos check matchcellar.pddl
 ```
+
+## Results
+
+Kairos 0.3.0 with its defaults (anytime, 30 s) and POPF (the version PlanSys2 uses, 60 s), one
+problem at a time with 4 GB, on a 16-core laptop. Every plan was checked with
+`kairos validate`. The first-plan time is the planner's own; the best plan is the last one found
+within the time.
+
+| Problem | Kairos: first plan | Kairos: best plan | POPF |
+|---------|-------------------:|-------------------|------|
+| cooking_problem_simple | 5 ms | 8 actions, makespan 59 | makespan 74 |
+| cooking_problem_long | 18 ms | 52 actions, makespan 343 | makespan 373 |
+| cooking_problem_huge | 148 ms | 160 actions, makespan 903 | no plan |
+| cooking_cost_problem_simple | 6 ms | cost 3 (the minimum) | cost 7 |
+| cooking_cost_problem_medium | 7 ms | cost 15 (the minimum) | cost 24 |
+| cooking_cost_problem_long | 28 ms | cost 34 (the minimum) | no plan |
+| factory_problem_1 | 6 ms | 21 actions, makespan 54 | makespan 54 |
+| elevator_problem | 1 ms | 12 actions, makespan 9 | makespan 9 |
+| road_trip_problem | 2 ms | 8 actions, makespan 529.8 | invalid as printed (*) |
+| suave_problem | 23 ms | 7 actions | no plan (derived predicates) |
+| domain_simple_problem_1 | 1 ms | 3 actions, makespan 15 | makespan 15 |
+
+The first plan is not always the best: in the factory it comes in 6 ms with makespan 132 (one
+robot does most of the work), then 70, and the anytime search reaches 54 after about 14 s. Use
+`--timeout` to choose how long to improve, or `--no-improvement` to stop when plans stop
+getting better.
+
+(*) Road trip has durations such as 121.9775. A move then ends exactly when the next visit
+starts, and with times printed with 3 decimals the visit appears to start before the move ends.
+Kairos prints such plans with as many decimals as they need to stay valid (6 here); POPF prints
+3, so its plan fails validation.
+

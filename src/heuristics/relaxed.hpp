@@ -23,6 +23,7 @@
 #include <map>
 #include <optional>
 #include <queue>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -123,6 +124,10 @@ private:
   uint32_t nodes_ = 0;
   std::vector<uint32_t> fact_offset_;          // per variable
   std::map<std::pair<sas::VarId, uint32_t>, uint32_t> neg_;
+  // Numeric nodes by condition (strict, constant, sorted terms): shared by every action that
+  // asks the same
+  std::map<std::tuple<bool, double, std::vector<std::pair<sas::NumVarId, double>>>, uint32_t>
+  num_ids_;
   std::vector<std::pair<sas::VarId, uint32_t>> neg_fact_;  // per negated node, in order
   std::vector<uint32_t> neg_id_;                           // and its node id
   std::vector<uint32_t> act_node_;             // per action
