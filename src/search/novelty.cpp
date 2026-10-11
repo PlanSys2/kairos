@@ -14,7 +14,8 @@
 
 #include "search/novelty.hpp"
 
-#include <bit>
+#include <algorithm>
+#include <bit>  // NOLINT(build/include_order): cpplint does not know this header
 #include <cmath>
 #include <cstring>
 #include <utility>
@@ -106,7 +107,9 @@ void Novelty::grow()
   }
 }
 
-int Novelty::evaluate(uint64_t partition, const uint32_t * values, const double * numbers)
+int Novelty::evaluate(
+  uint64_t partition, const uint32_t * values, const double * numbers,
+  const uint32_t * parent_values, const double * parent_numbers)
 {
   features_.clear();
   for (size_t v = 0; v < variables_; ++v) {
@@ -134,11 +137,38 @@ int Novelty::evaluate(uint64_t partition, const uint32_t * values, const double 
     return w == 1 ? 1 : 3;
   }
   bool new_pair = false;
-  for (size_t i = 0; i < features_.size(); ++i) {
-    uint64_t pi = combine(p ^ 0xa5a5a5a5ull, features_[i]);
-    for (size_t j = i + 1; j < features_.size(); ++j) {
-      if (insert(combine(pi, features_[j]))) {
-        new_pair = true;
+  auto pair = [&](size_t i, size_t j) {
+      size_t a = std::min(i, j), b = std::max(i, j);
+      return insert(combine(combine(p ^ 0xa5a5a5a5ull, features_[a]), features_[b]));
+    };
+  if (parent_values && features_.size() > kIncremental) {
+    // Large states: only pairs with a feature that changed from the parent (as BFWS does); the
+    // others were in the parent already, but for a change of partition
+    changed_.clear();
+    for (size_t v = 0; v < variables_; ++v) {
+      if (values[v] != parent_values[v]) {
+        changed_.push_back(v);
+      }
+    }
+    for (size_t n = 0; n < numeric_; ++n) {
+      double x = numbers[n], y = parent_numbers ? parent_numbers[n] : x;
+      if (!(x == y || (std::isnan(x) && std::isnan(y)))) {
+        changed_.push_back(variables_ + n);
+      }
+    }
+    for (size_t i : changed_) {
+      for (size_t j = 0; j < features_.size(); ++j) {
+        if (j != i && pair(i, j)) {
+          new_pair = true;
+        }
+      }
+    }
+  } else {
+    for (size_t i = 0; i < features_.size(); ++i) {
+      for (size_t j = i + 1; j < features_.size(); ++j) {
+        if (pair(i, j)) {
+          new_pair = true;
+        }
       }
     }
   }

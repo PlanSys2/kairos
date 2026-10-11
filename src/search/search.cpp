@@ -410,7 +410,10 @@ private:
       double lm = lm_index_ >= 0 ? r.h[static_cast<size_t>(lm_index_)] : 0.0;
       uint64_t partition = static_cast<uint64_t>(std::llround(goals)) * 1000003u +
         static_cast<uint64_t>(std::llround(lm * 1000.0));
-      r.novelty = novelty_->evaluate(partition, ec.values, ec.numbers);
+      r.novelty = novelty_->evaluate(
+        partition, ec.values, ec.numbers,
+        parent_values_.empty() ? nullptr : parent_values_.data(),
+        parent_values_.empty() ? nullptr : parent_numbers_.data());
       ++widths_[static_cast<size_t>(r.novelty)];
     }
     return r;
@@ -495,6 +498,11 @@ private:
     ops_.clear();
     ctx_.space.applicable(s, ops_);
     for (uint32_t op : ops_) {
+      // A wide state (thousands of successors, each filtered) can take long: the budget is
+      // checked within it too
+      if (out_of_budget()) {
+        return;
+      }
       auto next = ctx_.space.successor(s, op);
       ++ctx_.stats.generated;
       if (next && (!ctx_.accept || ctx_.accept(s, op, *next))) {
@@ -558,8 +566,18 @@ private:
         preferred_.erase(it);
       }
       double g = n.g;
+      if (novelty_) {
+        parent_values_ = ctx_.space.values(e.state);
+        parent_numbers_ = ctx_.space.numbers(e.state);
+      }
       successors(e.state, succ);
+      if (out_of_budget()) {
+        return Outcome::Stopped;
+      }
       for (const auto & [t, op] : succ) {
+        if (out_of_budget()) {
+          return Outcome::Stopped;
+        }
         double g2 = g + ctx_.costs[op];
         if (pruned(g2)) {
           continue;
@@ -775,6 +793,8 @@ private:
   std::unique_ptr<heuristics::Heuristic> goal_count_;  // novelty partitions
   int lm_index_ = -1;
   std::array<size_t, 4> widths_{};
+  std::vector<uint32_t> parent_values_;  // novelty: the state being expanded
+  std::vector<double> parent_numbers_;
   std::vector<std::vector<double>> extra_h_;  // heuristics after the first, per state
   std::unique_ptr<Alternation> open_;
   std::unordered_map<StateId, std::vector<uint32_t>> preferred_;

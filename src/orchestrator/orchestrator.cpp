@@ -214,10 +214,12 @@ bool has_numeric_conditions(const sas::Task & task)
   return false;
 }
 
-// "auto": LAMA (hFF and landmarks, lazy) on classical tasks, with novelty on numeric ones
-std::string resolve_auto(const sas::Task & task)
+// "auto": LAMA (hFF and landmarks, lazy) on classical tasks, with novelty on numeric ones; on
+// snap tasks (M3) always eager with novelty: lazy search pops children of other parents, and the
+// temporal filter rebuilds the plan of each (match-cellar 6: 72 000 expansions against 64)
+std::string resolve_auto(const sas::Task & task, bool snap)
 {
-  return has_numeric_conditions(task) ? "lama-novelty" : "lama";
+  return snap || has_numeric_conditions(task) ? "lama-novelty" : "lama";
 }
 
 }  // namespace
@@ -524,7 +526,7 @@ SolveResult run(
     ctx.logger = log;
     ctx.prune_with_bound = action_costs || length_metric;
     if (options.search == "auto") {
-      std::string chosen = resolve_auto(search_task);
+      std::string chosen = resolve_auto(search_task, snapped.has_value());
       configured = preset(chosen);
       log.info(LogChannel::Orchestrator, "search: {} (auto)", chosen);
     }

@@ -252,12 +252,19 @@ struct TemporalFilter::Builder
   std::map<sas::VarId, std::vector<Stn::Node>> readers;
   std::map<sas::NumVarId, Stn::Node> last_num_write;
   std::map<sas::NumVarId, std::vector<Stn::Node>> num_readers;
-  std::vector<std::pair<Stn::Node, DurationBounds>> open;  // per durative action
+  // Per durative action while it runs: its start and its end (created with the start, so the
+  // STN sees its duration and what must happen before it from the start on)
+  struct Open
+  {
+    Stn::Node start = UINT32_MAX;
+    Stn::Node end = UINT32_MAX;
+  };
+  std::vector<Open> open;
   size_t tils_done = 0;
   Stn::Mark mark{};
 
   explicit Builder(size_t durative)
-  : open(durative, {UINT32_MAX, DurationBounds{}}) {}
+  : open(durative) {}
 
   // The happenings a new one must follow
   std::set<Stn::Node> before(const Access & acc) const
@@ -334,6 +341,33 @@ TemporalFilter::TemporalFilter(
 : original_(original), snap_(snap), space_(space), epsilon_(epsilon)
 {
   access_ = accesses(original, snap);
+  // What each durative action's end writes (values when known) and its over all reads
+  for (size_t i = 0; i < original.durative_actions.size(); ++i) {
+    const auto & da = original.durative_actions[i];
+    EndWrites w;
+    for (const auto & f : da.end) {
+      w.facts[f.var] = f.value;
+    }
+    for (const auto & e : da.effects) {
+      if (e.timing != sas::Timing::End) {
+        continue;
+      }
+      if (e.kind == sas::Effect::Kind::Assign) {
+        auto it = w.facts.find(e.fact.var);
+        bool sure = e.condition.empty() && e.start_condition.empty();
+        if (it == w.facts.end()) {
+          w.facts[e.fact.var] = sure ? std::optional<uint32_t>(e.fact.value) : std::nullopt;
+        } else if (!sure || it->second != e.fact.value) {
+          it->second = std::nullopt;
+        }
+      } else if (e.kind == sas::Effect::Kind::Numeric) {
+        w.nums.insert(e.num);
+      } else if (e.kind == sas::Effect::Kind::Copy) {
+        w.facts[e.target] = std::nullopt;
+      }
+    }
+    end_writes_.push_back(std::move(w));
+  }
   // What each timed initial literal changes and reads (but its own counter), by variable
   for (uint32_t j = 0; j < snap.til_time.size(); ++j) {
     const Access & acc = access_[snap.tils + j];
@@ -374,16 +408,63 @@ bool TemporalFilter::invariants(state::StateId s)
 
 // Adds a happening of `action` to the STN of the builder; false if it becomes inconsistent.
 // With `record`, also what it read and wrote, for the happenings after it
+// Whether the end of action r breaks the over all condition of action a
+bool TemporalFilter::breaks(size_t r, size_t a) const
+{
+  const auto & w = end_writes_[r];
+  const auto & c = original_.durative_actions[a].over_all;
+  for (const auto & f : c.facts) {
+    if (auto it = w.facts.find(f.var); it != w.facts.end() && it->second != f.value) {
+      return true;  // another (or an unknown) value
+    }
+  }
+  for (const auto & f : c.not_facts) {
+    if (auto it = w.facts.find(f.var); it != w.facts.end() &&
+      (!it->second || *it->second == f.value))
+    {
+      return true;
+    }
+  }
+  for (const auto & v : c.vars) {
+    if (w.facts.count(v.a) || w.facts.count(v.b)) {
+      return true;
+    }
+  }
+  if (!w.nums.empty() && !c.numeric.empty()) {
+    Access reads;
+    reads.read(c);
+    for (auto n : reads.num_reads) {
+      if (w.nums.count(n)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Adds a happening of `action` to the STN of the builder; false if it becomes inconsistent.
+// A start also adds the end of its action; with `record`, what the happening read and wrote is
+// kept, for those after it
 bool TemporalFilter::add(
   Builder & b, uint32_t action, const DurationBounds & duration, Stn::Node & node,
   bool record) const
 {
   const Access & acc = access_[action];
   auto prev = b.before(acc);
-  if (snap_.is_end(action)) {
-    prev.erase(b.open[snap_.durative(action)].first);  // the duration orders them
+  bool start = snap_.is_start(action);
+  bool end = snap_.is_end(action);
+  size_t self = start || end ? snap_.durative(action) : 0;
+  Stn::Node end_node = UINT32_MAX;
+  if (end) {
+    node = b.open[self].end;
+    if (node == UINT32_MAX) {
+      return false;
+    }
+    prev.erase(b.open[self].start);  // the duration orders them
+    prev.erase(node);
+  } else {
+    node = b.stn.add_node();
   }
-  node = b.stn.add_node();
   for (auto p : prev) {
     if (!b.stn.at_least(p, node, epsilon_)) {
       return false;
@@ -400,17 +481,35 @@ bool TemporalFilter::add(
       return false;
     }
   }
-  if (snap_.is_end(action)) {
-    auto [start, d] = b.open[snap_.durative(action)];
-    if (start == UINT32_MAX || !b.stn.between(start, node, d.lo, d.hi)) {
+  if (start) {
+    // Its end, now: duration, deadlines, and how it sits with the ends of the running actions
+    end_node = b.stn.add_node();
+    if (!b.stn.between(node, end_node, duration.lo, duration.hi)) {
       return false;
+    }
+    if (auto deadline = next_til(b.tils_done, access_[action + 1])) {
+      if (!b.stn.add(Stn::kOrigin, end_node, *deadline - epsilon_)) {
+        return false;
+      }
+    }
+    for (size_t r = 0; r < b.open.size(); ++r) {
+      if (r == self || b.open[r].end == UINT32_MAX) {
+        continue;
+      }
+      // Its over all condition must hold until it ends: an end that breaks it comes after
+      if (breaks(r, self) && !b.stn.at_least(end_node, b.open[r].end, epsilon_)) {
+        return false;
+      }
+      if (breaks(self, r) && !b.stn.at_least(b.open[r].end, end_node, epsilon_)) {
+        return false;
+      }
     }
   }
   if (record) {
-    if (snap_.is_start(action)) {
-      b.open[snap_.durative(action)] = {node, duration};
-    } else if (snap_.is_end(action)) {
-      b.open[snap_.durative(action)].first = UINT32_MAX;
+    if (start) {
+      b.open[self] = Builder::Open{node, end_node};
+    } else if (end) {
+      b.open[self] = Builder::Open{};
     } else if (action >= snap_.tils) {
       ++b.tils_done;
     }

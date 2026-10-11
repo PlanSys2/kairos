@@ -161,13 +161,35 @@ TEST(SnapTest, ANestedActionThatDoesNotFit)
   domain.replace(domain.find("(= ?duration 5)"), 15, "(= ?duration 10)");
   auto b = bench(domain, kCellarProblem);
   ASSERT_TRUE(b->take("start (light-match m1)"));
+  // Its end is in the network from the start on: mending (10) must end before the match goes
+  // out (8 after it was lit), since that breaks its over all condition. Rejected at once, not
+  // after the search has built on it
+  EXPECT_FALSE(b->take("start (mend f1 m1)"));
+}
+
+TEST(SnapTest, TwoMendsFitInOneMatchAndAThirdDoesNot)
+{
+  // A match burns 5, mending takes 2 and needs the hand: two fit, one after the other
+  const char * domain =
+    "(define (domain cellar) (:requirements :typing :durative-actions)"
+    " (:types match fuse)"
+    " (:predicates (unused ?m - match) (light ?m - match) (mended ?f - fuse) (handfree))"
+    " (:durative-action light-match :parameters (?m - match) :duration (= ?duration 5)"
+    "  :condition (at start (unused ?m))"
+    "  :effect (and (at start (not (unused ?m))) (at start (light ?m))"
+    "   (at end (not (light ?m)))))"
+    " (:durative-action mend :parameters (?f - fuse ?m - match) :duration (= ?duration 2)"
+    "  :condition (and (at start (handfree)) (over all (light ?m)))"
+    "  :effect (and (at start (not (handfree))) (at end (handfree)) (at end (mended ?f)))))";
+  auto b = bench(domain,
+      "(define (problem p) (:domain cellar) (:objects m1 - match f1 f2 f3 - fuse)"
+      " (:init (unused m1) (handfree)) (:goal (and (mended f1) (mended f2) (mended f3))))");
+  ASSERT_TRUE(b->take("start (light-match m1)"));
   ASSERT_TRUE(b->take("start (mend f1 m1)"));
-  // Ending the mending (10 after its start) is fine on its own; but then the match, which needs
-  // to end 8 after it started and after the mending (its light is needed until then), has no
-  // room: the plan is a dead end, found when the constraint comes (as POPF)
   ASSERT_TRUE(b->take("end (mend f1 m1)"));
-  EXPECT_FALSE(b->take("end (light-match m1)"));
-  EXPECT_FALSE(b->goal());
+  ASSERT_TRUE(b->take("start (mend f2 m1)"));
+  ASSERT_TRUE(b->take("end (mend f2 m1)"));
+  EXPECT_FALSE(b->take("start (mend f3 m1)"));  // 0.001 + 2 + 0.001 + 2 + 0.001 + 2 > 5
 }
 
 TEST(SnapTest, VariableDurations)
@@ -227,11 +249,9 @@ TEST(SnapTest, TimedInitialLiteralsOpenAndCloseWindows)
       "(define (problem x) (:domain w) (:init (at 3 (open)) (at 6 (not (open))))"
       " (:goal (done)))");
   ASSERT_TRUE(c->take("til 1"));
-  ASSERT_TRUE(c->take("start (work)"));
-  // Closing the window while working breaks the over all condition; ending first needs 4
-  // after the start, past 6
-  EXPECT_FALSE(c->take("til 2"));
-  EXPECT_FALSE(c->take("end (work)"));
+  // Its end (4 after the start) would come after the window closes at 6, which breaks its over
+  // all condition: rejected when it starts
+  EXPECT_FALSE(c->take("start (work)"));
 }
 
 TEST(SnapTest, WhatM3CannotPlanYet)

@@ -23,6 +23,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -109,12 +110,21 @@ private:
     bool record) const;
   int32_t node_of(state::StateId s) const;
   std::optional<double> next_til(size_t from, const Access & acc) const;
+  bool breaks(size_t r, size_t a) const;
 
   const sas::Task & original_;
   const SnapTask & snap_;
   state::StateSpace & space_;
   double epsilon_;
   std::vector<Access> access_;    // per snap action
+  // What the end of each durative action writes: facts (a value, or nullopt when unknown or
+  // conditional) and numeric variables
+  struct EndWrites
+  {
+    std::map<sas::VarId, std::optional<uint32_t>> facts;
+    std::set<sas::NumVarId> nums;
+  };
+  std::vector<EndWrites> end_writes_;
   // Timed initial literals (indices, in order) that change or read each variable
   std::map<sas::VarId, std::vector<uint32_t>> til_writes_, til_reads_;
   std::map<sas::NumVarId, std::vector<uint32_t>> til_num_writes_;

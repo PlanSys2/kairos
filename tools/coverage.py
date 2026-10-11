@@ -16,12 +16,15 @@
 """Coverage and time of the kairos executable on benchmark suites of the corpus.
 
 Run:      coverage.py run KAIROS SUITE --out results.csv [--timeout 30] [--jobs 6] [-- ARGS]
+          coverage.py run KAIROS SUITE --out popf.csv --popf POPF   (POPF, validated by KAIROS)
 Compare:  coverage.py compare base.csv new.csv
 
 Suites (under $KAIROS_PDDL_CORPUS, default ~/.cache/kairos/corpus):
   b3         IPC 2002, 2023 and 2026 numeric, 10 instances per domain (1, 3, 5, ... 19)
   classical  IPC 2023 satisficing and IPC 1998-2014 satisficing domains, 10 per domain
-  quick      2 instances per domain of both, for a fast check
+  b1         IPC 2002-2014 temporal domains, 5 instances per domain
+  b2         required concurrency and temporal numeric (IPC 2011/2014, time2processes), 5 each
+  quick      2 instances per domain of b3 and classical, for a fast check
 
 Extra ARGS after "--" go to kairos (for instance --search lama). Every plan kairos prints has
 been validated by it. The agile score of a solved instance is 1 if it took at most 1 s, else
@@ -36,6 +39,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 CORPUS = os.environ.get('KAIROS_PDDL_CORPUS', os.path.expanduser('~/.cache/kairos/corpus'))
@@ -72,6 +76,66 @@ NUMERIC_OLD = [
     'ipc-2002/domains/zenotravel-numeric-automatic',
     'ipc-2002/domains/settlers-numeric-automatic',
 ]
+
+
+TEMPORAL = [
+    'ipc-2002/domains/depots-time-automatic',
+    'ipc-2002/domains/driverlog-time-automatic',
+    'ipc-2002/domains/rovers-time-automatic',
+    'ipc-2002/domains/satellite-time-automatic',
+    'ipc-2002/domains/zenotravel-time-automatic',
+    'ipc-2004/domains/airport-temporal-strips',
+    'ipc-2004/domains/airport-temporal-time-windows-strips',
+    'ipc-2004/domains/pipesworld-no-tankage-temporal-strips',
+    'ipc-2004/domains/pipesworld-no-tankage-temporal-deadlines-strips',
+    'ipc-2004/domains/satellite-time-strips',
+    'ipc-2004/domains/satellite-time-time-windows-strips',
+    'ipc-2004/domains/umts-temporal-strips',
+    'ipc-2004/domains/umts-temporal-time-windows-strips',
+    'ipc-2006/domains/openstacks-time-strips',
+    'ipc-2006/domains/pathways-metric-time',
+    'ipc-2006/domains/rovers-metric-time',
+    'ipc-2006/domains/storage-time',
+    'ipc-2006/domains/tpp-metric-time',
+    'ipc-2006/domains/trucks-time-strips',
+    'ipc-2006/domains/trucks-time-constraints-timed-initial-literals',
+    'ipc-2008/domains/crew-planning-temporal-satisficing-strips',
+    'ipc-2008/domains/elevator-temporal-satisficing-strips',
+    'ipc-2008/domains/model-train-temporal-satisficing-numeric-fluents',
+    'ipc-2008/domains/openstacks-temporal-satisficing-strips',
+    'ipc-2008/domains/parc-printer-temporal-satisficing-strips',
+    'ipc-2008/domains/peg-solitaire-temporal-satisficing-strips',
+    'ipc-2008/domains/sokoban-temporal-satisficing-strips',
+    'ipc-2008/domains/transport-temporal-satisficing-numeric-fluents',
+    'ipc-2008/domains/woodworking-temporal-satisficing-numeric-fluents',
+    'ipc-2011/domains/crew-planning-temporal-satisficing',
+    'ipc-2011/domains/elevator-temporal-satisficing',
+    'ipc-2011/domains/floor-tile-temporal-satisficing',
+    'ipc-2011/domains/openstacks-temporal-satisficing',
+    'ipc-2011/domains/parc-printer-temporal-satisficing',
+    'ipc-2011/domains/parking-temporal-satisficing',
+    'ipc-2011/domains/peg-solitaire-temporal-satisficing',
+    'ipc-2011/domains/sokoban-temporal-satisficing',
+    'ipc-2011/domains/storage-temporal-satisficing',
+    'ipc-2014/domains/driver-log-temporal-satisficing',
+    'ipc-2014/domains/floor-tile-temporal-satisficing',
+    'ipc-2014/domains/map-analyzer-temporal-satisficing',
+    'ipc-2014/domains/parking-temporal-satisficing',
+    'ipc-2014/domains/road-traffic-accident-management-temporal-satisficing',
+    'ipc-2014/domains/satellite-temporal-satisficing',
+    'ipc-2014/domains/storage-temporal-satisficing',
+]
+CONCURRENCY = [
+    'ipc-2011/domains/match-cellar-temporal-satisficing',
+    'ipc-2011/domains/turn-and-open-temporal-satisficing',
+    'ipc-2011/domains/temporal-machine-shop-temporal-satisficing',
+    'ipc-2014/domains/match-cellar-temporal-satisficing',
+    'ipc-2014/domains/turn-and-open-temporal-satisficing',
+    'ipc-2014/domains/temporal-machine-shop-temporal-satisficing',
+    'ipc-2004/domains/airport-temporal-time-windows-compiled-strips',
+    'ipc-2004/domains/satellite-time-time-windows-compiled-strips',
+]
+TIME2PROCESSES = ['MatchCellar', 'temporal_plant_watering', 'temporal_sailing']
 
 
 def natural(name):
@@ -133,6 +197,20 @@ def classical_domains():
     return out
 
 
+def time2processes():
+    out = []
+    base = os.path.join(CORPUS, 'hstairs_time2processes', 'benchmarks')
+    for d in TIME2PROCESSES:
+        folder = os.path.join(base, d)
+        inst = os.path.join(folder, 'instances')
+        if not os.path.isdir(inst):
+            continue
+        problems = sorted(os.listdir(inst), key=natural)
+        out.append(('time2processes/' + d, os.path.join(folder, 'domain.pddl'),
+                    [os.path.join(inst, p) for p in problems]))
+    return out
+
+
 def pick(items, count):
     # 1, 3, 5... of a 20-instance domain: easy to hard
     if len(items) <= count:
@@ -142,8 +220,18 @@ def pick(items, count):
 
 
 def suite(name):
-    per = 2 if name == 'quick' else 10
+    per = 2 if name == 'quick' else (5 if name in ('b1', 'b2') else 10)
     tasks = []
+    groups = []
+    if name == 'b1':
+        groups = [d for d in (potassco(r) for r in TEMPORAL) if d]
+    if name == 'b2':
+        groups = [d for d in (potassco(r) for r in CONCURRENCY) if d] + time2processes()
+    for label, a, b in groups:
+        if b is None:
+            tasks += [(label, d, p) for d, p in pick(a, per)]
+        else:
+            tasks += [(label, a, p) for p in pick(b, per)]
     if name in ('b3', 'quick'):
         for label, a, b in numeric_domains():
             if b is None:
@@ -157,6 +245,41 @@ def suite(name):
             else:
                 tasks += [(label, a, p) for p in pick(b, per)]
     return tasks
+
+
+def run_popf(popf, kairos, task, timeout, memory):
+    """POPF on a task; solved only if Kairos validates its plan."""
+    label, domain, problem = task
+    t0 = time.perf_counter()
+    try:
+        # The memory of a cgroup: POPF links OpenBLAS, which reserves address space at start
+        # (ulimit -v kills it before it begins)
+        r = subprocess.run(['systemd-run', '--user', '--scope', '-q', '-p',
+                            'MemoryMax=%dM' % memory, '-p', 'MemorySwapMax=0',
+                            popf, domain, problem], capture_output=True, text=True,
+                           timeout=timeout)
+        out, hung = r.stdout, False
+    except subprocess.TimeoutExpired:
+        out, hung = '', True
+    wall = time.perf_counter() - t0
+    row = {'domain': label, 'problem': os.path.basename(problem), 'status': 'timeout',
+           'time': '%.3f' % wall, 'steps': '', 'cost': '', 'expanded': ''}
+    if hung or ';;;; Solution Found' not in out:
+        if not hung:
+            row['status'] = 'unsolvable' if 'unsolvable' in out.lower() else 'error'
+        return row
+    body = out.split(';;;; Solution Found', 1)[1]
+    with tempfile.NamedTemporaryFile('w', suffix='.plan', delete=False) as f:
+        f.write(body)
+        plan = f.name
+    v = subprocess.run([kairos, 'validate', domain, problem, plan], capture_output=True,
+                       text=True)
+    os.unlink(plan)
+    row['status'] = 'solved' if v.returncode == 0 else 'invalid'
+    row['steps'] = str(len(re.findall(r'^\s*[\d.]+:\s*\(', body, re.MULTILINE)))
+    mk = re.search(r'makespan ([\d.]+)', v.stderr)
+    row['cost'] = mk.group(1) if mk else ''
+    return row
 
 
 def run_one(kairos, task, timeout, memory, extra):
@@ -174,7 +297,7 @@ def run_one(kairos, task, timeout, memory, extra):
     status = {0: 'solved', 10: 'unsolvable', 11: 'timeout', 12: 'memory', 13: 'unsupported',
               2: 'invalid', 1: 'error', -1: 'hung'}.get(code, 'error')
     steps = len([ln for ln in out.splitlines() if ln.startswith('(')]) if code == 0 else ''
-    cost = re.search(r'; cost = ([\d.e+-]+)', out)
+    cost = re.search(r'; makespan = ([\d.e+-]+)', out) or re.search(r'; cost = ([\d.e+-]+)', out)
     return {'domain': label, 'problem': os.path.basename(problem), 'status': status,
             'time': '%.3f' % wall, 'steps': steps, 'cost': cost.group(1) if cost else '',
             'expanded': expanded.group(1) if expanded else ''}
@@ -211,8 +334,13 @@ def cmd_run(args, extra):
     kairos = os.path.abspath(args.kairos)
     rows = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.jobs) as pool:
-        futures = [pool.submit(run_one, kairos, t, args.timeout, args.memory, extra)
-                   for t in tasks]
+        if args.popf:
+            popf = os.path.abspath(args.popf)
+            futures = [pool.submit(run_popf, popf, kairos, t, args.timeout, args.memory)
+                       for t in tasks]
+        else:
+            futures = [pool.submit(run_one, kairos, t, args.timeout, args.memory, extra)
+                       for t in tasks]
         for i, f in enumerate(concurrent.futures.as_completed(futures)):
             rows.append(f.result())
             if (i + 1) % 20 == 0:
@@ -266,7 +394,8 @@ def main():
     sub = ap.add_subparsers(dest='command', required=True)
     r = sub.add_parser('run')
     r.add_argument('kairos')
-    r.add_argument('suite', choices=['b3', 'classical', 'quick'])
+    r.add_argument('suite', choices=['b1', 'b2', 'b3', 'classical', 'quick'])
+    r.add_argument('--popf', help='run this POPF binary instead (plans validated by KAIROS)')
     r.add_argument('--out', required=True)
     r.add_argument('--timeout', type=float, default=30.0)
     r.add_argument('--memory', type=int, default=2048)

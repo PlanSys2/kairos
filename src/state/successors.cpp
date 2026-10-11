@@ -32,7 +32,10 @@ SuccessorGenerator::SuccessorGenerator(
   }
   // Built with an explicit stack: deep trees (tens of thousands of variables) would overflow
   // the call stack. An item: the node to fill and its operators, each with how many of its
-  // (sorted) facts are already decided above.
+  // (sorted) facts are already decided above. The operators of an item are sorted by their next
+  // variable once, and each group becomes one node of the chain of "don't care" children: an
+  // operator moves down only when its variable is decided (copying the rest at every node of a
+  // long chain was quadratic: snap tasks have a variable per durative action)
   struct Item
   {
     uint32_t node;
@@ -45,36 +48,45 @@ SuccessorGenerator::SuccessorGenerator(
   }
   nodes_.emplace_back();
   work.push_back(std::move(root));
+  struct Pending
+  {
+    uint32_t var;
+    uint32_t op;
+    uint32_t pos;
+  };
+  std::vector<Pending> pending;
   while (!work.empty()) {
     Item item = std::move(work.back());
     work.pop_back();
-    Node node;
-    node.leaves_begin = static_cast<uint32_t>(leaves_.size());
-    uint32_t var = kNone;
+    Node top;
+    top.leaves_begin = static_cast<uint32_t>(leaves_.size());
+    pending.clear();
     for (const auto & [op, pos] : item.ops) {
       const auto & facts = conditions_[op]->facts;
       if (pos == facts.size()) {
         leaves_.push_back(op);
       } else {
-        var = std::min(var, facts[pos].var);
+        pending.push_back(Pending{facts[pos].var, op, pos});
       }
     }
-    node.leaves_end = static_cast<uint32_t>(leaves_.size());
-    if (var != kNone) {
+    top.leaves_end = static_cast<uint32_t>(leaves_.size());
+    std::stable_sort(
+      pending.begin(), pending.end(),
+      [](const Pending & x, const Pending & y) {return x.var < y.var;});
+    uint32_t current = item.node;
+    Node node = top;
+    for (size_t i = 0; i < pending.size(); ) {
+      size_t j = i;
+      while (j < pending.size() && pending[j].var == pending[i].var) {
+        ++j;
+      }
+      uint32_t var = pending[i].var;
       node.var = var;
       uint32_t domain = task.variables[var].size();
       std::vector<std::vector<std::pair<uint32_t, uint32_t>>> by_value(domain);
-      std::vector<std::pair<uint32_t, uint32_t>> rest;
-      for (const auto & [op, pos] : item.ops) {
-        const auto & facts = conditions_[op]->facts;
-        if (pos == facts.size()) {
-          continue;
-        }
-        if (facts[pos].var == var) {
-          by_value[facts[pos].value].emplace_back(op, pos + 1);
-        } else {
-          rest.emplace_back(op, pos);
-        }
+      for (size_t k = i; k < j; ++k) {
+        const auto & f = conditions_[pending[k].op]->facts[pending[k].pos];
+        by_value[f.value].emplace_back(pending[k].op, pending[k].pos + 1);
       }
       node.children = static_cast<uint32_t>(child_.size());
       child_.resize(child_.size() + domain, kNone);
@@ -86,13 +98,21 @@ SuccessorGenerator::SuccessorGenerator(
           work.push_back(Item{id, std::move(by_value[v])});
         }
       }
-      if (!rest.empty()) {
-        node.dont_care = static_cast<uint32_t>(nodes_.size());
+      uint32_t next = kNone;
+      if (j < pending.size()) {
+        next = static_cast<uint32_t>(nodes_.size());
         nodes_.emplace_back();
-        work.push_back(Item{node.dont_care, std::move(rest)});
+        node.dont_care = next;
       }
+      nodes_[current] = node;
+      current = next;
+      node = Node{};
+      node.leaves_begin = node.leaves_end = static_cast<uint32_t>(leaves_.size());
+      i = j;
     }
-    nodes_[item.node] = node;
+    if (pending.empty()) {
+      nodes_[item.node] = top;
+    }
   }
 }
 

@@ -47,8 +47,13 @@ public:
   Novelty(const Novelty &) = delete;
   Novelty & operator=(const Novelty &) = delete;
 
-  /// @brief Novelty of a state in a partition; records its tuples.
-  int evaluate(uint64_t partition, const uint32_t * values, const double * numbers);
+  /// @brief Novelty of a state in a partition; records its tuples. With the parent's values and
+  /// more than kIncremental features, pairs are those with a feature that changed (as BFWS).
+  int evaluate(
+    uint64_t partition, const uint32_t * values, const double * numbers,
+    const uint32_t * parent_values = nullptr, const double * parent_numbers = nullptr);
+
+  static constexpr size_t kIncremental = 128;
 
   int max_width() const {return max_width_;}
   bool pairs_dropped() const {return pairs_dropped_;}
@@ -68,6 +73,7 @@ private:
   size_t size_ = 0;
   size_t accounted_ = 0;
   std::vector<uint64_t> features_;
+  std::vector<size_t> changed_;
 };
 
 }  // namespace kairos::search
