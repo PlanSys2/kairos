@@ -340,7 +340,23 @@ TEST_F(CliTest, DumpsToADirectory)
   ASSERT_EQ(all.code, 0) << all.err;
   EXPECT_TRUE(fs::exists(dir_ / "dump" / "lifted.txt"));
   EXPECT_TRUE(fs::exists(dir_ / "dump" / "plan-trace.txt"));
+  EXPECT_TRUE(fs::exists(dir_ / "dump" / "ast-domain.pddl"));
+  EXPECT_TRUE(fs::exists(dir_ / "dump" / "ast-problem.pddl"));
   EXPECT_EQ(run(solve_args() + " --dump=nonsense").code, 2);
+}
+
+TEST_F(CliTest, DumpNeverOverwritesTheInputs)
+{
+  // --dump alone writes in the current directory, where the inputs usually are
+  const std::string domain = slurp(path("domain.pddl"));
+  const std::string problem = slurp(path("problem.pddl"));
+  Outcome r = run("domain.pddl problem.pddl --dump", "cd '" + dir_.string() + "' &&");
+  ASSERT_EQ(r.code, 0) << r.err;
+  EXPECT_EQ(slurp(path("domain.pddl")), domain);
+  EXPECT_EQ(slurp(path("problem.pddl")), problem);
+  EXPECT_TRUE(fs::exists(dir_ / "ast-domain.pddl"));
+  // The printed AST plans the same
+  EXPECT_EQ(run("ast-domain.pddl ast-problem.pddl", "cd '" + dir_.string() + "' &&").code, 0);
 }
 
 // --- exit codes -------------------------------------------------------------------------------

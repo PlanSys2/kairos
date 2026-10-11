@@ -287,8 +287,9 @@ SolveResult run(
         }
       };
 
-    dump(options, "ast", "domain.pddl", [&]() {return pddl::to_pddl(in.domain);}, log);
-    dump(options, "ast", "problem.pddl", [&]() {return pddl::to_pddl(in.problem);}, log);
+    // Never the usual names of the inputs: --dump in their directory would overwrite them
+    dump(options, "ast", "ast-domain.pddl", [&]() {return pddl::to_pddl(in.domain);}, log);
+    dump(options, "ast", "ast-problem.pddl", [&]() {return pddl::to_pddl(in.problem);}, log);
 
     // Normalize
     auto t = Clock::now();

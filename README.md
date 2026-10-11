@@ -130,7 +130,8 @@ kairos validate domain.pddl problem.pddl plan.txt
 ```
 
 Exit codes: 0 solved, 10 unsolvable, 11 timeout, 12 out of memory, 13 unsupported, 2 invalid
-input, 1 internal error. `kairos --help` lists every option.
+input, 1 internal error. `kairos --help` lists every option. Every command and option, with
+examples: [docs/cli.md](docs/cli.md).
 
 Shell completion of commands, options, their values and PDDL files (bash, zsh and fish):
 
@@ -140,6 +141,14 @@ kairos --completion fish | source       # fish
 ```
 
 In a colcon workspace it comes with the workspace: see [Building](#building).
+
+### Examples
+
+[docs/examples/pddls](docs/examples/pddls) has PDDL domains and problems to try Kairos on, most
+of them from ROS 2 robotics: robots that cook with ingredients that run out (and a version that
+minimizes their cost), a car factory, elevators, a road trip with fuel, an underwater vehicle with
+derived predicates. [docs/examples.md](docs/examples.md) explains each one and gives the command
+to run it.
 
 ## With PlanSys2
 
