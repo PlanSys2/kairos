@@ -263,10 +263,9 @@ are exported.
 
 ## Contributing
 
-- One branch and one pull request per change, with tests.
-- Code style: ROS 2 style (2-space indent, braces on their own line for classes and functions,
-  100 columns), checked by the lint tests.
-- New files start with the Apache-2.0 header used across the repository.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md): Apache-2.0, signed-off commits
+(DCO), one pull request per change with its tests, and the ROS 2 code style checked by the lint
+tests.
 
 ## License
 
