@@ -52,6 +52,15 @@ double slowdown()
 #endif
 }
 
+// Sanitizers and coverage: 20 times slower or more on a CI runner, where the largest examples
+// do not fit in a minute (their memory and thread checks are covered by the others)
+bool slow_build() {return slowdown() >= 20.0;}
+
+bool large(const std::string & problem)
+{
+  return problem == "cooking_problem_huge.pddl" || problem == "cooking_cost_problem_long.pddl";
+}
+
 fs::path examples() {return fs::path(KAIROS_EXAMPLES_DIR);}
 
 struct Example
@@ -98,6 +107,9 @@ double minimum_cost(const char * problem)
 TEST(ExamplesTest, EverySolvableExampleHasAValidPlanFast)
 {
   for (const auto & e : kSolvable) {
+    if (slow_build() && large(e.problem)) {
+      continue;
+    }
     SolveOptions o;
     o.anytime = false;
     o.timeout = 60s;
@@ -118,6 +130,9 @@ TEST(ExamplesTest, IngredientCostsReachTheOptimum)
   for (const char * problem : {"cooking_cost_problem_simple.pddl",
       "cooking_cost_problem_medium.pddl", "cooking_cost_problem_long.pddl"})
   {
+    if (slow_build() && large(problem)) {
+      continue;
+    }
     SearchOptions o;
     o.timeout = 60s;
     o.target_cost = minimum_cost(problem);
