@@ -249,9 +249,15 @@ private:
 
   bool pruned(double g) const {return ctx_.prune_with_bound && g >= ctx_.sink.bound();}
 
-  Outcome found(StateId goal, double g)
+  Outcome found(StateId goal)
   {
+    // The cost of the path itself: after a reopening, parents may lead there more cheaply than
+    // the g stored in the goal node
     auto plan = space_.path(goal);
+    double g = 0.0;
+    for (uint32_t op : plan) {
+      g += ctx_.costs[op];
+    }
     if (ctx_.sink.offer(plan, g)) {
       ctx_.logger.info(
         LogChannel::Search, "plan of cost {} with {} actions ({} expanded, {} evaluated)", g,
@@ -324,7 +330,7 @@ private:
         continue;  // stale
       }
       if (ctx_.space.is_goal(e.state)) {
-        return found(e.state, n.g);
+        return found(e.state);
       }
       n.status = kClosed;
       ++ctx_.stats.expanded;
@@ -392,7 +398,7 @@ private:
     std::vector<uint32_t> preferred = std::move(r.preferred);
     while (true) {
       if (ctx_.space.is_goal(current)) {
-        return found(current, space_[current].g);
+        return found(current);
       }
       // Expand: one entry per operator, keyed by the parent's h
       ++ctx_.stats.expanded;
@@ -454,7 +460,7 @@ private:
     std::vector<uint32_t> helpful = std::move(r.preferred);
     while (true) {
       if (ctx_.space.is_goal(s)) {
-        return found(s, space_[s].g);
+        return found(s);
       }
       std::deque<StateId> queue{s};
       std::unordered_map<StateId, std::vector<uint32_t>> help{{s, helpful}};

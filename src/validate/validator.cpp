@@ -15,9 +15,11 @@
 #include "validate/validator.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <initializer_list>
 #include <map>
 #include <memory>
 #include <optional>
@@ -42,8 +44,59 @@ using ast::FormulaId;
 using ast::TermId;
 using sem::ObjectId;
 
-// A ground atom or fluent: head id followed by the object ids of its arguments
-using Key = std::vector<uint32_t>;
+// A ground atom or fluent: head id followed by the object ids of its arguments; inline up to
+// kInline values, so most keys never allocate
+class Key
+{
+public:
+  static constexpr size_t kInline = 7;
+
+  Key() = default;
+  Key(std::initializer_list<uint32_t> values)
+  {
+    for (uint32_t v : values) {
+      push_back(v);
+    }
+  }
+
+  void push_back(uint32_t v)
+  {
+    if (size_ < kInline) {
+      inline_[size_] = v;
+    } else {
+      if (size_ == kInline) {
+        heap_.assign(inline_.begin(), inline_.end());
+      }
+      heap_.push_back(v);
+    }
+    ++size_;
+  }
+
+  size_t size() const {return size_;}
+  const uint32_t * begin() const {return size_ <= kInline ? inline_.data() : heap_.data();}
+  const uint32_t * end() const {return begin() + size_;}
+  uint32_t operator[](size_t i) const {return begin()[i];}
+
+  bool operator==(const Key & o) const
+  {
+    if (size_ != o.size_) {
+      return false;
+    }
+    const uint32_t * a = begin();
+    const uint32_t * b = o.begin();
+    for (uint32_t i = 0; i < size_; ++i) {
+      if (a[i] != b[i]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+private:
+  uint32_t size_ = 0;
+  std::array<uint32_t, kInline> inline_{};
+  std::vector<uint32_t> heap_;
+};
 
 struct KeyHash
 {
@@ -58,7 +111,129 @@ struct KeyHash
   }
 };
 
-using KeySet = std::unordered_set<Key, KeyHash>;
+// Set of keys with open addressing (linear probing, tombstones for erase): no node per key
+class KeySet
+{
+public:
+  bool insert(Key key)
+  {
+    if ((used_ + 1) * 4 > slots_.size() * 3) {
+      grow();
+    }
+    size_t h = KeyHash{}(key);
+    size_t mask = slots_.size() - 1;
+    size_t tomb = kNone;
+    for (size_t i = h & mask; ; i = (i + 1) & mask) {
+      Slot & slot = slots_[i];
+      if (slot.state == kEmpty) {
+        Slot & target = tomb != kNone ? slots_[tomb] : slot;
+        used_ += tomb != kNone ? 0 : 1;
+        target = Slot{std::move(key), h, kFull};
+        ++size_;
+        return true;
+      }
+      if (slot.state == kTomb) {
+        tomb = tomb == kNone ? i : tomb;
+      } else if (slot.hash == h && slot.key == key) {
+        return false;
+      }
+    }
+  }
+
+  size_t count(const Key & key) const {return find(key) != kNone ? 1 : 0;}
+
+  void erase(const Key & key)
+  {
+    size_t i = find(key);
+    if (i != kNone) {
+      slots_[i].state = kTomb;
+      --size_;
+    }
+  }
+
+  void clear()
+  {
+    slots_.clear();
+    size_ = used_ = 0;
+  }
+
+  size_t size() const {return size_;}
+
+  class Iterator
+  {
+public:
+    Iterator(const KeySet * set, size_t i)
+    : set_(set), i_(i) {skip();}
+    const Key & operator*() const {return set_->slots_[i_].key;}
+    Iterator & operator++()
+    {
+      ++i_;
+      skip();
+      return *this;
+    }
+    bool operator!=(const Iterator & o) const {return i_ != o.i_;}
+
+private:
+    void skip()
+    {
+      while (i_ < set_->slots_.size() && set_->slots_[i_].state != kFull) {
+        ++i_;
+      }
+    }
+    const KeySet * set_;
+    size_t i_;
+  };
+  Iterator begin() const {return Iterator(this, 0);}
+  Iterator end() const {return Iterator(this, slots_.size());}
+
+private:
+  static constexpr uint8_t kEmpty = 0, kFull = 1, kTomb = 2;
+  static constexpr size_t kNone = ~size_t{0};
+  struct Slot
+  {
+    Key key;
+    size_t hash = 0;
+    uint8_t state = kEmpty;
+  };
+
+  size_t find(const Key & key) const
+  {
+    if (slots_.empty()) {
+      return kNone;
+    }
+    size_t h = KeyHash{}(key);
+    size_t mask = slots_.size() - 1;
+    for (size_t i = h & mask; ; i = (i + 1) & mask) {
+      const Slot & slot = slots_[i];
+      if (slot.state == kEmpty) {
+        return kNone;
+      }
+      if (slot.state == kFull && slot.hash == h && slot.key == key) {
+        return i;
+      }
+    }
+  }
+
+  void grow()
+  {
+    std::vector<Slot> old = std::move(slots_);
+    size_t n = 16;
+    while (n * 3 < (size_ + 1) * 8) {
+      n *= 2;  // at most 3/8 full after growing
+    }
+    slots_.assign(n, Slot{});
+    size_ = used_ = 0;
+    for (Slot & slot : old) {
+      if (slot.state == kFull) {
+        insert(std::move(slot.key));
+      }
+    }
+  }
+
+  std::vector<Slot> slots_;
+  size_t size_ = 0;
+  size_t used_ = 0;  // full and tombstones
+};
 
 struct State
 {
@@ -122,7 +297,9 @@ struct Tracking
   KeySet fluents;  // numeric and object fluents read
 };
 
-using Bindings = std::vector<std::pair<std::string, uint32_t>>;
+// Variable -> object; variables are symbols of the evaluator that binds and reads them
+using Bindings = std::vector<std::pair<Symbol, uint32_t>>;
+using Vars = std::vector<std::pair<Symbol, sem::TypeSpec>>;
 
 struct Changes
 {
@@ -183,6 +360,10 @@ public:
   std::string name(Symbol s) const {return std::string(symbols_.name(s));}
   const ast::Nodes & nodes() const {return nodes_;}
 
+  // Lookups by symbol, cached: the model tables search by name
+  std::optional<sem::PredicateId> predicate(Symbol s) const;
+  std::optional<ObjectId> object(Symbol s) const;
+
   // Iterates over all bindings of typed variables
   void for_each_binding(
     const std::vector<ast::TypedName> & params, Bindings & b,
@@ -194,10 +375,13 @@ public:
    * agree with what is already bound: much fewer than every object of its type.
    */
   void for_each_joined_binding(
-    const std::vector<std::pair<std::string, sem::TypeSpec>> & vars, FormulaId body,
+    const Vars & vars, FormulaId body,
     const Ctx & c, Bindings & b, const std::function<bool()> & leaf);
 
 private:
+  mutable std::vector<int64_t> predicate_cache_;  // per symbol: -2 not looked up, -1 none
+  mutable std::vector<int64_t> object_cache_;
+
   Key atom_key(Symbol pred, const std::vector<TermId> & args, const Ctx & c, Bindings & b);
   Key fluent_key(Symbol fn, const std::vector<TermId> & args, const Ctx & c, Bindings & b);
   bool is_object_expr(ExprId id) const;
@@ -242,12 +426,59 @@ public:
         }
       }
     }
+    // Within a stratum, strongly connected components of the positive dependencies, so only
+    // recursive rules need a fixpoint (Tarjan emits dependencies first)
+    std::map<std::string, std::vector<size_t>> rules_of;
     for (size_t i = 0; i < d.derived.size(); ++i) {
-      int l = level[std::string(d.symbols.name(d.derived[i].head.name))];
-      if (strata.size() <= static_cast<size_t>(l)) {
-        strata.resize(static_cast<size_t>(l) + 1);
+      rules_of[std::string(d.symbols.name(d.derived[i].head.name))].push_back(i);
+    }
+    std::map<std::string, int> index, low;
+    std::vector<std::string> stack;
+    std::set<std::string> on_stack;
+    int counter = 0;
+    std::vector<std::pair<int, RuleGroup>> found;  // (level, group)
+    std::function<void(const std::string &)> visit = [&](const std::string & v) {
+        index[v] = low[v] = counter++;
+        stack.push_back(v);
+        on_stack.insert(v);
+        bool self_loop = false;
+        for (const auto & [q, positive] : deps[v]) {
+          if (level[q] != level[v]) {
+            continue;
+          }
+          self_loop = self_loop || q == v;
+          if (!index.count(q)) {
+            visit(q);
+            low[v] = std::min(low[v], low[q]);
+          } else if (on_stack.count(q)) {
+            low[v] = std::min(low[v], index[q]);
+          }
+        }
+        if (low[v] != index[v]) {
+          return;
+        }
+        RuleGroup g;
+        size_t members = 0;
+        for (std::string w; w != v; ) {
+          w = stack.back();
+          stack.pop_back();
+          on_stack.erase(w);
+          ++members;
+          const auto & rs = rules_of[w];
+          g.rules.insert(g.rules.end(), rs.begin(), rs.end());
+        }
+        g.recursive = members > 1 || self_loop;
+        found.emplace_back(level[v], std::move(g));
+      };
+    for (const auto & [head, rs] : rules_of) {
+      if (!index.count(head)) {
+        visit(head);
       }
-      strata[static_cast<size_t>(l)].push_back(i);
+    }
+    std::stable_sort(
+      found.begin(), found.end(), [](const auto & a, const auto & b) {return a.first < b.first;});
+    for (auto & [l, g] : found) {
+      groups.push_back(std::move(g));
     }
   }
 
@@ -258,11 +489,16 @@ public:
   const ValidateOptions & options;
   Evaluator domain_eval;
   Evaluator problem_eval;
-  std::vector<std::vector<size_t>> strata;
+  struct RuleGroup
+  {
+    std::vector<size_t> rules;
+    bool recursive = false;
+  };
+  std::vector<RuleGroup> groups;  // by stratum, dependencies first
 
   const std::vector<uint32_t> & objects_of(const sem::TypeSpec & spec)
   {
-    auto it = by_type_.find(spec_key(spec));
+    auto it = by_type_.find(spec);
     if (it != by_type_.end()) {
       return it->second;
     }
@@ -272,7 +508,7 @@ public:
         out.push_back(static_cast<uint32_t>(i));
       }
     }
-    return by_type_.emplace(spec_key(spec), std::move(out)).first->second;
+    return by_type_.emplace(spec, std::move(out)).first->second;
   }
 
   sem::TypeSpec resolve(const std::vector<Symbol> & types, const SymbolTable & symbols) const
@@ -307,30 +543,44 @@ public:
       return;
     }
     s.derived_ready = true;
-    for (const auto & stratum : strata) {
-      for (bool changed = true; changed; ) {
+    for (const auto & group : groups) {
+      for (bool changed = true; changed; changed = changed && group.recursive) {
         changed = false;
-        for (size_t r : stratum) {
+        for (size_t r : group.rules) {
           const auto & rule = domain.derived[r];
           auto pred = dm.predicates.find(domain.symbols.name(rule.head.name));
           if (!pred) {
             continue;
           }
           const auto & param_types = dm.predicates.items[*pred].params;
-          std::vector<std::pair<std::string, sem::TypeSpec>> vars;
+          Vars vars;
           for (size_t i = 0; i < rule.head.params.size(); ++i) {
-            vars.emplace_back(
-              std::string(domain.symbols.name(rule.head.params[i].name)), param_types[i]);
+            vars.emplace_back(rule.head.params[i].name, param_types[i]);
+          }
+          // Existential variables join with the head ones
+          size_t head_vars = vars.size();
+          FormulaId body = rule.body;
+          while (domain.nodes.formulas[body].kind == ast::FormulaKind::Exists) {
+            const ast::Formula & e = domain.nodes.formulas[body];
+            for (const auto & p : e.params) {
+              vars.emplace_back(p.name, resolve(p.types, domain.symbols));
+            }
+            body = e.children.at(0);
           }
           Bindings b;
           Evaluator::Ctx c{s};
           // Head bindings from the true atoms of the body where possible
-          domain_eval.for_each_joined_binding(vars, rule.body, c, b, [&]() {
+          domain_eval.for_each_joined_binding(vars, body, c, b, [&]() {
               Key key{pred->value()};
-              for (const auto & [n, o] : b) {
-                key.push_back(o);
+              for (size_t k = 0; k < head_vars; ++k) {
+                for (auto it = b.rbegin(); it != b.rend(); ++it) {
+                  if (it->first == vars[k].first) {
+                    key.push_back(it->second);
+                    break;
+                  }
+                }
               }
-              if (!s.derived.count(key) && domain_eval.holds(rule.body, c, b)) {
+              if (!s.derived.count(key) && domain_eval.holds(body, c, b)) {
                 s.add_derived(std::move(key));
                 changed = true;
               }
@@ -342,15 +592,6 @@ public:
   }
 
 private:
-  static std::string spec_key(const sem::TypeSpec & spec)
-  {
-    std::string k;
-    for (auto t : spec) {
-      k += std::to_string(t.value()) + ",";
-    }
-    return k;
-  }
-
   void collect_deps(
     FormulaId id, bool positive, std::vector<std::pair<std::string, bool>> & out,
     const std::map<std::string, int> & derived)
@@ -373,10 +614,42 @@ private:
     }
   }
 
-  std::unordered_map<std::string, std::vector<uint32_t>> by_type_;
+  std::map<sem::TypeSpec, std::vector<uint32_t>> by_type_;
 };
 
 // --- Evaluator -------------------------------------------------------------------------------
+
+std::optional<sem::PredicateId> Evaluator::predicate(Symbol s) const
+{
+  if (predicate_cache_.size() <= s.index()) {
+    predicate_cache_.resize(s.index() + 1, -2);
+  }
+  int64_t & slot = predicate_cache_[s.index()];
+  if (slot == -2) {
+    auto p = world_.dm.predicates.find(symbols_.name(s));
+    slot = p ? static_cast<int64_t>(p->value()) : -1;
+  }
+  if (slot < 0) {
+    return std::nullopt;
+  }
+  return sem::PredicateId(static_cast<uint32_t>(slot));
+}
+
+std::optional<ObjectId> Evaluator::object(Symbol s) const
+{
+  if (object_cache_.size() <= s.index()) {
+    object_cache_.resize(s.index() + 1, -2);
+  }
+  int64_t & slot = object_cache_[s.index()];
+  if (slot == -2) {
+    auto o = world_.pm.objects.find(symbols_.name(s));
+    slot = o ? static_cast<int64_t>(o->value()) : -1;
+  }
+  if (slot < 0) {
+    return std::nullopt;
+  }
+  return ObjectId(static_cast<uint32_t>(slot));
+}
 
 void Evaluator::for_each_binding(
   const std::vector<ast::TypedName> & params, Bindings & b, const std::function<bool()> & body)
@@ -390,7 +663,7 @@ void Evaluator::for_each_binding(
         return body();
       }
       for (uint32_t o : world_.objects_of(specs[i])) {
-        b.emplace_back(name(params[i].name), o);
+        b.emplace_back(params[i].name, o);
         bool go_on = rec(i + 1);
         b.pop_back();
         if (!go_on) {
@@ -403,7 +676,7 @@ void Evaluator::for_each_binding(
 }
 
 void Evaluator::for_each_joined_binding(
-  const std::vector<std::pair<std::string, sem::TypeSpec>> & vars, FormulaId body,
+  const Vars & vars, FormulaId body,
   const Ctx & c, Bindings & b, const std::function<bool()> & leaf)
 {
   // Positive atoms of the top conjunction
@@ -421,7 +694,17 @@ void Evaluator::for_each_joined_binding(
   } else {
     collect(top);
   }
-  auto bound = [&](const std::string & n) -> std::optional<uint32_t> {
+  std::vector<const std::vector<uint32_t> *> allowed(vars.size(), nullptr);
+  std::vector<bool> assigned(vars.size(), false);
+  auto local = [&](Symbol n) -> int {
+      for (size_t k = vars.size(); k-- > 0; ) {
+        if (vars[k].first == n) {
+          return static_cast<int>(k);
+        }
+      }
+      return -1;
+    };
+  auto bound = [&](Symbol n) -> std::optional<uint32_t> {
       for (auto it = b.rbegin(); it != b.rend(); ++it) {
         if (it->first == n) {
           return it->second;
@@ -429,88 +712,152 @@ void Evaluator::for_each_joined_binding(
       }
       return std::nullopt;
     };
+  auto allowed_of = [&](size_t k) -> const std::vector<uint32_t> & {
+      if (!allowed[k]) {
+        allowed[k] = &world_.objects_of(vars[k].second);
+      }
+      return *allowed[k];
+    };
+  // An atom argument: a known object, or the local variable it binds (kUnbound + index)
+  constexpr int64_t kUnbound = int64_t{1} << 40;
   std::function<bool(size_t)> rec = [&](size_t i) {
+      while (i < vars.size() && assigned[i]) {
+        ++i;
+      }
       if (i == vars.size()) {
         return leaf();
       }
-      const auto & [var, spec] = vars[i];
-      const auto & allowed = world_.objects_of(spec);
-      auto try_value = [&](uint32_t o) {
-          b.emplace_back(var, o);
-          bool go_on = rec(i + 1);
-          b.pop_back();
-          return go_on;
-        };
-      // An atom with this variable whose other arguments are known
+      // The atom mentioning vars[i] with the fewest other unbound variables
+      const ast::Formula * best = nullptr;
+      std::vector<int64_t> best_want;
+      size_t best_free = vars.size() + 1;
       for (const ast::Formula * a : atoms) {
-        auto pred = world_.dm.predicates.find(symbols_.name(a->name));
+        auto pred = predicate(a->name);
         if (!pred) {
           continue;
         }
-        std::vector<std::optional<uint32_t>> want;
+        std::vector<int64_t> want;
         bool mentions = false, usable = true;
+        size_t free = 0;
         for (TermId t : a->args) {
           const ast::Term & term = nodes_.terms[t];
-          std::string n = name(term.name);
+          Symbol n = term.name;
           if (term.kind == ast::TermKind::Variable) {
-            if (n == var) {
-              mentions = true;
-              want.emplace_back(std::nullopt);
+            int k = local(n);
+            if (k >= 0 && !assigned[static_cast<size_t>(k)]) {
+              mentions = mentions || static_cast<size_t>(k) == i;
+              free += static_cast<size_t>(k) == i ? 0 : 1;
+              want.push_back(kUnbound + k);
             } else if (auto v = bound(n)) {
-              want.emplace_back(*v);
+              want.push_back(*v);
             } else {
-              usable = false;  // another unbound variable: try another atom
+              usable = false;
             }
           } else if (term.kind == ast::TermKind::Name) {
-            auto o = world_.pm.objects.find(n);
+            auto o = object(term.name);
             if (!o) {
               usable = false;
             } else {
-              want.emplace_back(o->value());
+              want.push_back(o->value());
             }
           } else {
             usable = false;  // object fluent
           }
         }
-        if (!mentions || !usable) {
-          continue;
-        }
-        bool derived = world_.dm.predicates.items[*pred].derived;
-        if (derived) {
-          world_.ensure_derived(c.now);
-        }
-        // Candidates now; derived atoms may still be added while the rules are evaluated
-        std::vector<Key> keys = derived ? c.now.derived_index[pred->value()] :
-          c.now.atoms_of(pred->value());
-        std::vector<uint32_t> values;
-        for (const Key & k : keys) {
-          std::optional<uint32_t> value;
-          bool ok = true;
-          for (size_t j = 0; j < want.size() && ok; ++j) {
-            uint32_t x = k[j + 1];
-            if (want[j]) {
-              ok = *want[j] == x;
-            } else if (value) {
-              ok = *value == x;
-            } else {
-              value = x;
-            }
-          }
-          if (ok && value && std::binary_search(allowed.begin(), allowed.end(), *value)) {
-            values.push_back(*value);
+        if (mentions && usable && free < best_free) {
+          best = a;
+          best_want = std::move(want);
+          best_free = free;
+          if (free == 0) {
+            break;
           }
         }
-        std::sort(values.begin(), values.end());
-        values.erase(std::unique(values.begin(), values.end()), values.end());
-        for (uint32_t o : values) {
-          if (!try_value(o)) {
+      }
+      if (!best) {
+        for (uint32_t o : allowed_of(i)) {
+          b.emplace_back(vars[i].first, o);
+          assigned[i] = true;
+          bool go_on = rec(i + 1);
+          assigned[i] = false;
+          b.pop_back();
+          if (!go_on) {
             return false;
           }
         }
         return true;
       }
-      for (uint32_t o : allowed) {
-        if (!try_value(o)) {
+      auto pred = predicate(best->name);
+      bool derived = world_.dm.predicates.items[*pred].derived;
+      if (derived) {
+        world_.ensure_derived(c.now);
+      }
+      // Tuples of the unbound variables, collected before recursing, so no reference outlives
+      // an insertion of derived atoms
+      std::vector<size_t> slots;
+      for (int64_t w : best_want) {
+        if (w >= kUnbound) {
+          size_t k = static_cast<size_t>(w - kUnbound);
+          if (std::find(slots.begin(), slots.end(), k) == slots.end()) {
+            slots.push_back(k);
+          }
+        }
+      }
+      const std::vector<Key> & keys = derived ? c.now.derived_index[pred->value()] :
+        c.now.atoms_of(pred->value());
+      std::vector<uint32_t> tuples;
+      std::vector<int64_t> value(vars.size());
+      for (const Key & key : keys) {
+        for (size_t k : slots) {
+          value[k] = -1;
+        }
+        bool ok = key.size() == best_want.size() + 1;
+        for (size_t j = 0; j < best_want.size() && ok; ++j) {
+          uint32_t x = key[j + 1];
+          int64_t w = best_want[j];
+          if (w < kUnbound) {
+            ok = w == x;
+          } else {
+            int64_t & v = value[static_cast<size_t>(w - kUnbound)];
+            ok = v < 0 || v == x;
+            v = x;
+          }
+        }
+        for (size_t k : slots) {
+          if (!ok) {
+            break;
+          }
+          const auto & al = allowed_of(k);
+          ok = std::binary_search(al.begin(), al.end(), static_cast<uint32_t>(value[k]));
+        }
+        if (ok) {
+          for (size_t k : slots) {
+            tuples.push_back(static_cast<uint32_t>(value[k]));
+          }
+        }
+      }
+      size_t width = slots.size();
+      std::vector<size_t> order(tuples.size() / width);
+      for (size_t t = 0; t < order.size(); ++t) {
+        order[t] = t;
+      }
+      auto row = [&](size_t t) {return tuples.data() + t * width;};
+      std::sort(order.begin(), order.end(), [&](size_t x, size_t y) {
+          return std::lexicographical_compare(row(x), row(x) + width, row(y), row(y) + width);
+        });
+      order.erase(std::unique(order.begin(), order.end(), [&](size_t x, size_t y) {
+          return std::equal(row(x), row(x) + width, row(y));
+        }), order.end());
+      for (size_t t : order) {
+        for (size_t s = 0; s < width; ++s) {
+          b.emplace_back(vars[slots[s]].first, row(t)[s]);
+          assigned[slots[s]] = true;
+        }
+        bool go_on = rec(i + 1);
+        for (size_t s = 0; s < width; ++s) {
+          assigned[slots[s]] = false;
+          b.pop_back();
+        }
+        if (!go_on) {
           return false;
         }
       }
@@ -522,19 +869,18 @@ void Evaluator::for_each_joined_binding(
 uint32_t Evaluator::object_of(TermId id, const Ctx & c, Bindings & b)
 {
   const ast::Term & t = nodes_.terms[id];
-  std::string n = name(t.name);
   switch (t.kind) {
     case ast::TermKind::Variable:
       for (auto it = b.rbegin(); it != b.rend(); ++it) {
-        if (it->first == n) {
+        if (it->first == t.name) {
           return it->second;
         }
       }
-      throw EvalError{"unbound variable " + n};
+      throw EvalError{"unbound variable " + name(t.name)};
     case ast::TermKind::Name: {
-        auto o = world_.pm.objects.find(n);
+        auto o = object(t.name);
         if (!o) {
-          throw EvalError{"unknown object " + n};
+          throw EvalError{"unknown object " + name(t.name)};
         }
         return o->value();
       }
@@ -556,7 +902,7 @@ uint32_t Evaluator::object_of(TermId id, const Ctx & c, Bindings & b)
 Key Evaluator::atom_key(
   Symbol pred, const std::vector<TermId> & args, const Ctx & c, Bindings & b)
 {
-  auto p = world_.dm.predicates.find(symbols_.name(pred));
+  auto p = predicate(pred);
   if (!p) {
     throw EvalError{"unknown predicate " + name(pred)};
   }
@@ -730,9 +1076,9 @@ bool Evaluator::holds(FormulaId id, const Ctx & c, Bindings & b)
     case ast::FormulaKind::Imply:
       return !holds(f.children.at(0), c, b) || holds(f.children.at(1), c, b);
     case ast::FormulaKind::Exists: {
-        std::vector<std::pair<std::string, sem::TypeSpec>> vars;
+        Vars vars;
         for (const auto & p : f.params) {
-          vars.emplace_back(name(p.name), world_.resolve(p.types, symbols_));
+          vars.emplace_back(p.name, world_.resolve(p.types, symbols_));
         }
         bool result = false;
         for_each_joined_binding(vars, f.children.at(0), c, b, [&]() {
@@ -849,7 +1195,7 @@ std::string Evaluator::why(FormulaId id, const Ctx & c, Bindings & b)
             if (!holds(f.children.at(0), c, b)) {
               std::string where;
               for (size_t i = b.size() - f.params.size(); i < b.size(); ++i) {
-                where += (where.empty() ? "" : ", ") + b[i].first + " = " +
+                where += (where.empty() ? "" : ", ") + name(b[i].first) + " = " +
                 world_.object_name(b[i].second);
               }
               reason = "for " + where + ": " + why(f.children.at(0), c, b);
@@ -869,7 +1215,7 @@ std::string Evaluator::why(FormulaId id, const Ctx & c, Bindings & b)
   if (!b.empty()) {
     text += " with";
     for (const auto & [n, o] : b) {
-      text += " " + n + " = " + world_.object_name(o);
+      text += " " + name(n) + " = " + world_.object_name(o);
     }
   }
   return text + " is false";
@@ -1125,7 +1471,7 @@ void Validator::resolve_steps()
           " must be " + w_.dm.types.to_string(required) + ", '" + ps.args[k] + "' is " +
           w_.dm.types.to_string(w_.pm.objects.items[*o].types), ps.line);
       }
-      s.bindings.emplace_back(std::string(d.symbols.name(params[k].name)), o->value());
+      s.bindings.emplace_back(params[k].name, o->value());
     }
     s.start = ps.time;
     s.end = ps.time + (s.durative ? ps.duration : 0.0);

@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "pddl/parser.hpp"
+#include "orchestrator/orchestrator.hpp"
 #include "semantic/analyzer.hpp"
 
 namespace kairos
@@ -37,6 +38,18 @@ CheckReport finish(CheckReport report)
   return report;
 }
 
+// What Kairos cannot plan with yet: warnings here (the PDDL is still correct); returns whether
+// everything is supported
+bool add_unsupported(CheckReport & report, const sem::FeatureSet & features)
+{
+  auto missing = orch::unsupported(features);
+  for (auto & d : missing) {
+    d.severity = Severity::Warning;
+    report.diagnostics.push_back(std::move(d));
+  }
+  return missing.empty();
+}
+
 }  // namespace
 
 CheckReport check_domain(std::string_view domain_text, std::string_view filename)
@@ -49,11 +62,15 @@ CheckReport check_domain(std::string_view domain_text, std::string_view filename
   }
   auto model = sem::analyze_domain(*parsed);
   report.diagnostics = parsed.take_diagnostics();
+  bool supported = false;
   if (model.ok()) {
     report.features = model->features.names();
+    supported = add_unsupported(report, model->features);
   }
   append(report.diagnostics, model.take_diagnostics());
-  return finish(std::move(report));
+  report = finish(std::move(report));
+  report.plannable = report.valid && supported;
+  return report;
 }
 
 CheckReport check_problem(std::string_view problem_text, std::string_view filename)
@@ -88,11 +105,15 @@ CheckReport check_problem(
   }
   auto pmodel = sem::analyze_problem(*problem, *domain, *dmodel);
   append(report.diagnostics, dmodel.take_diagnostics());
+  bool supported = false;
   if (pmodel.ok()) {
     report.features = pmodel->features.names();
+    supported = add_unsupported(report, pmodel->features);
   }
   append(report.diagnostics, pmodel.take_diagnostics());
-  return finish(std::move(report));
+  report = finish(std::move(report));
+  report.plannable = report.valid && supported;
+  return report;
 }
 
 }  // namespace kairos

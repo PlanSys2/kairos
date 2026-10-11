@@ -231,6 +231,33 @@ TEST(SearchTest, AnytimeImprovesStrictlyAndProvesOptimality)
   }
 }
 
+TEST(SearchTest, PlanCostIsThatOfItsActionsAfterReopening)
+{
+  // BLOCKS-5-1: a reopened node gives the goal a cheaper path than its stored g; the plan is
+  // offered once, with the cost of the path
+  const char * problem =
+    "(define (problem blocks-5-1) (:domain blocks) (:objects a d c e b)"
+    " (:init (clear b) (clear e) (clear c) (ontable d) (ontable e) (ontable c) (on b a)"
+    " (on a d) (handempty)) (:goal (and (on d c) (on c b) (on b a) (on a e))))";
+  auto r = setup(kBlocks, problem);
+  r->ctx->prune_with_bound = true;
+  EXPECT_EQ(anytime(*r->ctx, AnytimeOptions{}), AnytimeResult::ProvenOptimal);
+  auto all = r->sink->all();
+  ASSERT_GE(all.size(), 2u);
+  for (size_t i = 0; i < all.size(); ++i) {
+    double sum = 0.0;
+    for (uint32_t op : all[i].actions) {
+      sum += r->costs[op];
+    }
+    EXPECT_EQ(all[i].cost, sum);
+    EXPECT_TRUE(r->valid(all[i].actions));
+    if (i > 0) {
+      EXPECT_LT(all[i].cost, all[i - 1].cost);
+    }
+  }
+  EXPECT_EQ(all.back().cost, optimal(*r));
+}
+
 TEST(SearchTest, AnytimeWithMetricCosts)
 {
   // A cheap long way and an expensive short one

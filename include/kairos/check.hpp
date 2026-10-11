@@ -32,6 +32,7 @@ namespace kairos
 struct CheckReport
 {
   bool valid = false;                   // correct PDDL: no error diagnostics
+  bool plannable = false;               // valid, and Kairos can plan with everything it uses
   std::vector<Diagnostic> diagnostics;  // errors, warnings and notes, with positions
   std::vector<std::string> features;    // PDDL features actually used, e.g. "durative-actions"
 };

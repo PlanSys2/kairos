@@ -70,8 +70,9 @@ add_subdirectory(sas)
 add_subdirectory(state)
 add_subdirectory(heuristics)
 add_subdirectory(search)
+add_subdirectory(orchestrator)
 
-target_sources(kairos PRIVATE api/check.cpp api/validate.cpp api/version.cpp)
+target_sources(kairos PRIVATE api/check.cpp api/planner.cpp api/validate.cpp api/version.cpp)
 target_include_directories(kairos PUBLIC
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<BUILD_INTERFACE:${KAIROS_GENERATED_INCLUDE_DIR}>
@@ -98,3 +99,5 @@ install(TARGETS kairos EXPORT kairosTargets
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+add_subdirectory(cli)

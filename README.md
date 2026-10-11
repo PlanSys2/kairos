@@ -33,8 +33,9 @@ organization and will become a planner for PlanSys2, but it does not depend on R
 > decision-tree successor generator (about 900,000 states per second), with blind, goal count,
 > hmax, hadd and FF heuristics (numeric subgoaling, preferred operators) guiding lazy and
 > eager greedy search, weighted A*, enforced hill-climbing and a LAMA-style anytime driver.
-> Classical and numeric problems without durative actions are solved internally; the public
-> planning API and the `kairos` executable come next, then temporal planning.
+> **Kairos plans** problems without durative actions (STRIPS, ADL, derived predicates, numeric
+> fluents, action costs), as a library and as the `kairos` executable, validating every plan
+> before handing it over. Temporal planning comes next.
 
 ## Why another planner?
 
@@ -65,44 +66,63 @@ Kairos is written from scratch to close that gap.
 - **Measured.** A reproducible benchmark against the existing planners on IPC domains and on
   scaled-up PlanSys2 problems, with every plan checked by an independent validator.
 
-## Planned API
-
-A sketch of where the API is going (not implemented yet):
+## Usage
 
 ```cpp
 #include <kairos/kairos.hpp>
 
 // From files...
-auto domain  = kairos::load_domain("domain.pddl");
+auto domain = kairos::load_domain("domain.pddl");
 auto problem = kairos::load_problem("problem.pddl", *domain);
 // ...or from strings already in memory
-auto domain2  = kairos::parse_domain(domain_text);
+auto domain2 = kairos::parse_domain(domain_text);
 auto problem2 = kairos::parse_problem(problem_text, *domain2);
+// (on failure, ok() is false and diagnostics() say what and where)
 
-// Anytime: first plan as soon as possible, better ones through the callback
 kairos::Planner planner;
-auto search = planner.start(*problem, {.timeout = std::chrono::seconds(60)},
+
+// In the calling thread: the best plan within the timeout
+kairos::SolveOptions options;
+options.timeout = std::chrono::seconds(10);
+kairos::SolveResult result = planner.solve(*problem, options);
+if (result.status == kairos::Status::Solved) {
+  std::cout << kairos::to_string(*result.plan, kairos::PlanFormat::Ipc);
+}
+
+// Anytime, in its own thread: first plan as soon as possible, better ones through the callback
+kairos::SearchOptions anytime;
+anytime.timeout = std::chrono::seconds(60);
+kairos::Search search = planner.start(*problem, anytime,
   [](const kairos::PlanUpdate & update) {
-    // update.plan, update.cost, update.index, update.elapsed
+    // update.plan (validated, with its cost), update.index, update.elapsed
   });
 auto first = search.wait_first(std::chrono::seconds(5));
-auto best = search.wait();
+kairos::SolveResult best = search.wait();  // or search.stop(); destroying it stops it too
 ```
 
-The executable prints the plan to stdout in the usual IPC format (messages go to stderr):
+`result.status` tells what happened (`Solved`, `Unsolvable`, `Timeout`, `Cancelled`,
+`OutOfMemory`, `Unsupported`, `InvalidInput`, `GroundingTooLarge`), `result.stop_reason` why a
+solved search ended (for instance `ProvenOptimal`), and `result.stats` where the time went.
+
+The executable prints the plan to stdout (messages go to stderr):
 
 ```bash
 $ kairos domain.pddl problem.pddl
-0.000: (move r1 kitchen bedroom) [5.000]
-5.001: (pick r1 cup bedroom) [2.000]
+; cost = 2
+(move r1 kitchen corridor)
+(move r1 corridor hall)
 ```
 
 ```bash
-kairos domain.pddl problem.pddl --anytime --timeout 60
+kairos domain.pddl problem.pddl --timeout 60 --output plan    # plan.1, plan.2... as they improve
+kairos domain.pddl problem.pddl --format popf                  # for the PlanSys2 POPF plugin
+kairos domain.pddl problem.pddl -v --debug=search,ground       # progress and statistics on stderr
 kairos check domain.pddl problem.pddl
 kairos validate domain.pddl problem.pddl plan.txt
-kairos domain.pddl problem.pddl --debug=search,ground
 ```
+
+Exit codes: 0 solved, 10 unsolvable, 11 timeout, 12 out of memory, 13 unsupported, 2 invalid
+input, 1 internal error. `kairos --help` lists every option.
 
 ## Checking PDDL
 

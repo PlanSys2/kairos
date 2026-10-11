@@ -16,6 +16,7 @@
 kairos_add_test(api_tests
   SOURCES
     check_test.cpp
+    planner_test.cpp
     public_api_test.cpp
   DEPENDS
     kairos::kairos)

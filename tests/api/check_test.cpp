@@ -52,9 +52,32 @@ TEST(CheckApiTest, ValidDomain)
 {
   CheckReport r = check_domain(kDomain);
   EXPECT_TRUE(r.valid);
-  EXPECT_TRUE(r.diagnostics.empty());
+  // Correct PDDL, but durative actions cannot be planned yet: warnings only
+  EXPECT_FALSE(r.plannable);
+  ASSERT_FALSE(r.diagnostics.empty());
+  for (const auto & d : r.diagnostics) {
+    EXPECT_EQ(d.severity, Severity::Warning) << d.message;
+  }
   EXPECT_TRUE(has(r.features, "durative-actions"));
   EXPECT_TRUE(has(r.features, "typing"));
+}
+
+TEST(CheckApiTest, ClassicalDomainIsPlannable)
+{
+  const char * domain =
+    "(define (domain d) (:requirements :strips) (:predicates (p) (q))\n"
+    " (:action a :parameters () :precondition (p) :effect (q)))";
+  const char * problem = "(define (problem x) (:domain d) (:init (p)) (:goal (q)))";
+  CheckReport rd = check_domain(domain);
+  EXPECT_TRUE(rd.valid);
+  EXPECT_TRUE(rd.plannable);
+  EXPECT_TRUE(rd.diagnostics.empty());
+  CheckReport rp = check_problem(problem, domain, "problem.pddl");
+  EXPECT_TRUE(rp.plannable);
+  // Without its domain the problem cannot be said plannable
+  EXPECT_FALSE(check_problem(problem).plannable);
+  // Invalid input is never plannable
+  EXPECT_FALSE(check_domain("(define (domain d)").plannable);
 }
 
 TEST(CheckApiTest, DomainWithSyntaxError)
@@ -79,7 +102,10 @@ TEST(CheckApiTest, ProblemAgainstItsDomain)
 {
   CheckReport r = check_problem(kProblem, kDomain, "problem.pddl");
   EXPECT_TRUE(r.valid);
-  EXPECT_TRUE(r.diagnostics.empty());
+  EXPECT_FALSE(r.plannable);
+  for (const auto & d : r.diagnostics) {
+    EXPECT_EQ(d.severity, Severity::Warning) << d.message;
+  }
   EXPECT_TRUE(has(r.features, "durative-actions"));
 }
 
