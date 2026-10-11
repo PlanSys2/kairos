@@ -105,6 +105,9 @@ struct SearchContext
   /// @brief Prune nodes whose g already reaches the bound: only when no action can lower the
   /// plan cost (costs are never negative)
   bool prune_with_bound = false;
+  /// @brief Optional: whether a transition may be taken (the temporal engine checks over all
+  /// conditions and the temporal network); a rejected one counts as an invalid step
+  std::function<bool(state::StateId parent, uint32_t action, state::StateId child)> accept;
   SearchStats stats;
 };
 

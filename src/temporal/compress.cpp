@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "state/eval.hpp"
+#include "temporal/access.hpp"
 #include "temporal/stn.hpp"
 
 namespace kairos::temporal
@@ -346,114 +347,6 @@ Compressed compress(const sas::Task & task)
   }
   return c;
 }
-
-namespace
-{
-
-// What a step reads and writes, for ordering: variables and numeric variables
-struct Access
-{
-  std::vector<sas::VarId> reads, writes;
-  std::vector<sas::NumVarId> num_reads, num_writes;
-
-  void read(const sas::Condition & c)
-  {
-    for (const auto & f : c.facts) {
-      reads.push_back(f.var);
-    }
-    for (const auto & f : c.not_facts) {
-      reads.push_back(f.var);
-    }
-    for (const auto & v : c.vars) {
-      reads.push_back(v.a);
-      reads.push_back(v.b);
-    }
-    for (const auto & n : c.numeric) {
-      read(n.lhs.tree);
-      read(n.rhs.tree);
-    }
-  }
-  void read(const Expr & e)
-  {
-    if (e.op == ExprOp::Fluent) {
-      num_reads.push_back(static_cast<sas::NumVarId>(e.fluent));
-    }
-    for (const auto & ch : e.children) {
-      read(ch);
-    }
-  }
-  void effect(const sas::Effect & e)
-  {
-    read(e.condition);
-    read(e.start_condition);
-    switch (e.kind) {
-      case sas::Effect::Kind::Assign: writes.push_back(e.fact.var); break;
-      case sas::Effect::Kind::Numeric:
-        read(e.value.tree);
-        num_writes.push_back(e.num);
-        num_reads.push_back(e.num);  // increase reads the old value
-        break;
-      case sas::Effect::Kind::Copy:
-        reads.push_back(e.source);
-        writes.push_back(e.target);
-        break;
-    }
-  }
-  void finish(const std::vector<std::vector<sas::VarId>> & derived_base)
-  {
-    // A derived variable stands for what its axioms read
-    std::vector<sas::VarId> extra;
-    for (auto v : reads) {
-      if (v < derived_base.size()) {
-        extra.insert(extra.end(), derived_base[v].begin(), derived_base[v].end());
-      }
-    }
-    reads.insert(reads.end(), extra.begin(), extra.end());
-    for (auto * vec : {&reads, &writes}) {
-      std::sort(vec->begin(), vec->end());
-      vec->erase(std::unique(vec->begin(), vec->end()), vec->end());
-    }
-    for (auto * vec : {&num_reads, &num_writes}) {
-      std::sort(vec->begin(), vec->end());
-      vec->erase(std::unique(vec->begin(), vec->end()), vec->end());
-    }
-  }
-};
-
-// For each derived variable, the base variables its axioms read, through other derived ones
-std::vector<std::vector<sas::VarId>> derived_bases(const sas::Task & t)
-{
-  std::vector<std::vector<sas::VarId>> direct(t.variables.size());
-  for (const auto & ax : t.axioms) {
-    auto & d = direct[ax.head.var];
-    for (const auto & f : ax.body.facts) {
-      d.push_back(f.var);
-    }
-    for (const auto & f : ax.body.not_facts) {
-      d.push_back(f.var);
-    }
-  }
-  std::vector<std::vector<sas::VarId>> out(t.variables.size());
-  for (sas::VarId v = 0; v < t.variables.size(); ++v) {
-    if (direct[v].empty()) {
-      continue;
-    }
-    std::set<sas::VarId> seen;
-    std::vector<sas::VarId> stack = direct[v];
-    while (!stack.empty()) {
-      auto x = stack.back();
-      stack.pop_back();
-      if (!seen.insert(x).second) {
-        continue;
-      }
-      stack.insert(stack.end(), direct[x].begin(), direct[x].end());
-    }
-    out[v].assign(seen.begin(), seen.end());
-  }
-  return out;
-}
-
-}  // namespace
 
 std::optional<Plan> schedule(
   const sas::Task & original, const Compressed & compressed, state::StateSpace & space,

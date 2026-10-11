@@ -357,13 +357,6 @@ TEST(PlannerApiTest, UnsupportedFeaturesAreReported)
   SolveResult r = Planner().solve(p, quick());
   EXPECT_EQ(r.status, Status::Unsupported);
   EXPECT_TRUE(has_code(r.diagnostics, "unsupported."));
-
-  Problem classic = problem(kRobots, kRobotsProblem);
-  SolveOptions m3 = quick();
-  m3.engine = Engine::M3;
-  SolveResult e = Planner().solve(classic, m3);
-  EXPECT_EQ(e.status, Status::Unsupported);
-  EXPECT_TRUE(has_code(e.diagnostics, "unsupported.engine"));
 }
 
 // --- Temporal planning (engine M2) -----------------------------------------------------------
@@ -424,7 +417,7 @@ TEST(PlannerApiTest, EnginesAndDurativeActions)
   EXPECT_EQ(Planner().solve(p, m2).status, Status::Solved);
 }
 
-TEST(PlannerApiTest, RequiredConcurrencyIsNotPlannedYet)
+TEST(PlannerApiTest, RequiredConcurrencyWithEngineM3)
 {
   // The fuse can only be mended while the match burns
   const char * cellar =
@@ -442,8 +435,16 @@ TEST(PlannerApiTest, RequiredConcurrencyIsNotPlannedYet)
       "(define (problem p) (:domain cellar) (:objects m1 - match f1 - fuse)"
       " (:init (unused m1) (handfree)) (:goal (mended f1)))");
   SolveResult r = Planner().solve(p, quick());
-  EXPECT_EQ(r.status, Status::Unsupported);
-  EXPECT_TRUE(has_code(r.diagnostics, "unsupported.required_concurrency"));
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+  // Mending happens while the match burns
+  ASSERT_EQ(r.plan->steps.size(), 2u);
+  const auto & light = r.plan->steps[0];
+  const auto & mend = r.plan->steps[1];
+  EXPECT_EQ(light.action(), "(light-match m1)");
+  EXPECT_EQ(mend.action(), "(mend f1 m1)");
+  EXPECT_GT(mend.time, light.time);
+  EXPECT_LT(mend.time + mend.duration, light.time + light.duration);
   // Forcing M2: no plan, and that proves nothing
   SolveOptions m2 = quick();
   m2.engine = Engine::M2;
@@ -451,6 +452,31 @@ TEST(PlannerApiTest, RequiredConcurrencyIsNotPlannedYet)
   EXPECT_EQ(f.status, Status::Unsupported);
   EXPECT_TRUE(has_code(f.diagnostics, "orchestrator.forced_m2"));
   EXPECT_TRUE(has_code(f.diagnostics, "unsupported.m2_incomplete"));
+}
+
+TEST(PlannerApiTest, TimedInitialLiteralsWithEngineM3)
+{
+  const char * domain =
+    "(define (domain w) (:requirements :durative-actions :timed-initial-literals)"
+    " (:predicates (open) (done))"
+    " (:durative-action work :parameters () :duration (= ?duration 4)"
+    "  :condition (over all (open)) :effect (at end (done))))";
+  // Open from 3 to 10: work starts when it opens
+  Problem p = problem(domain,
+      "(define (problem x) (:domain w) (:init (at 3 (open)) (at 10 (not (open))))"
+      " (:goal (done)))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_EQ(r.plan->steps.size(), 1u);
+  EXPECT_NEAR(r.plan->steps[0].time, 3.001, 1e-9);
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+  // Open from 3 to 6: no room for 4
+  Problem q = problem(domain,
+      "(define (problem x) (:domain w) (:init (at 3 (open)) (at 6 (not (open))))"
+      " (:goal (done)))");
+  SolveResult n = Planner().solve(q, quick());
+  EXPECT_EQ(n.status, Status::Unsolvable);
+  EXPECT_TRUE(has_code(n.diagnostics, "orchestrator.m3_exhausted"));
 }
 
 TEST(PlannerApiTest, TemporallySimpleIpcDomains)

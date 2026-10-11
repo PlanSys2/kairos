@@ -497,7 +497,7 @@ private:
     for (uint32_t op : ops_) {
       auto next = ctx_.space.successor(s, op);
       ++ctx_.stats.generated;
-      if (next) {
+      if (next && (!ctx_.accept || ctx_.accept(s, op, *next))) {
         out.emplace_back(*next, op);
       }
     }
@@ -661,7 +661,7 @@ private:
         Entry e = open_->pop();
         auto next = ctx_.space.successor(e.state, e.action);
         ++ctx_.stats.generated;
-        if (!next) {
+        if (!next || (ctx_.accept && !ctx_.accept(e.state, e.action, *next))) {
           continue;
         }
         double g2 = space_[e.state].g + ctx_.costs[e.action];
@@ -733,7 +733,9 @@ private:
         for (uint32_t op : ops) {
           auto next = ctx_.space.successor(t, op);
           ++ctx_.stats.generated;
-          if (!next || !seen.insert(*next).second) {
+          if (!next || (ctx_.accept && !ctx_.accept(t, op, *next)) ||
+            !seen.insert(*next).second)
+          {
             continue;
           }
           double g2 = space_[t].g + ctx_.costs[op];

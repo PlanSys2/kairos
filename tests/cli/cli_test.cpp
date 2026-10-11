@@ -379,7 +379,9 @@ TEST_F(CliTest, UnsupportedExitsThirteen)
   Outcome r = run("'" + path("c.pddl") + "' '" + path("cp.pddl") + "'");
   EXPECT_EQ(r.code, 13);
   EXPECT_TRUE(contains(r.err, "unsupported"));
-  EXPECT_EQ(run(solve_args() + " --engine m3").code, 13);
+  write("t.pddl", kTimed);
+  write("tp.pddl", kTimedProblem);
+  EXPECT_EQ(run("'" + path("t.pddl") + "' '" + path("tp.pddl") + "' --engine m1").code, 13);
 }
 
 TEST_F(CliTest, InvalidInputExitsTwo)
