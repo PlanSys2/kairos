@@ -162,8 +162,7 @@ export AMENT_PREFIX_PATH=~/kairos_popf:$AMENT_PREFIX_PATH
 ros2 launch plansys2_bt_example plansys2_bt_example_launch.py    # planned by Kairos
 ```
 
-`tools/plansys2/bt_example_e2e.sh <plansys2_ws> <kairos>` runs `plansys2_bt_example` that way
-from start to end (navigation simulated) and checks that the executor finishes the plan.
+`plansys2_bt_example` runs that way from start to end, with the navigation simulated.
 
 ## Checking PDDL
 
@@ -291,6 +290,7 @@ src/api/          implementation of the public API
 tests/            one directory per module, plus an install test (find_package)
 tools/lint/       cpplint and uncrustify configuration
 tools/fetch_corpus.sh  downloads the public PDDL benchmark collections used by corpus tests
+tools/plansys2/   popf_overlay.sh: Kairos behind PlanSys2's POPF plugin
 cmake/            compiler options, lint tests, package config
 fuzz/             fuzz targets and seed corpus (also replayed as tests)
 docs/             documentation and images

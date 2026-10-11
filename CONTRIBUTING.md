@@ -101,8 +101,9 @@ For a bug, include:
 - Changes to the public API (`include/kairos/`) keep it free of internal types. A change to a
   public struct changes the ABI: bump the minor version while Kairos is 0.x, in
   `CMakeLists.txt`, `package.xml` and `pixi.toml` (CMake checks that the three agree).
-- Planning changes that may affect coverage or speed are measured with `tools/coverage.py`
-  against the previous version; say what changed in the pull request.
+- Planning changes that may affect coverage or speed are measured against the previous version
+  (coverage, time of the first plan, plan quality) on the IPC temporal and numeric suites of the
+  corpus (`tools/fetch_corpus.sh`); say what changed in the pull request.
 
 ### Building and testing
 
