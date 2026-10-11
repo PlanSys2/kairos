@@ -15,6 +15,7 @@
 kairos_add_module(kairos_heuristics
   SOURCES
     heuristic.cpp
+    landmarks.cpp
     relaxed.cpp
   DEPENDS
     kairos_state)

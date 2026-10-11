@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "heuristics/landmarks.hpp"
 #include "heuristics/relaxed.hpp"
 #include "state/eval.hpp"
 
@@ -195,7 +196,8 @@ bool metric_costs_apply(const sas::Task & task)
 }
 
 std::unique_ptr<Heuristic> make_heuristic(
-  const std::string & name, const sas::Task & task, const std::vector<double> & costs)
+  const std::string & name, const sas::Task & task, const std::vector<double> & costs,
+  Budget * budget)
 {
   if (name == "blind") {
     return std::make_unique<Blind>(task, costs);
@@ -211,6 +213,9 @@ std::unique_ptr<Heuristic> make_heuristic(
   }
   if (name == "ff") {
     return std::make_unique<Relaxed>(task, costs, Relaxed::Kind::FF);
+  }
+  if (name == "lmcount") {
+    return make_landmark_count(task, costs, budget);
   }
   return nullptr;
 }

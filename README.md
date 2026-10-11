@@ -36,7 +36,8 @@ organization and will become a planner for PlanSys2, but it does not depend on R
 > eager greedy search, weighted A*, enforced hill-climbing and a LAMA-style anytime driver.
 > **Kairos plans** problems without durative actions (STRIPS, ADL, derived predicates, numeric
 > fluents, action costs), as a library and as the `kairos` executable, validating every plan
-> before handing it over. Temporal planning comes next.
+> before handing it over. The search combines the FF heuristic, LAMA-style landmarks and, on
+> numeric tasks, novelty. Temporal planning comes next.
 
 ## Why another planner?
 
@@ -118,6 +119,7 @@ $ kairos domain.pddl problem.pddl
 kairos domain.pddl problem.pddl --timeout 60 --output plan    # plan.1, plan.2... as they improve
 kairos domain.pddl problem.pddl --format popf                  # for the PlanSys2 POPF plugin
 kairos domain.pddl problem.pddl -v --debug=search,ground       # progress and statistics on stderr
+kairos domain.pddl problem.pddl --search lama                  # a search preset (default: auto)
 kairos check domain.pddl problem.pddl
 kairos validate domain.pddl problem.pddl plan.txt
 ```

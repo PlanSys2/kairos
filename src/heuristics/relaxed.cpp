@@ -311,7 +311,7 @@ bool RelaxedGraph::pop(double & cost, uint32_t & node)
 
 void RelaxedGraph::relax(uint32_t node, double cost, uint32_t supporter, uint32_t repeat)
 {
-  if (cost < cost_[node]) {
+  if (cost < cost_[node] && node != blocked_) {
     cost_[node] = cost;
     supporter_[node] = supporter;
     repeat_[node] = repeat;
@@ -369,6 +369,18 @@ void RelaxedGraph::expand(uint32_t n, double c)
 double RelaxedGraph::run(const EvalContext & ctx, Mode mode)
 {
   mode_ = mode;
+  explore(ctx, true);
+  return cost_[goal_];
+}
+
+void RelaxedGraph::run_all(const EvalContext & ctx)
+{
+  mode_ = Mode::Max;
+  explore(ctx, false);
+}
+
+void RelaxedGraph::explore(const EvalContext & ctx, bool stop_at_goal)
+{
   ctx_ = &ctx;
   cost_.assign(nodes_, kInfinity);
   op_cost_.assign(ops_.size(), 0.0);
@@ -390,7 +402,7 @@ double RelaxedGraph::run(const EvalContext & ctx, Mode mode)
   best_ratio_.assign(num_.size(), kInfinity);
   for (uint32_t n = 0; n < num_.size(); ++n) {
     missing_[n] = missing(num_[n], ctx);
-    if (mode == Mode::Max && missing_[n] != 0.0 && !std::isinf(missing_[n])) {
+    if (mode_ == Mode::Max && missing_[n] != 0.0 && !std::isinf(missing_[n])) {
       for (uint32_t a : num_[n].contributors) {
         double d = change(a, num_[n], ctx);
         if (state_dependent(a, num_[n])) {
@@ -431,12 +443,33 @@ double RelaxedGraph::run(const EvalContext & ctx, Mode mode)
     if (c > cost_[n]) {
       continue;
     }
-    if (n == goal_) {
+    if (n == goal_ && stop_at_goal) {
       break;
     }
     expand(n, c);
   }
-  return cost_[goal_];
+}
+
+std::optional<std::pair<sas::VarId, uint32_t>> RelaxedGraph::fact_of(uint32_t node) const
+{
+  if (fact_offset_.empty() || node >= fact_offset_.back() + task_.variables.back().size()) {
+    return std::nullopt;
+  }
+  auto it = std::upper_bound(fact_offset_.begin(), fact_offset_.end(), node);
+  auto var = static_cast<sas::VarId>(it - fact_offset_.begin() - 1);
+  return std::make_pair(var, node - fact_offset_[var]);
+}
+
+std::vector<uint8_t> RelaxedGraph::reachable(const EvalContext & ctx, uint32_t blocked)
+{
+  blocked_ = blocked;
+  run_all(ctx);
+  blocked_ = kNone;
+  std::vector<uint8_t> out(nodes_);
+  for (uint32_t n = 0; n < nodes_; ++n) {
+    out[n] = cost_[n] < kInfinity ? 1 : 0;
+  }
+  return out;
 }
 
 double RelaxedGraph::relaxed_plan(std::vector<uint32_t> * preferred)

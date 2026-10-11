@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <optional>
 #include <queue>
 #include <utility>
 #include <vector>
@@ -60,7 +61,8 @@ public:
   /// @brief Every numeric effect adds a constant: the numeric part of hmax is admissible.
   bool simple_numeric() const {return simple_numeric_;}
 
-private:
+  // --- The graph, read-only (for landmarks) ---
+
   static constexpr uint32_t kNone = UINT32_MAX;
 
   struct Op
@@ -70,6 +72,24 @@ private:
     double base;
     uint32_t action;  // the action whose effect it is, kNone otherwise
   };
+
+  uint32_t nodes() const {return nodes_;}
+  uint32_t fact_node(sas::VarId var, uint32_t value) const {return fact_offset_[var] + value;}
+  /// @brief The (variable, value) of a fact node, or nullopt for other nodes.
+  std::optional<std::pair<sas::VarId, uint32_t>> fact_of(uint32_t node) const;
+  uint32_t goal_node() const {return goal_;}
+  uint32_t action_node(uint32_t action) const {return act_node_[action];}
+  /// @brief The action of an action node, or -1.
+  int32_t node_action(uint32_t node) const {return node_action_[node];}
+  const std::vector<Op> & ops() const {return ops_;}
+  /// @brief Op of an action's precondition (its effect is the action node).
+  uint32_t action_op(uint32_t action) const {return act_op_[action];}
+
+  /// @brief Relaxed reachability from the state with `blocked` never reached (kNone: none):
+  /// one byte per node, 1 if reachable.
+  std::vector<uint8_t> reachable(const EvalContext & ctx, uint32_t blocked);
+
+private:
   struct NumNode
   {
     sas::LinearExpr e;
@@ -94,6 +114,8 @@ private:
   uint32_t repetitions(const NumNode & n, double missing, double change) const;
   void relax(uint32_t node, double cost, uint32_t supporter, uint32_t repeat);
   void expand(uint32_t node, double cost);
+  void explore(const EvalContext & ctx, bool stop_at_goal);
+  void run_all(const EvalContext & ctx);
 
   const sas::Task & task_;
   std::vector<double> costs_;
@@ -146,6 +168,7 @@ private:
   std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> heap_;
   uint64_t seq_ = 0;
   const EvalContext * ctx_ = nullptr;
+  uint32_t blocked_ = kNone;
 };
 
 }  // namespace kairos::heuristics

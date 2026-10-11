@@ -156,6 +156,83 @@ std::vector<Diagnostic> unsupported(const sem::FeatureSet & features, Engine eng
   return out;
 }
 
+namespace
+{
+
+// The M1 search presets: first plan, then the improving restarts
+std::optional<search::AnytimeOptions> preset(const std::string & name)
+{
+  search::AnytimeOptions ao;
+  auto & f = ao.first;
+  if (name == "ff") {
+    f.heuristic = "ff";
+    ao.improve_heuristic = "ff";
+  } else if (name == "lama") {
+    f.heuristic = "ff,lmcount";
+    ao.improve_heuristic = "ff,lmcount";
+  } else if (name == "eager-lama") {
+    f.kind = search::EngineOptions::Kind::EagerGreedy;
+    f.heuristic = "ff,lmcount";
+    ao.improve_heuristic = "ff,lmcount";
+  } else if (name == "novelty") {
+    f.kind = search::EngineOptions::Kind::EagerGreedy;
+    f.heuristic = "ff";
+    f.novelty = 2;
+    ao.improve_heuristic = "ff";
+  } else if (name == "lama-novelty") {
+    f.kind = search::EngineOptions::Kind::EagerGreedy;
+    f.heuristic = "ff,lmcount";
+    f.novelty = 2;
+    ao.improve_heuristic = "ff,lmcount";
+  } else if (name == "ehc") {
+    f.kind = search::EngineOptions::Kind::EnforcedHillClimbing;
+    f.heuristic = "ff";
+    ao.improve_heuristic = "ff";
+  } else {
+    return std::nullopt;
+  }
+  return ao;
+}
+
+// Numeric conditions anywhere: what novelty helps with (measured on IPC numeric and classical
+// suites, diseño.md 8.3)
+bool has_numeric_conditions(const sas::Task & task)
+{
+  auto any = [](const sas::Condition & c) {return !c.numeric.empty();};
+  if (any(task.goal)) {
+    return true;
+  }
+  for (const auto & a : task.actions) {
+    if (any(a.pre)) {
+      return true;
+    }
+    for (const auto & e : a.effects) {
+      if (any(e.condition)) {
+        return true;
+      }
+    }
+  }
+  for (const auto & ax : task.axioms) {
+    if (any(ax.body)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// "auto": LAMA (hFF and landmarks, lazy) on classical tasks, with novelty on numeric ones
+std::string resolve_auto(const sas::Task & task)
+{
+  return has_numeric_conditions(task) ? "lama-novelty" : "lama";
+}
+
+}  // namespace
+
+std::vector<std::string> presets()
+{
+  return {"ff", "lama", "eager-lama", "novelty", "lama-novelty", "ehc"};
+}
+
 SolveResult run(
   const Input & in, const SearchOptions & options, std::stop_token stop,
   const PlanCallback & on_plan)
@@ -179,6 +256,14 @@ SolveResult run(
     res.diagnostics = unsupported(in.problem_model.features, options.engine);
     if (!res.diagnostics.empty()) {
       return finish(Status::Unsupported, StopReason::Exhausted);
+    }
+    // "auto" is resolved once the SAS+ task is known
+    auto configured = preset(options.search == "auto" ? "lama" : options.search);
+    if (!configured) {
+      res.diagnostics.push_back(Diagnostic::error(
+          "orchestrator.unknown_search", "unknown search configuration '" + options.search +
+          "'"));
+      return finish(Status::InvalidInput, StopReason::Exhausted);
     }
     if (options.threads > 1) {
       res.diagnostics.push_back(Diagnostic::note(
@@ -342,7 +427,12 @@ SolveResult run(
     search::SearchContext ctx(sas_task, registry, space, costs, sink, &budget);
     ctx.logger = log;
     ctx.prune_with_bound = action_costs || length_metric;
-    search::AnytimeOptions ao;
+    if (options.search == "auto") {
+      std::string chosen = resolve_auto(sas_task);
+      configured = preset(chosen);
+      log.info(LogChannel::Orchestrator, "search: {} (auto)", chosen);
+    }
+    search::AnytimeOptions ao = *configured;
     ao.improve = options.anytime;
     auto outcome = search::anytime(ctx, ao);
     if (watchdog.joinable()) {

@@ -75,6 +75,9 @@ enum class Engine : uint8_t
   M3,    // temporal with snap actions (step 15)
 };
 
+/// @brief Names of the M1 search presets accepted by SolveOptions::search, besides "auto".
+KAIROS_API std::vector<std::string> search_presets();
+
 KAIROS_API std::string_view to_string(Status status);
 KAIROS_API std::string_view to_string(StopReason reason);
 
@@ -167,6 +170,8 @@ struct SolveOptions
   size_t memory_limit_mb = 0;  // 0: automatic, half of what is available (RAM, cgroup, rlimit)
   bool anytime = true;         // keep improving until the timeout or a proof of optimality
   Engine engine = Engine::Auto;
+  /// @brief Search configuration of M1: "auto", or a preset (see search_presets()).
+  std::string search = "auto";
   unsigned threads = 1;
   double epsilon = 0.001;
   uint64_t seed = 0;

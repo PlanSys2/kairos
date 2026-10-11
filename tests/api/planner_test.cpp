@@ -645,6 +645,62 @@ TEST(PlannerApiTest, UnsolvableInTheBackground)
   EXPECT_FALSE(s.best());
 }
 
+TEST(PlannerApiTest, EverySearchPresetSolves)
+{
+  Problem blocks = problem(kBlocks, kBlocksProblem);
+  Problem routes = problem(kRoutes, kRoutesProblem);
+  auto names = search_presets();
+  EXPECT_GE(names.size(), 5u);
+  names.push_back("auto");
+  for (const auto & name : names) {
+    for (const Problem * p : {&blocks, &routes}) {
+      SolveOptions o = quick();
+      o.search = name;
+      SolveResult r = Planner().solve(*p, o);
+      ASSERT_EQ(r.status, Status::Solved) << name;
+      EXPECT_TRUE(validate(*p, *r.plan).valid()) << name;
+      // Anytime still ends with a proof of optimality
+      EXPECT_EQ(r.stop_reason, StopReason::ProvenOptimal) << name;
+    }
+  }
+}
+
+// The search "auto" picked, from the log
+std::string auto_choice(const Problem & p)
+{
+  std::string chosen;
+  SolveOptions o = quick();
+  o.log.callback = [&](LogLevel, LogChannel, std::string_view text) {
+      if (text.find("(auto)") != std::string_view::npos) {
+        chosen = std::string(text);
+      }
+    };
+  EXPECT_EQ(Planner().solve(p, o).status, Status::Solved);
+  return chosen;
+}
+
+TEST(PlannerApiTest, AutoSearchFollowsTheTask)
+{
+  // Classical: LAMA; numeric conditions: LAMA with novelty
+  EXPECT_EQ(auto_choice(problem(kBlocks, kBlocksProblem)), "search: lama (auto)");
+  EXPECT_EQ(auto_choice(problem(kRoutes, kRoutesProblem)), "search: lama (auto)");  // costs only
+  Problem numeric = problem(
+    "(define (domain n) (:requirements :strips :fluents) (:predicates (g))"
+    " (:functions (x)) (:action inc :parameters () :precondition () :effect (increase (x) 1))"
+    " (:action fin :parameters () :precondition (>= (x) 3) :effect (g)))",
+    "(define (problem p) (:domain n) (:init (= (x) 0)) (:goal (g)))");
+  EXPECT_EQ(auto_choice(numeric), "search: lama-novelty (auto)");
+}
+
+TEST(PlannerApiTest, UnknownSearchIsInvalidInput)
+{
+  SolveOptions o = quick();
+  o.search = "bogus";
+  SolveResult r = Planner().solve(problem(kRobots, kRobotsProblem), o);
+  EXPECT_EQ(r.status, Status::InvalidInput);
+  EXPECT_TRUE(has_code(r.diagnostics, "orchestrator.unknown_search"));
+}
+
 TEST(PlannerApiTest, StatusNames)
 {
   EXPECT_EQ(to_string(Status::Solved), "solved");

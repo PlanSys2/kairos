@@ -175,6 +175,73 @@ TEST(SearchTest, EveryEngineFindsValidPlans)
   }
 }
 
+TEST(SearchTest, SeveralHeuristicsAndNovelty)
+{
+  using K = EngineOptions::Kind;
+  for (K kind : {K::LazyGreedy, K::EagerGreedy, K::WeightedAStar, K::EnforcedHillClimbing}) {
+    for (const char * h : {"lmcount", "ff,lmcount", "lmcount,ff", "ff,hadd,lmcount"}) {
+      for (int novelty : {0, 1, 2}) {
+        auto r = setup(kBlocks, kBlocksProblem);
+        EngineOptions o;
+        o.kind = kind;
+        o.heuristic = h;
+        o.novelty = novelty;
+        o.weight = 3.0;
+        Outcome out = run_engine(*r->ctx, o);
+        if (kind == K::EnforcedHillClimbing && out == Outcome::Failed) {
+          continue;
+        }
+        ASSERT_EQ(out, Outcome::Solved) << static_cast<int>(kind) << " " << h << " " << novelty;
+        EXPECT_TRUE(r->valid(r->sink->best()->actions));
+      }
+    }
+  }
+}
+
+TEST(SearchTest, UnknownHeuristicInAListFails)
+{
+  auto r = setup(kBlocks, kBlocksProblem);
+  EngineOptions o;
+  o.heuristic = "ff,bogus";
+  EXPECT_EQ(run_engine(*r->ctx, o), Outcome::Failed);
+  o.heuristic = "";
+  EXPECT_EQ(run_engine(*r->ctx, o), Outcome::Failed);
+}
+
+TEST(SearchTest, NoveltyAndLandmarksKeepSearchComplete)
+{
+  // Novelty orders, never prunes: an unsolvable task is still proved unsolvable
+  const std::string domain =
+    "(define (domain d) (:predicates (p) (q) (r) (s))"
+    " (:action mp :parameters () :precondition (r) :effect (and (p) (not (q))))"
+    " (:action mq :parameters () :precondition (r) :effect (and (q) (not (p))))"
+    " (:action ms :parameters () :precondition (r) :effect (s)))";
+  const std::string problem =
+    "(define (problem pr) (:domain d) (:init (r)) (:goal (and (p) (q) (s))))";
+  using K = EngineOptions::Kind;
+  for (K kind : {K::LazyGreedy, K::EagerGreedy, K::WeightedAStar}) {
+    auto r = setup(domain, problem);
+    EngineOptions o;
+    o.kind = kind;
+    o.heuristic = "ff,lmcount";
+    o.novelty = 2;
+    EXPECT_EQ(run_engine(*r->ctx, o), Outcome::Unsolvable) << static_cast<int>(kind);
+  }
+}
+
+TEST(SearchTest, AnytimeWithLandmarksProvesOptimality)
+{
+  for (const char * h : {"ff,lmcount", "lmcount"}) {
+    auto r = setup(kBlocks, kBlocksProblem);
+    r->ctx->prune_with_bound = true;
+    AnytimeOptions ao;
+    ao.first.heuristic = h;
+    ao.improve_heuristic = h;
+    EXPECT_EQ(anytime(*r->ctx, ao), AnytimeResult::ProvenOptimal) << h;
+    EXPECT_EQ(r->sink->best()->cost, optimal(*r)) << h;
+  }
+}
+
 TEST(SearchTest, WeightOneWithAnAdmissibleHeuristicIsOptimal)
 {
   auto r = setup(kBlocks, kBlocksProblem);

@@ -15,6 +15,7 @@
 kairos_add_test(heuristics_tests
   SOURCES
     heuristics_test.cpp
+    landmarks_test.cpp
   DEPENDS
     kairos_heuristics)
 target_compile_definitions(heuristics_tests PRIVATE

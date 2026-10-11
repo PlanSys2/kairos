@@ -179,6 +179,17 @@ TEST_F(CliTest, SolvePrintsOnlyThePlanOnStdout)
   EXPECT_EQ(run("solve " + solve_args()).out, r.out);
 }
 
+TEST_F(CliTest, SearchPresets)
+{
+  for (const char * name : {"auto", "ff", "lama", "eager-lama", "novelty", "lama-novelty",
+      "ehc"})
+  {
+    Outcome r = run(solve_args() + " --search " + name);
+    EXPECT_EQ(r.code, 0) << name << ": " << r.err;
+    EXPECT_EQ(r.out, "; cost = 2\n(move r1 kitchen corridor)\n(move r1 corridor hall)\n") << name;
+  }
+}
+
 TEST_F(CliTest, ThePrintedPlanValidates)
 {
   Outcome r = run(solve_args() + " --no-anytime --output '" + path("plan.txt") + "'");
@@ -361,6 +372,7 @@ TEST_F(CliTest, InvalidInputExitsTwo)
   EXPECT_EQ(run(solve_args() + " --no-anytime=1").code, 2);    // a flag with a value
   EXPECT_EQ(run(solve_args() + " --format xml").code, 2);
   EXPECT_EQ(run(solve_args() + " --engine m9").code, 2);
+  EXPECT_EQ(run(solve_args() + " --search bogus").code, 2);
   EXPECT_EQ(run("'" + path("domain.pddl") + "'").code, 2);     // one file
   EXPECT_EQ(run("").code, 2);
 }

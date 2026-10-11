@@ -113,11 +113,17 @@ struct EngineOptions
   enum class Kind : uint8_t {LazyGreedy, EagerGreedy, WeightedAStar, EnforcedHillClimbing};
 
   Kind kind = Kind::LazyGreedy;
+  /// @brief One heuristic, or several separated by commas ("ff,lmcount"): each gets its own
+  /// queues in the alternation, and preferred operators are the union.
   std::string heuristic = "ff";
   double weight = 1.0;          // WA*: f = g + w h
   bool preferred = true;        // preferred-operator queue (lazy, eager) or helpful actions (EHC)
   bool reopen = true;           // eager: reopen closed states reached more cheaply
   int boost = 1000;             // preferred queue boost on progress, as FD
+  /// @brief Eager engines: a further queue ordered by novelty (1 or 2: the width tracked)
+  /// within the partition of the heuristic values, then by the first heuristic; 0: none.
+  int novelty = 0;
+  size_t novelty_memory = size_t{64} << 20;  // pairs stop being tracked past this
 };
 
 /// @brief Runs one engine until a plan, exhaustion, failure or the budget.

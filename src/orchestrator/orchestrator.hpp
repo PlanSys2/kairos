@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <stop_token>  // NOLINT(build/include_order): cpplint does not know this header
 #include <vector>
 
@@ -47,6 +48,9 @@ using PlanCallback = std::function<void (const Plan & plan, uint32_t index,
 /// @brief Why Kairos cannot plan with these features yet (empty if it can). Shared with
 /// check_*() for CheckReport::plannable.
 std::vector<Diagnostic> unsupported(const sem::FeatureSet & features, Engine engine = Engine::Auto);
+
+/// @brief Names of the M1 search presets.
+std::vector<std::string> presets();
 
 /**
  * @brief Runs the whole pipeline: normalization, grounding, SAS+, search (M1), validating every

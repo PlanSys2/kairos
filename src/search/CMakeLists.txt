@@ -14,6 +14,7 @@
 
 kairos_add_module(kairos_search
   SOURCES
+    novelty.cpp
     search.cpp
   DEPENDS
     kairos_heuristics

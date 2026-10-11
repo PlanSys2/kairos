@@ -194,6 +194,11 @@ ValidationReport validate(
   return val::validate(d.ast, d.model, p.ast, p.model, plan, options);
 }
 
+std::vector<std::string> search_presets()
+{
+  return orch::presets();
+}
+
 std::string_view to_string(Status status)
 {
   switch (status) {

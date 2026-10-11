@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "core/budget.hpp"
 #include "sas/task.hpp"
 #include "state/registry.hpp"
 
@@ -56,6 +57,15 @@ public:
   /// @brief Never above the cost of an optimal plan (with the costs it was built with).
   virtual bool admissible() const {return false;}
   virtual std::string name() const = 0;
+
+  // Path-dependent heuristics (landmarks) learn from the transitions the search takes
+  virtual bool path_dependent() const {return false;}
+  /// @brief The initial state of a search, before evaluating it.
+  virtual void initial(const EvalContext & /*state*/) {}
+  /// @brief The search reached `child` from `parent` with `action` (once per transition,
+  /// also for states seen before), before evaluating it.
+  virtual void transition(
+    state::StateId /*parent*/, uint32_t /*action*/, const EvalContext & /*child*/) {}
 };
 
 /**
@@ -73,7 +83,7 @@ std::vector<double> action_costs(const sas::Task & task, CostModel model);
 bool metric_costs_apply(const sas::Task & task);
 
 /**
- * @brief Heuristics by name: "blind", "goalcount", "hmax", "hadd", "ff".
+ * @brief Heuristics by name: "blind", "goalcount", "hmax", "hadd", "ff", "lmcount".
  *
  * The relaxed ones work on the delete relaxation of the SAS+ task with numeric subgoaling:
  * an unsatisfied linear condition is reached by an action that moves it the right way, repeated
@@ -81,7 +91,8 @@ bool metric_costs_apply(const sas::Task & task);
  * (optimistic). Returns nullptr for an unknown name.
  */
 std::unique_ptr<Heuristic> make_heuristic(
-  const std::string & name, const sas::Task & task, const std::vector<double> & costs);
+  const std::string & name, const sas::Task & task, const std::vector<double> & costs,
+  Budget * budget = nullptr);
 
 }  // namespace kairos::heuristics
 

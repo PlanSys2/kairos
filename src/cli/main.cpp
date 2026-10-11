@@ -63,6 +63,8 @@ const char * kUsage =
   "  --timeout S             seconds (default 30)\n"
   "  --anytime | --no-anytime  keep improving after the first plan (default: anytime)\n"
   "  --engine auto|m1|m2|m3\n"
+  "  --search NAME           M1 search: auto (default), ff, lama, eager-lama, novelty,\n"
+  "                          lama-novelty, ehc\n"
   "  --format ipc|popf|json  plan format (default ipc; popf on stdout: only the best plan)\n"
   "  --output FILE           write plans to FILE (anytime: FILE.1, FILE.2, ...)\n"
   "  --memory MB             memory limit (default: half of what is available)\n"
@@ -123,7 +125,7 @@ struct Args
 // Options that take a value after a space
 const std::vector<std::string> kWithValue = {
   "--timeout", "--engine", "--format", "--output", "--memory", "--threads", "--epsilon",
-  "--seed", "--target-cost", "--no-improvement", "--dump-dir", "--problem"};
+  "--seed", "--target-cost", "--no-improvement", "--dump-dir", "--problem", "--search"};
 // Options with an optional "=value", and plain flags
 const std::vector<std::string> kOptionalValue = {"--debug", "--dump"};
 const std::vector<std::string> kFlags = {"--anytime", "--no-anytime"};
@@ -334,6 +336,15 @@ int solve_command(const Args & a)
     } else {
       o.engine = e->second;
     }
+  }
+  if (auto it = a.options.find("--search"); it != a.options.end()) {
+    auto names = kairos::search_presets();
+    if (it->second != "auto" &&
+      std::find(names.begin(), names.end(), it->second) == names.end())
+    {
+      error = "unknown search " + it->second;
+    }
+    o.search = it->second;
   }
   PlanFormat format = PlanFormat::Ipc;
   if (auto it = a.options.find("--format"); it != a.options.end()) {
