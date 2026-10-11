@@ -282,10 +282,10 @@ def run_popf(popf, kairos, task, timeout, memory):
     return row
 
 
-def run_one(kairos, task, timeout, memory, extra):
+def run_one(kairos, task, timeout, memory, extra, anytime=False):
     label, domain, problem = task
-    cmd = [kairos, domain, problem, '--no-anytime', '--timeout', str(timeout),
-           '--memory', str(memory), '-v'] + extra
+    cmd = [kairos, domain, problem] + ([] if anytime else ['--no-anytime']) + [
+        '--timeout', str(timeout), '--memory', str(memory), '-v'] + extra
     t0 = time.perf_counter()
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout + 30)
@@ -293,13 +293,16 @@ def run_one(kairos, task, timeout, memory, extra):
     except subprocess.TimeoutExpired:
         code, err, out = -1, '', ''
     wall = time.perf_counter() - t0
+    first = re.search(r'first plan ([\d.]+) ms', err)
+    if anytime and first and float(first.group(1)) >= 0:
+        wall = float(first.group(1)) / 1000.0  # agile: when the first plan came
     expanded = re.search(r'(\d+) expanded', err)
     status = {0: 'solved', 10: 'unsolvable', 11: 'timeout', 12: 'memory', 13: 'unsupported',
               2: 'invalid', 1: 'error', -1: 'hung'}.get(code, 'error')
     steps = len([ln for ln in out.splitlines() if ln.startswith('(')]) if code == 0 else ''
-    cost = re.search(r'; makespan = ([\d.e+-]+)', out) or re.search(r'; cost = ([\d.e+-]+)', out)
+    costs = re.findall(r'; makespan = ([\d.e+-]+)', out) or re.findall(r'; cost = ([\d.e+-]+)', out)
     return {'domain': label, 'problem': os.path.basename(problem), 'status': status,
-            'time': '%.3f' % wall, 'steps': steps, 'cost': cost.group(1) if cost else '',
+            'time': '%.3f' % wall, 'steps': steps, 'cost': costs[-1] if costs else '',
             'expanded': expanded.group(1) if expanded else ''}
 
 
@@ -339,8 +342,8 @@ def cmd_run(args, extra):
             futures = [pool.submit(run_popf, popf, kairos, t, args.timeout, args.memory)
                        for t in tasks]
         else:
-            futures = [pool.submit(run_one, kairos, t, args.timeout, args.memory, extra)
-                       for t in tasks]
+            futures = [pool.submit(run_one, kairos, t, args.timeout, args.memory, extra,
+                                   args.anytime) for t in tasks]
         for i, f in enumerate(concurrent.futures.as_completed(futures)):
             rows.append(f.result())
             if (i + 1) % 20 == 0:
@@ -364,9 +367,18 @@ def cmd_compare(args):
     for k in keys:
         by.setdefault(k[0], []).append(k)
     t = args.timeout
-    print('| domain | solved base | solved new | agile base | agile new | expanded (both solved) |')
-    print('|---|---|---|---|---|---|')
-    tot = [0, 0, 0.0, 0.0]
+    def quality(k, mine, other):
+        # IPC quality: the best cost of the two over this one's (minimizing; 0 if unsolved)
+        if mine[k]['status'] != 'solved' or not mine[k]['cost']:
+            return 0.0
+        costs = [float(r[k]['cost']) for r in (mine, other)
+                 if r[k]['status'] == 'solved' and r[k]['cost']]
+        c = float(mine[k]['cost'])
+        return 1.0 if c <= 0 else min(costs) / c
+    print('| domain | solved base | solved new | agile base | agile new | quality base | '
+          'quality new | expanded (both solved) |')
+    print('|---|---|---|---|---|---|---|---|')
+    tot = [0, 0, 0.0, 0.0, 0.0, 0.0]
     for d in sorted(by):
         ks = by[d]
         sa = sum(1 for k in ks if a[k]['status'] == 'solved')
@@ -378,10 +390,14 @@ def cmd_compare(args):
         ea = sum(int(a[k]['expanded']) for k in both)
         eb = sum(int(b[k]['expanded']) for k in both)
         ratio = '%.2fx' % (eb / ea) if ea else '-'
-        tot = [tot[0] + sa, tot[1] + sb, tot[2] + aa, tot[3] + ab]
+        qa = sum(quality(k, a, b) for k in ks)
+        qb = sum(quality(k, b, a) for k in ks)
+        tot = [tot[0] + sa, tot[1] + sb, tot[2] + aa, tot[3] + ab, tot[4] + qa, tot[5] + qb]
         mark = ' (+)' if sb > sa else ' (-)' if sb < sa else ''
-        print('| %s | %d | %d%s | %.2f | %.2f | %s |' % (d, sa, sb, mark, aa, ab, ratio))
-    print('| **total** | **%d** | **%d** | **%.2f** | **%.2f** | |' % tuple(tot))
+        print('| %s | %d | %d%s | %.2f | %.2f | %.2f | %.2f | %s |' % (
+            d, sa, sb, mark, aa, ab, qa, qb, ratio))
+    print('| **total** | **%d** | **%d** | **%.2f** | **%.2f** | **%.2f** | **%.2f** | |' %
+          tuple(tot))
 
 
 def main():
@@ -396,6 +412,8 @@ def main():
     r.add_argument('kairos')
     r.add_argument('suite', choices=['b1', 'b2', 'b3', 'classical', 'quick'])
     r.add_argument('--popf', help='run this POPF binary instead (plans validated by KAIROS)')
+    r.add_argument('--anytime', action='store_true',
+                   help='let Kairos improve until the timeout (cost: the last plan)')
     r.add_argument('--out', required=True)
     r.add_argument('--timeout', type=float, default=30.0)
     r.add_argument('--memory', type=int, default=2048)

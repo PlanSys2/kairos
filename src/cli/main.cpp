@@ -478,10 +478,11 @@ int solve_command(const Args & a)
     std::fprintf(
       stderr,
       "kairos: parse %.1f ms, normalize %.1f ms, ground %.1f ms, sas %.1f ms, search %.1f ms, "
-      "total %.1f ms\n"
+      "total %.1f ms, first plan %.1f ms\n"
       "kairos: %zu atoms, %zu actions, %zu variables (%zu mutex groups), %zu states, "
       "%zu expanded, %zu evaluated, %zu plans, %.1f bytes per state, %zu MB peak\n",
-      s.parse_ms, s.normalize_ms, s.ground_ms, s.sas_ms, s.search_ms, s.total_ms, s.atoms,
+      s.parse_ms, s.normalize_ms, s.ground_ms, s.sas_ms, s.search_ms, s.total_ms,
+      s.first_plan_ms.value_or(-1.0), s.atoms,
       s.actions, s.variables, s.mutex_groups, s.states, s.expanded, s.evaluated, s.plans,
       s.bytes_per_state, s.peak_memory_bytes >> 20);
   }

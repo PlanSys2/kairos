@@ -38,10 +38,11 @@ organization and will become a planner for PlanSys2, but it does not depend on R
 > decision-tree successor generator (about 900,000 states per second), with blind, goal count,
 > hmax, hadd and FF heuristics (numeric subgoaling, preferred operators) guiding lazy and
 > eager greedy search, weighted A*, enforced hill-climbing and a LAMA-style anytime driver.
-> **Kairos plans** problems without durative actions (STRIPS, ADL, derived predicates, numeric
-> fluents, action costs), as a library and as the `kairos` executable, validating every plan
-> before handing it over. The search combines the FF heuristic, LAMA-style landmarks and, on
-> numeric tasks, novelty. Temporal planning comes next.
+> **Kairos plans** classical, numeric and temporal problems (STRIPS, ADL, derived predicates,
+> numeric fluents, action costs, durative actions, required concurrency, timed initial
+> literals), as a library and as the `kairos` executable, validating every plan before handing
+> it over. The search combines the FF heuristic, LAMA-style landmarks and novelty; temporal
+> tasks use action compression with rescheduling, or snap actions over a temporal network.
 
 ## Why another planner?
 
@@ -130,6 +131,21 @@ kairos validate domain.pddl problem.pddl plan.txt
 
 Exit codes: 0 solved, 10 unsolvable, 11 timeout, 12 out of memory, 13 unsupported, 2 invalid
 input, 1 internal error. `kairos --help` lists every option.
+
+## With PlanSys2
+
+A native PlanSys2 plugin comes later. Until then, Kairos runs behind PlanSys2's POPF plugin:
+an ament overlay with a package `popf` whose executable is Kairos printing POPF's format.
+
+```bash
+source /opt/ros/rolling/setup.bash && source <plansys2_ws>/install/setup.bash
+tools/plansys2/popf_overlay.sh ~/kairos_popf /path/to/kairos     # once
+export AMENT_PREFIX_PATH=~/kairos_popf:$AMENT_PREFIX_PATH
+ros2 launch plansys2_bt_example plansys2_bt_example_launch.py    # planned by Kairos
+```
+
+`tools/plansys2/bt_example_e2e.sh <plansys2_ws> <kairos>` runs `plansys2_bt_example` that way
+from start to end (navigation simulated) and checks that the executor finishes the plan.
 
 ## Checking PDDL
 
