@@ -228,6 +228,26 @@ double RelaxedGraph::change(uint32_t action, const NumNode & n, const EvalContex
   return total;
 }
 
+// Some change of a variable of e depends on the state: its effect in this state says nothing
+// about later states
+bool RelaxedGraph::state_dependent(uint32_t action, const NumNode & n) const
+{
+  for (const auto & eff : num_effects_[action]) {
+    bool used = std::any_of(
+      n.e.terms.begin(), n.e.terms.end(), [&](const auto & t) {return t.first == eff.var;});
+    if (!used) {
+      continue;
+    }
+    bool constant = eff.value.linear && eff.value.linear->terms.empty() &&
+      (eff.op == ast::AssignOp::Increase || eff.op == ast::AssignOp::Decrease ||
+      eff.op == ast::AssignOp::Assign);
+    if (!constant) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // How far e is from holding in this state (0 if it holds; infinity if undefined)
 double RelaxedGraph::missing(const NumNode & n, const EvalContext & ctx) const
 {
@@ -251,13 +271,98 @@ uint32_t RelaxedGraph::repetitions(const NumNode & n, double gap, double step) c
   return static_cast<uint32_t>(std::max(1.0, std::min(k, 1e9)));
 }
 
+void RelaxedGraph::push(double cost, uint32_t node)
+{
+  if (cost >= 0.0 && cost < static_cast<double>(kMaxBucket) && cost == std::floor(cost)) {
+    auto k = static_cast<size_t>(cost);
+    if (buckets_.size() <= k) {
+      buckets_.resize(k + 1);
+    }
+    buckets_[k].push_back(node);
+    ++in_buckets_;
+    bucket_ = std::min(bucket_, k);
+    return;
+  }
+  heap_.push(Entry{cost, seq_++, node});
+}
+
+bool RelaxedGraph::pop(double & cost, uint32_t & node)
+{
+  while (in_buckets_ && buckets_[bucket_].empty()) {
+    ++bucket_;
+  }
+  double b = in_buckets_ ? static_cast<double>(bucket_) : kInfinity;
+  double h = heap_.empty() ? kInfinity : heap_.top().cost;
+  if (b == kInfinity && h == kInfinity) {
+    return false;
+  }
+  if (b <= h) {
+    cost = b;
+    node = buckets_[bucket_].back();
+    buckets_[bucket_].pop_back();
+    --in_buckets_;
+  } else {
+    cost = h;
+    node = heap_.top().node;
+    heap_.pop();
+  }
+  return true;
+}
+
 void RelaxedGraph::relax(uint32_t node, double cost, uint32_t supporter, uint32_t repeat)
 {
   if (cost < cost_[node]) {
     cost_[node] = cost;
     supporter_[node] = supporter;
     repeat_[node] = repeat;
-    queue_.emplace(cost, node);
+    if (node_action_[node] >= 0) {
+      expand(node, cost);  // an action fires its effects right away, as FD's unary operators
+    } else {
+      push(cost, node);
+    }
+  }
+}
+
+void RelaxedGraph::expand(uint32_t n, double c)
+{
+  for (uint32_t o : triggers_[n]) {
+    if (mode_ == Mode::Add) {
+      op_cost_[o] += c;
+    } else {
+      op_cost_[o] = std::max(op_cost_[o], c);
+    }
+    if (--unsatisfied_[o] == 0) {
+      relax(ops_[o].effect, op_cost_[o] + ops_[o].base, o, 0);
+    }
+  }
+  int32_t a = node_action_[n];
+  if (a < 0) {
+    return;
+  }
+  // An action reached: the numeric conditions it moves the right way
+  for (uint32_t k : action_num_[static_cast<size_t>(a)]) {
+    if (missing_[k] == 0.0) {
+      continue;
+    }
+    double d = change(static_cast<uint32_t>(a), num_[k], *ctx_);
+    uint32_t times = 1;
+    if (d > 0.0) {
+      times = repetitions(num_[k], missing_[k], d);
+    } else if (!state_dependent(static_cast<uint32_t>(a), num_[k]) && !std::isinf(missing_[k])) {
+      continue;  // a constant change that does not help
+    }
+    // Otherwise the change depends on values that may grow (or the expression is undefined
+    // now): optimistic, once; never a false dead end
+    double cand;
+    if (mode_ == Mode::Add) {
+      cand = c + costs_[static_cast<size_t>(a)] * times;
+    } else {
+      // The contributor needs its precondition and itself at least once; all contributors
+      // together cover what is missing at the best cost per unit
+      double bound = std::isinf(missing_[k]) ? 0.0 : missing_[k] * best_ratio_[k];
+      cand = std::max(c + costs_[static_cast<size_t>(a)], bound);
+    }
+    relax(num_node_id_[k], cand, static_cast<uint32_t>(a), times);
   }
 }
 
@@ -271,9 +376,36 @@ double RelaxedGraph::run(const EvalContext & ctx, Mode mode)
   supporter_.assign(nodes_, kNone);
   repeat_.assign(nodes_, 0);
   initial_.assign(nodes_, 0);
-  queue_ = {};
+  for (auto & bucket : buckets_) {
+    bucket.clear();
+  }
+  bucket_ = 0;
+  in_buckets_ = 0;
+  heap_ = {};
+  seq_ = 0;
   for (uint32_t o = 0; o < ops_.size(); ++o) {
     unsatisfied_[o] = static_cast<uint32_t>(ops_[o].pre.size());
+  }
+  missing_.assign(num_.size(), 0.0);
+  best_ratio_.assign(num_.size(), kInfinity);
+  for (uint32_t n = 0; n < num_.size(); ++n) {
+    missing_[n] = missing(num_[n], ctx);
+    if (mode == Mode::Max && missing_[n] != 0.0 && !std::isinf(missing_[n])) {
+      for (uint32_t a : num_[n].contributors) {
+        double d = change(a, num_[n], ctx);
+        if (state_dependent(a, num_[n])) {
+          best_ratio_[n] = 0.0;  // no bound from what it does now
+        } else if (d > 0.0) {
+          best_ratio_[n] = std::min(best_ratio_[n], costs_[a] / d);
+        }
+      }
+    }
+  }
+  // As FD: operators without preconditions first, then the facts of the state
+  for (uint32_t o = 0; o < ops_.size(); ++o) {
+    if (ops_[o].pre.empty()) {
+      relax(ops_[o].effect, ops_[o].base, o, 0);
+    }
   }
   auto start = [&](uint32_t n) {
       initial_[n] = 1;
@@ -288,71 +420,21 @@ double RelaxedGraph::run(const EvalContext & ctx, Mode mode)
       start(neg_id_[i]);
     }
   }
-  missing_.assign(num_.size(), 0.0);
-  best_ratio_.assign(num_.size(), kInfinity);
   for (uint32_t n = 0; n < num_.size(); ++n) {
-    missing_[n] = missing(num_[n], ctx);
     if (missing_[n] == 0.0) {
       start(num_node_id_[n]);
-      continue;
-    }
-    if (mode == Mode::Max && !std::isinf(missing_[n])) {
-      for (uint32_t a : num_[n].contributors) {
-        double d = change(a, num_[n], ctx);
-        if (d > 0.0) {
-          best_ratio_[n] = std::min(best_ratio_[n], costs_[a] / d);
-        }
-      }
     }
   }
-  for (uint32_t o = 0; o < ops_.size(); ++o) {
-    if (ops_[o].pre.empty()) {
-      relax(ops_[o].effect, ops_[o].base, o, 0);
-    }
-  }
-  while (!queue_.empty()) {
-    auto [c, n] = queue_.top();
-    queue_.pop();
+  double c = 0.0;
+  uint32_t n = 0;
+  while (pop(c, n)) {
     if (c > cost_[n]) {
       continue;
     }
     if (n == goal_) {
       break;
     }
-    for (uint32_t o : triggers_[n]) {
-      if (mode == Mode::Add) {
-        op_cost_[o] += c;
-      } else {
-        op_cost_[o] = std::max(op_cost_[o], c);
-      }
-      if (--unsatisfied_[o] == 0) {
-        relax(ops_[o].effect, op_cost_[o] + ops_[o].base, o, 0);
-      }
-    }
-    int32_t a = node_action_[n];
-    if (a < 0) {
-      continue;
-    }
-    // An action reached: the numeric conditions it moves the right way
-    for (uint32_t k : action_num_[static_cast<size_t>(a)]) {
-      if (missing_[k] == 0.0) {
-        continue;
-      }
-      double d = change(static_cast<uint32_t>(a), num_[k], ctx);
-      if (!(d > 0.0)) {
-        continue;
-      }
-      uint32_t times = repetitions(num_[k], missing_[k], d);
-      double cand;
-      if (mode == Mode::Add) {
-        cand = c + costs_[static_cast<size_t>(a)] * times;
-      } else {
-        double bound = std::isinf(missing_[k]) ? costs_[static_cast<size_t>(a)] :
-          missing_[k] * best_ratio_[k];
-        cand = std::max(c, bound);
-      }
-      relax(num_node_id_[k], cand, static_cast<uint32_t>(a), times);
-    }
+    expand(n, c);
   }
   return cost_[goal_];
 }

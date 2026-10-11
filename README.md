@@ -31,8 +31,10 @@ organization and will become a planner for PlanSys2, but it does not depend on R
 > Ground tasks become SAS+ tasks with mutex groups found by invariant synthesis (also for
 > durative actions), matching Fast Downward's, whose states are packed and expanded with a
 > decision-tree successor generator (about 900,000 states per second), with blind, goal count,
-> hmax, hadd and FF heuristics (numeric subgoaling, preferred operators). Search is next.
-> Nothing can be planned yet.
+> hmax, hadd and FF heuristics (numeric subgoaling, preferred operators) guiding lazy and
+> eager greedy search, weighted A*, enforced hill-climbing and a LAMA-style anytime driver.
+> Classical and numeric problems without durative actions are solved internally; the public
+> planning API and the `kairos` executable come next, then temporal planning.
 
 ## Why another planner?
 

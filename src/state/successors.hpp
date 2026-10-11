@@ -106,6 +106,18 @@ public:
 
   bool is_goal(StateId s);
 
+  /// @brief All variable values and numbers of a state (valid until another state is loaded).
+  const std::vector<uint32_t> & values(StateId s)
+  {
+    load(s);
+    return values_;
+  }
+  const std::vector<double> & numbers(StateId s)
+  {
+    load(s);
+    return numbers_;
+  }
+
 private:
   void load(StateId s);
 

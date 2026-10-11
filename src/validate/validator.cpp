@@ -70,11 +70,35 @@ struct State
   // Derived atoms, computed on demand and dropped on any change
   mutable KeySet derived;
   mutable bool derived_ready = false;
+  // Atoms by predicate, to bind variables from true atoms instead of every object
+  mutable std::unordered_map<uint32_t, std::vector<Key>> atom_index;
+  mutable bool atom_index_ready = false;
+  mutable std::unordered_map<uint32_t, std::vector<Key>> derived_index;
 
   void changed() const
   {
     derived.clear();
     derived_ready = false;
+    atom_index.clear();
+    atom_index_ready = false;
+    derived_index.clear();
+  }
+
+  const std::vector<Key> & atoms_of(uint32_t pred) const
+  {
+    if (!atom_index_ready) {
+      for (const auto & k : atoms) {
+        atom_index[k[0]].push_back(k);
+      }
+      atom_index_ready = true;
+    }
+    return atom_index[pred];
+  }
+
+  void add_derived(Key key) const
+  {
+    derived_index[key[0]].push_back(key);
+    derived.insert(std::move(key));
   }
 };
 
@@ -163,6 +187,15 @@ public:
   void for_each_binding(
     const std::vector<ast::TypedName> & params, Bindings & b,
     const std::function<bool()> & body);
+
+  /**
+   * @brief Like for_each_binding, but a variable that appears in a positive atom of `body` (or
+   * of its top conjunction) takes only the values of the true atoms of that predicate that
+   * agree with what is already bound: much fewer than every object of its type.
+   */
+  void for_each_joined_binding(
+    const std::vector<std::pair<std::string, sem::TypeSpec>> & vars, FormulaId body,
+    const Ctx & c, Bindings & b, const std::function<bool()> & leaf);
 
 private:
   Key atom_key(Symbol pred, const std::vector<TermId> & args, const Ctx & c, Bindings & b);
@@ -284,32 +317,25 @@ public:
             continue;
           }
           const auto & param_types = dm.predicates.items[*pred].params;
-          std::vector<ast::TypedName> params = rule.head.params;
+          std::vector<std::pair<std::string, sem::TypeSpec>> vars;
+          for (size_t i = 0; i < rule.head.params.size(); ++i) {
+            vars.emplace_back(
+              std::string(domain.symbols.name(rule.head.params[i].name)), param_types[i]);
+          }
           Bindings b;
-          // Iterate over objects of the declared parameter types
-          std::function<void(size_t)> rec = [&](size_t i) {
-              if (i == params.size()) {
-                Key key{pred->value()};
-                for (const auto & [n, o] : b) {
-                  key.push_back(o);
-                }
-                if (s.derived.count(key)) {
-                  return;
-                }
-                Evaluator::Ctx c{s};
-                if (domain_eval.holds(rule.body, c, b)) {
-                  s.derived.insert(std::move(key));
-                  changed = true;
-                }
-                return;
+          Evaluator::Ctx c{s};
+          // Head bindings from the true atoms of the body where possible
+          domain_eval.for_each_joined_binding(vars, rule.body, c, b, [&]() {
+              Key key{pred->value()};
+              for (const auto & [n, o] : b) {
+                key.push_back(o);
               }
-              for (uint32_t o : objects_of(param_types[i])) {
-                b.emplace_back(std::string(domain.symbols.name(params[i].name)), o);
-                rec(i + 1);
-                b.pop_back();
+              if (!s.derived.count(key) && domain_eval.holds(rule.body, c, b)) {
+                s.add_derived(std::move(key));
+                changed = true;
               }
-            };
-          rec(0);
+              return true;
+            });
         }
       }
     }
@@ -368,6 +394,123 @@ void Evaluator::for_each_binding(
         bool go_on = rec(i + 1);
         b.pop_back();
         if (!go_on) {
+          return false;
+        }
+      }
+      return true;
+    };
+  rec(0);
+}
+
+void Evaluator::for_each_joined_binding(
+  const std::vector<std::pair<std::string, sem::TypeSpec>> & vars, FormulaId body,
+  const Ctx & c, Bindings & b, const std::function<bool()> & leaf)
+{
+  // Positive atoms of the top conjunction
+  std::vector<const ast::Formula *> atoms;
+  const ast::Formula & top = nodes_.formulas[body];
+  auto collect = [&](const ast::Formula & f) {
+      if (f.kind == ast::FormulaKind::Atom) {
+        atoms.push_back(&f);
+      }
+    };
+  if (top.kind == ast::FormulaKind::And) {
+    for (FormulaId ch : top.children) {
+      collect(nodes_.formulas[ch]);
+    }
+  } else {
+    collect(top);
+  }
+  auto bound = [&](const std::string & n) -> std::optional<uint32_t> {
+      for (auto it = b.rbegin(); it != b.rend(); ++it) {
+        if (it->first == n) {
+          return it->second;
+        }
+      }
+      return std::nullopt;
+    };
+  std::function<bool(size_t)> rec = [&](size_t i) {
+      if (i == vars.size()) {
+        return leaf();
+      }
+      const auto & [var, spec] = vars[i];
+      const auto & allowed = world_.objects_of(spec);
+      auto try_value = [&](uint32_t o) {
+          b.emplace_back(var, o);
+          bool go_on = rec(i + 1);
+          b.pop_back();
+          return go_on;
+        };
+      // An atom with this variable whose other arguments are known
+      for (const ast::Formula * a : atoms) {
+        auto pred = world_.dm.predicates.find(symbols_.name(a->name));
+        if (!pred) {
+          continue;
+        }
+        std::vector<std::optional<uint32_t>> want;
+        bool mentions = false, usable = true;
+        for (TermId t : a->args) {
+          const ast::Term & term = nodes_.terms[t];
+          std::string n = name(term.name);
+          if (term.kind == ast::TermKind::Variable) {
+            if (n == var) {
+              mentions = true;
+              want.emplace_back(std::nullopt);
+            } else if (auto v = bound(n)) {
+              want.emplace_back(*v);
+            } else {
+              usable = false;  // another unbound variable: try another atom
+            }
+          } else if (term.kind == ast::TermKind::Name) {
+            auto o = world_.pm.objects.find(n);
+            if (!o) {
+              usable = false;
+            } else {
+              want.emplace_back(o->value());
+            }
+          } else {
+            usable = false;  // object fluent
+          }
+        }
+        if (!mentions || !usable) {
+          continue;
+        }
+        bool derived = world_.dm.predicates.items[*pred].derived;
+        if (derived) {
+          world_.ensure_derived(c.now);
+        }
+        // Candidates now; derived atoms may still be added while the rules are evaluated
+        std::vector<Key> keys = derived ? c.now.derived_index[pred->value()] :
+          c.now.atoms_of(pred->value());
+        std::vector<uint32_t> values;
+        for (const Key & k : keys) {
+          std::optional<uint32_t> value;
+          bool ok = true;
+          for (size_t j = 0; j < want.size() && ok; ++j) {
+            uint32_t x = k[j + 1];
+            if (want[j]) {
+              ok = *want[j] == x;
+            } else if (value) {
+              ok = *value == x;
+            } else {
+              value = x;
+            }
+          }
+          if (ok && value && std::binary_search(allowed.begin(), allowed.end(), *value)) {
+            values.push_back(*value);
+          }
+        }
+        std::sort(values.begin(), values.end());
+        values.erase(std::unique(values.begin(), values.end()), values.end());
+        for (uint32_t o : values) {
+          if (!try_value(o)) {
+            return false;
+          }
+        }
+        return true;
+      }
+      for (uint32_t o : allowed) {
+        if (!try_value(o)) {
           return false;
         }
       }
@@ -586,9 +729,20 @@ bool Evaluator::holds(FormulaId id, const Ctx & c, Bindings & b)
     case ast::FormulaKind::Not: return !holds(f.children.at(0), c, b);
     case ast::FormulaKind::Imply:
       return !holds(f.children.at(0), c, b) || holds(f.children.at(1), c, b);
-    case ast::FormulaKind::Exists:
+    case ast::FormulaKind::Exists: {
+        std::vector<std::pair<std::string, sem::TypeSpec>> vars;
+        for (const auto & p : f.params) {
+          vars.emplace_back(name(p.name), world_.resolve(p.types, symbols_));
+        }
+        bool result = false;
+        for_each_joined_binding(vars, f.children.at(0), c, b, [&]() {
+            result = holds(f.children.at(0), c, b);
+            return !result;
+          });
+        return result;
+      }
     case ast::FormulaKind::Forall: {
-        bool exists = f.kind == ast::FormulaKind::Exists;
+        bool exists = false;
         bool result = !exists;
         for_each_binding(f.params, b, [&]() {
             bool v = holds(f.children.at(0), c, b);

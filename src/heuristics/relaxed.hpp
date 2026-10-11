@@ -90,8 +90,10 @@ private:
   void add_op(std::vector<uint32_t> pre, uint32_t effect, double base, uint32_t action);
   double change(uint32_t action, const NumNode & n, const EvalContext & ctx) const;
   double missing(const NumNode & n, const EvalContext & ctx) const;
+  bool state_dependent(uint32_t action, const NumNode & n) const;
   uint32_t repetitions(const NumNode & n, double missing, double change) const;
   void relax(uint32_t node, double cost, uint32_t supporter, uint32_t repeat);
+  void expand(uint32_t node, double cost);
 
   const sas::Task & task_;
   std::vector<double> costs_;
@@ -123,8 +125,26 @@ private:
   std::vector<uint8_t> initial_;      // true in the state itself
   std::vector<double> missing_;       // per numeric node
   std::vector<double> best_ratio_;    // per numeric node: least cost per unit (hmax)
-  using Entry = std::pair<double, uint32_t>;
-  std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> queue_;
+  // As FD's bucket queue: whole costs in buckets, last in first out within a cost (ties in the
+  // best supporters, and so the relaxed plans, follow FD's); other costs in a heap
+  struct Entry
+  {
+    double cost;
+    uint64_t seq;
+    uint32_t node;
+    bool operator>(const Entry & o) const
+    {
+      return cost != o.cost ? cost > o.cost : seq < o.seq;
+    }
+  };
+  void push(double cost, uint32_t node);
+  bool pop(double & cost, uint32_t & node);
+  static constexpr size_t kMaxBucket = 1 << 20;
+  std::vector<std::vector<uint32_t>> buckets_;
+  size_t bucket_ = 0;       // lowest bucket that may hold entries
+  size_t in_buckets_ = 0;
+  std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> heap_;
+  uint64_t seq_ = 0;
   const EvalContext * ctx_ = nullptr;
 };
 

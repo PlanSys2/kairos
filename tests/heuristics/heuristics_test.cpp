@@ -487,6 +487,31 @@ TEST(HeuristicsPropertiesTest, IpcDomains)
   EXPECT_GE(complete, 5u);  // explored whole: the checks are meaningful
 }
 
+// IPC 2023 numeric domains (first instances): no false dead ends, hmax never above h*
+TEST(HeuristicsPropertiesTest, IpcNumericDomains)
+{
+  const char * dir = std::getenv("KAIROS_PDDL_CORPUS");
+  if (dir == nullptr) {
+    GTEST_SKIP() << "KAIROS_PDDL_CORPUS not set";
+  }
+  std::filesystem::path base = std::filesystem::path(dir) / "ipc2023-numeric_ipc2023-dataset";
+  size_t complete = 0;
+  for (const char * dom : {"counters", "fo-counters", "farmland", "fo-farmland", "drone",
+      "mprime", "block-grouping", "tpp", "delivery"})
+  {
+    auto d = base / dom / "domain.pddl";
+    auto p = base / dom / "instances" / "pfile1.pddl";
+    if (!std::filesystem::exists(p) || !std::filesystem::exists(d)) {
+      continue;
+    }
+    bool whole = false;
+    EXPECT_TRUE(properties(*bench(read_file(d), read_file(p), CostModel::Metric), 100000, &whole))
+      << dom;
+    complete += whole ? 1 : 0;
+  }
+  EXPECT_GE(complete, 2u);  // numeric state spaces grow fast: some are too big to explore
+}
+
 TEST(HeuristicsTest, EvaluationIsFast)
 {
   // ff on a 30-place line with 9 goals: well under a millisecond per state in release
@@ -517,6 +542,32 @@ TEST(HeuristicsTest, EvaluationIsFast)
     .count();
   EXPECT_EQ(h, 27.0);  // walk to c27, seeing c3, c6, ..., c27 on the way
   EXPECT_LT(ms, 5000.0);  // generous: debug and sanitizer builds
+}
+
+TEST(HeuristicsPropertiesTest, ChangesThatDependOnTheStateAreNeverFalseDeadEnds)
+{
+  // IPC 2023 fo-counters: x grows by a rate that starts at 0; raising the rate first works
+  auto b = bench(world(
+      "(:action inc :parameters () :precondition () :effect (increase (x) (total-cost)))"
+      " (:action rate :parameters () :precondition () :effect (increase (total-cost) 1))"),
+    problem("(at s0) (= (x) 0) (= (total-cost) 0)", "(>= (x) 3)"));
+  StateId s0 = b->reg->initial();
+  for (const char * name : {"hmax", "hadd", "ff"}) {
+    auto h = make_heuristic(name, b->p->sas, b->costs);
+    auto r = b->eval(*h, s0);
+    EXPECT_FALSE(r.dead_end) << name;
+    EXPECT_GE(r.value, 1.0) << name;
+  }
+  EXPECT_TRUE(properties(*b));
+  // An undefined fluent that an action assigns is not a dead end either
+  auto u = bench(world(
+      "(:action set :parameters () :precondition () :effect (assign (x) 0))"
+      " (:action inc :parameters () :precondition () :effect (increase (x) 1))"),
+    problem("(at s0)", "(>= (x) 2)"));
+  for (const char * name : {"hmax", "hadd", "ff"}) {
+    auto h = make_heuristic(name, u->p->sas, u->costs);
+    EXPECT_FALSE(u->eval(*h, u->reg->initial()).dead_end) << name;
+  }
 }
 
 }  // namespace
