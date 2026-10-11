@@ -388,16 +388,32 @@ TEST(PlannerApiTest, StopTokenCancels)
   EXPECT_LT(std::chrono::steady_clock::now() - t0, 3s);
 }
 
+// AddressSanitizer's shadow memory inflates the RSS the budget watches: a larger limit there
+#if defined(__SANITIZE_ADDRESS__)
+constexpr size_t kSearchMemoryMb = 64;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+constexpr size_t kSearchMemoryMb = 64;
+#else
+constexpr size_t kSearchMemoryMb = 8;
+#endif
+#else
+constexpr size_t kSearchMemoryMb = 8;
+#endif
+
 TEST(PlannerApiTest, MemoryLimitStopsTheSearch)
 {
-  Problem p = problem(kHoles, holes_problem(12, 11));
+  // Wide (380 actions) and with a cheap heuristic: the limit fills in thousands of states, fast
+  // even in unoptimized coverage builds
+  Problem p = problem(kHoles, holes_problem(20, 19));
   SolveOptions o;
   o.timeout = 60s;
-  o.memory_limit_mb = 8;
+  o.memory_limit_mb = kSearchMemoryMb;
+  o.search = "ff";
   SolveResult r = Planner().solve(p, o);
   EXPECT_EQ(r.status, Status::OutOfMemory);
   EXPECT_EQ(r.stop_reason, StopReason::MemoryLimit);
-  EXPECT_EQ(r.stats.memory_limit_bytes, size_t{8} << 20);
+  EXPECT_EQ(r.stats.memory_limit_bytes, kSearchMemoryMb << 20);
   EXPECT_GT(r.stats.states, 1u);  // stopped in the search (sanitizers reach the limit sooner)
 }
 

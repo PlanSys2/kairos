@@ -335,8 +335,9 @@ TEST_F(CliTest, TimeoutExitsEleven)
 TEST_F(CliTest, MemoryLimitExitsTwelve)
 {
   write("h.pddl", kHoles);
-  write("hp.pddl", holes(12, 11));
-  Outcome r = run("'" + path("h.pddl") + "' '" + path("hp.pddl") + "' --memory 8 --timeout 60");
+  write("hp.pddl", holes(20, 19));  // fills 8 MB fast, even in coverage builds
+  Outcome r = run(
+    "'" + path("h.pddl") + "' '" + path("hp.pddl") + "' --memory 8 --timeout 60 --search ff");
   EXPECT_EQ(r.code, 12);
   EXPECT_TRUE(contains(r.err, "out of memory"));
 }
