@@ -1,0 +1,221 @@
+// Copyright 2026 Intelligent Robotics Lab
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+#include <gtest/gtest.h>
+
+#include <cstdlib>
+#include <filesystem>
+#include <string>
+#include <vector>
+
+#include "support/pddl_helpers.hpp"
+#include "support/pipeline_helpers.hpp"
+#include "temporal/profile.hpp"
+
+namespace kairos::temporal
+{
+namespace
+{
+
+using kairos::testing::data_path;
+using kairos::testing::pipeline;
+using kairos::testing::read_file;
+
+TemporalProfile profile(const std::string & domain, const std::string & problem)
+{
+  auto p = pipeline(domain, problem);
+  EXPECT_TRUE(p->ok);
+  return analyze(p->sas);
+}
+
+// A match lights a fuse box only while it burns: mending needs the light over all
+const char * kCellar =
+  "(define (domain cellar) (:requirements :typing :durative-actions)"
+  " (:types match fuse)"
+  " (:predicates (unused ?m - match) (light ?m - match) (mended ?f - fuse) (handfree))"
+  " (:durative-action light-match :parameters (?m - match) :duration (= ?duration 8)"
+  "  :condition (at start (unused ?m))"
+  "  :effect (and (at start (not (unused ?m))) (at start (light ?m)) (at end (not (light ?m)))))"
+  " (:durative-action mend :parameters (?f - fuse ?m - match) :duration (= ?duration 5)"
+  "  :condition (and (at start (handfree)) (over all (light ?m)))"
+  "  :effect (and (at start (not (handfree))) (at end (handfree)) (at end (mended ?f)))))";
+
+const char * kCellarProblem =
+  "(define (problem p) (:domain cellar) (:objects m1 - match f1 - fuse)"
+  " (:init (unused m1) (handfree)) (:goal (mended f1)))";
+
+TEST(TemporalProfileTest, AMatchThatBurnsWhileSomethingElseHappens)
+{
+  auto p = profile(kCellar, kCellarProblem);
+  EXPECT_TRUE(p.durative);
+  EXPECT_FALSE(p.simple);
+  ASSERT_FALSE(p.reasons.empty());
+  EXPECT_NE(p.reasons[0].find("light-match"), std::string::npos) << p.reasons[0];
+  EXPECT_FALSE(p.timed_initial_literals);
+}
+
+// Robots moving: in transit they are nowhere, and nobody needs that
+const char * kRobots =
+  "(define (domain robots) (:requirements :typing :durative-actions)"
+  " (:types robot room)"
+  " (:predicates (at ?r - robot ?l - room) (connected ?a ?b - room) (cleaned ?l - room))"
+  " (:durative-action move :parameters (?r - robot ?a ?b - room) :duration (= ?duration 5)"
+  "  :condition (and (at start (at ?r ?a)) (over all (connected ?a ?b)))"
+  "  :effect (and (at start (not (at ?r ?a))) (at end (at ?r ?b))))"
+  " (:durative-action clean :parameters (?r - robot ?l - room) :duration (= ?duration 3)"
+  "  :condition (over all (at ?r ?l)) :effect (at end (cleaned ?l))))";
+
+const char * kRobotsProblem =
+  "(define (problem p) (:domain robots) (:objects r1 r2 - robot a b c - room)"
+  " (:init (at r1 a) (at r2 b) (connected a b) (connected b c))"
+  " (:goal (and (cleaned c) (cleaned a))))";
+
+TEST(TemporalProfileTest, MovingRobotsAreSimple)
+{
+  auto p = profile(kRobots, kRobotsProblem);
+  EXPECT_TRUE(p.durative);
+  EXPECT_TRUE(p.simple) << (p.reasons.empty() ? "" : p.reasons[0]);
+}
+
+TEST(TemporalProfileTest, NeedingTheIntermediateValueIsNotSimple)
+{
+  // Someone acts on a robot while it is in transit
+  std::string domain = kRobots;
+  domain.insert(domain.size() - 1,
+    " (:durative-action wave :parameters (?r - robot ?l - room) :duration (= ?duration 1)"
+    "  :condition (at start (not (at ?r ?l))) :effect (at end (cleaned ?l)))");
+  auto p = profile(domain, kRobotsProblem);
+  EXPECT_FALSE(p.simple);
+}
+
+TEST(TemporalProfileTest, ABorrowedResource)
+{
+  // A tool taken at start and given back at end: others need it to be there
+  const char * domain =
+    "(define (domain tools) (:requirements :fluents :durative-actions)"
+    " (:predicates (done-a) (done-b)) (:functions (tools))"
+    " (:durative-action a :parameters () :duration (= ?duration 4)"
+    "  :condition (at start (>= (tools) 1))"
+    "  :effect (and (at start (decrease (tools) 1)) (at end (increase (tools) 1))"
+    "   (at end (done-a))))"
+    " (:durative-action b :parameters () :duration (= ?duration 2)"
+    "  :condition (at start (>= (tools) 1)) :effect (at end (done-b))))";
+  auto p = profile(domain,
+      "(define (problem p) (:domain tools) (:init (= (tools) 1)) (:goal (and (done-a) (done-b))))");
+  EXPECT_FALSE(p.simple);
+  // Nobody else reads it: compressing loses nothing
+  const char * alone =
+    "(define (domain tools) (:requirements :fluents :durative-actions)"
+    " (:predicates (done-a)) (:functions (tools))"
+    " (:durative-action a :parameters () :duration (= ?duration 4)"
+    "  :condition (at start (>= (tools) 1))"
+    "  :effect (and (at start (decrease (tools) 1)) (at end (increase (tools) 1))"
+    "   (at end (done-a)))))";
+  auto q = profile(alone,
+      "(define (problem p) (:domain tools) (:init (= (tools) 1)) (:goal (done-a)))");
+  EXPECT_TRUE(q.simple) << (q.reasons.empty() ? "" : q.reasons[0]);
+}
+
+TEST(TemporalProfileTest, TimedInitialLiteralsAndDurations)
+{
+  const char * domain =
+    "(define (domain d) (:requirements :fluents :durative-actions :timed-initial-literals"
+    "  :duration-inequalities)"
+    " (:predicates (open) (done)) (:functions (speed) (dist))"
+    " (:durative-action go :parameters () :duration (and (>= ?duration 1) (<= ?duration 4))"
+    "  :condition (over all (open))"
+    "  :effect (at end (done)))"
+    " (:durative-action drive :parameters () :duration (= ?duration (/ (dist) (speed)))"
+    "  :condition () :effect (at end (increase (dist) (* ?duration 2)))))";
+  auto p = profile(domain,
+      "(define (problem p) (:domain d) (:init (= (speed) 2) (= (dist) 4) (at 10 (open)))"
+      " (:goal (done)))");
+  EXPECT_TRUE(p.timed_initial_literals);
+  EXPECT_FALSE(p.simple);
+  EXPECT_TRUE(p.variable_duration);
+  EXPECT_TRUE(p.duration_in_effects);
+}
+
+TEST(TemporalProfileTest, NoDurativeActions)
+{
+  auto p = profile(
+    "(define (domain d) (:predicates (p)) (:action a :parameters () :effect (p)))",
+    "(define (problem x) (:domain d) (:init) (:goal (p)))");
+  EXPECT_FALSE(p.durative);
+  EXPECT_TRUE(p.simple);
+}
+
+// PlanSys2's temporal examples
+TEST(TemporalProfileTest, PlanSys2Examples)
+{
+  struct Case
+  {
+    const char * domain;
+    const char * problem;
+  };
+  const Case cases[] = {
+    {"plansys2_simple_example__simple_example", "plansys2_simple_example__problem"},
+    {"plansys2_executor__domain_simple", "plansys2_executor__problem_simple_1"},
+    {"plansys2_executor__factory2", "plansys2_executor__problem_factory_1"},
+    {"plansys2_domain_expert__domain_charging", "plansys2_domain_expert__problem_charging"},
+    {"plansys2_executor__elevator_domain", "plansys2_executor__elevator_problem"},
+    {"plansys2_executor__road_trip_domain", "plansys2_executor__road_trip_problem"},
+  };
+  for (const auto & c : cases) {
+    auto p = profile(read_file(data_path(std::string("plansys2/") + c.domain + ".pddl")),
+        read_file(data_path(std::string("plansys2/") + c.problem + ".pddl")));
+    EXPECT_TRUE(p.durative) << c.problem;
+    // None needs actions to overlap: M2 can plan them all
+    EXPECT_TRUE(p.simple) << c.problem << ": " << (p.reasons.empty() ? "" : p.reasons[0]);
+  }
+}
+
+TEST(TemporalProfileTest, IpcDomainsThatNeedConcurrency)
+{
+  const char * dir = std::getenv("KAIROS_PDDL_CORPUS");
+  if (dir == nullptr) {
+    GTEST_SKIP() << "KAIROS_PDDL_CORPUS not set";
+  }
+  std::filesystem::path base =
+    std::filesystem::path(dir) / "potassco_pddl-instances" / "ipc-2011" / "domains";
+  for (const char * d : {"match-cellar-temporal-satisficing", "turn-and-open-temporal-satisficing",
+      "temporal-machine-shop-temporal-satisficing"})
+  {
+    auto folder = base / d;
+    auto domain = folder / "domain.pddl";
+    if (!std::filesystem::exists(domain)) {
+      domain = folder / "domains" / "domain-1.pddl";
+    }
+    auto p = profile(read_file(domain), read_file(folder / "instances" / "instance-1.pddl"));
+    EXPECT_FALSE(p.simple) << d;
+  }
+  // The rest of the 2011 temporal track is temporally simple (Cushing et al.)
+  for (const char * d : {"crew-planning-temporal-satisficing", "elevator-temporal-satisficing",
+      "floor-tile-temporal-satisficing", "openstacks-temporal-satisficing",
+      "parc-printer-temporal-satisficing", "parking-temporal-satisficing",
+      "peg-solitaire-temporal-satisficing", "sokoban-temporal-satisficing",
+      "storage-temporal-satisficing"})
+  {
+    auto folder = base / d;
+    auto domain = folder / "domain.pddl";
+    if (!std::filesystem::exists(domain)) {
+      domain = folder / "domains" / "domain-1.pddl";
+    }
+    auto p = profile(read_file(domain), read_file(folder / "instances" / "instance-1.pddl"));
+    EXPECT_TRUE(p.simple) << d << ": " << (p.reasons.empty() ? "" : p.reasons[0]);
+  }
+}
+
+}  // namespace
+}  // namespace kairos::temporal

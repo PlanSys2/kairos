@@ -14,4 +14,7 @@
 
 kairos_add_module(kairos_temporal
   SOURCES
-    stn.cpp)
+    profile.cpp
+    stn.cpp
+  DEPENDS
+    kairos_sas)

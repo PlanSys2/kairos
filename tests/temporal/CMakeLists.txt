@@ -14,6 +14,9 @@
 
 kairos_add_test(temporal_tests
   SOURCES
+    profile_test.cpp
     stn_test.cpp
   DEPENDS
     kairos_temporal)
+target_compile_definitions(temporal_tests PRIVATE
+  KAIROS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data")
