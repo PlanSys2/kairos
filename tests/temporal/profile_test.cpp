@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -129,6 +130,82 @@ TEST(TemporalProfileTest, AValueThatHeldBeforeTheActionIsNothingNew)
   auto p = profile(domain,
       "(define (problem x) (:domain d) (:objects j - p a - r) (:init (at j a)) (:goal (seen j)))");
   EXPECT_TRUE(p.simple) << (p.reasons.empty() ? "" : p.reasons[0]);
+}
+
+TEST(TemporalProfileTest, OnlyOtherActionsCount)
+{
+  // Each move alone reads its intermediate values: no other action needs to overlap it
+  const char * domain =
+    "(define (domain d) (:requirements :typing :durative-actions :numeric-fluents)"
+    " (:types robot room)"
+    " (:predicates (at ?r - robot ?l - room) (moving ?r - robot ?a ?b - room) (seen ?r - robot))"
+    " (:functions (traffic ?a ?b - room))"
+    " (:durative-action move :parameters (?r - robot ?a ?b - room) :duration (= ?duration 5)"
+    "  :condition (and (at start (at ?r ?a)) (over all (moving ?r ?a ?b))"
+    "   (at end (>= (traffic ?a ?b) 1)))"
+    "  :effect (and (at start (not (at ?r ?a))) (at start (moving ?r ?a ?b))"
+    "   (at start (increase (traffic ?a ?b) 1)) (at end (decrease (traffic ?a ?b) 1))"
+    "   (at end (not (moving ?r ?a ?b))) (at end (at ?r ?b)))))";
+  const char * one_robot =
+    "(define (problem p) (:domain d) (:objects r1 - robot a b - room)"
+    " (:init (at r1 a) (= (traffic a b) 0) (= (traffic b a) 0) (= (traffic a a) 0)"
+    " (= (traffic b b) 0)) (:goal (at r1 b)))";
+  auto p = profile(domain, one_robot);
+  EXPECT_TRUE(p.simple) << (p.reasons.empty() ? "" : p.reasons[0]);
+
+  // Two robots: the move of the other one reads the same traffic
+  auto q = profile(domain,
+      "(define (problem p) (:domain d) (:objects r1 r2 - robot a b - room)"
+      " (:init (at r1 a) (at r2 a) (= (traffic a b) 0) (= (traffic b a) 0) (= (traffic a a) 0)"
+      " (= (traffic b b) 0)) (:goal (at r1 b)))");
+  EXPECT_FALSE(q.simple);
+  ASSERT_FALSE(q.reasons.empty());
+  EXPECT_NE(q.reasons[0].find("numeric"), std::string::npos) << q.reasons[0];
+
+  // Another action needs the robot moving
+  std::string spy = domain;
+  spy.insert(spy.size() - 1,
+    " (:durative-action spy :parameters (?r - robot ?a ?b - room) :duration (= ?duration 1)"
+    "  :condition (over all (moving ?r ?a ?b)) :effect (at end (seen ?r)))");
+  auto s = profile(spy, one_robot);
+  EXPECT_FALSE(s.simple);
+  ASSERT_FALSE(s.reasons.empty());
+  EXPECT_NE(s.reasons[0].find("only while it runs"), std::string::npos) << s.reasons[0];
+}
+
+TEST(TemporalProfileTest, LinearInTheDurativeActions)
+{
+  // 8 robots in 40 fully connected rooms: 12480 moves, each read by many others (it used to
+  // compare every pair of actions)
+  std::string problem = "(define (problem big) (:domain robots) (:objects";
+  for (int r = 0; r < 8; ++r) {
+    problem += " r" + std::to_string(r);
+  }
+  problem += " - robot";
+  for (int l = 0; l < 40; ++l) {
+    problem += " l" + std::to_string(l);
+  }
+  problem += " - room) (:init";
+  for (int r = 0; r < 8; ++r) {
+    problem += " (at r" + std::to_string(r) + " l" + std::to_string(r) + ")";
+  }
+  for (int a = 0; a < 40; ++a) {
+    for (int b = 0; b < 40; ++b) {
+      if (a != b) {
+        problem += " (connected l" + std::to_string(a) + " l" + std::to_string(b) + ")";
+      }
+    }
+  }
+  problem += ") (:goal (cleaned l39)))";
+  auto p = pipeline(kRobots, problem);
+  ASSERT_TRUE(p->ok);
+  ASSERT_GT(p->sas.durative_actions.size(), 12000u);
+  const auto start = std::chrono::steady_clock::now();
+  auto profile = analyze(p->sas);
+  const auto ms = std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - start).count();
+  EXPECT_TRUE(profile.simple);
+  EXPECT_LT(ms, 1000.0) << ms;  // generous: debug, sanitizer and coverage builds
 }
 
 TEST(TemporalProfileTest, ABorrowedResource)

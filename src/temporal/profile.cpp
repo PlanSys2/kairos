@@ -15,6 +15,7 @@
 #include "temporal/profile.hpp"
 
 #include <algorithm>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -182,28 +183,51 @@ TemporalProfile analyze(const sas::Task & task)
   for (const auto & ax : task.axioms) {
     instant.condition(ax.body);
   }
+  // How many durative actions read each value, negated value, variable and numeric variable:
+  // "another action reads it" without going through all of them (linear in the actions)
+  std::map<std::pair<sas::VarId, uint32_t>, size_t> fact_readers, not_fact_readers;
+  std::map<sas::VarId, size_t> whole_readers;
+  std::map<sas::NumVarId, size_t> num_readers;
+  for (const auto & r : durative_reads) {
+    for (const auto & f : r.facts) {
+      ++fact_readers[f];
+    }
+    for (const auto & f : r.not_facts) {
+      ++not_fact_readers[f];
+    }
+    for (auto v : r.whole) {
+      ++whole_readers[v];
+    }
+    for (auto n : r.nums) {
+      ++num_readers[n];
+    }
+  }
+  // Readers besides `self`
+  auto others = [](const auto & readers, const auto & key, const auto & own) {
+      auto it = readers.find(key);
+      return it != readers.end() && it->second > own.count(key);
+    };
+  // Reads::sees for any durative action but `self`
   auto seen_by_others = [&](
     size_t self, sas::VarId v, uint32_t x, std::optional<uint32_t> before, uint32_t after) {
       if (instant.sees(v, x, before, after)) {
         return true;
       }
-      for (size_t b = 0; b < durative_reads.size(); ++b) {
-        if (b != self && durative_reads[b].sees(v, x, before, after)) {
-          return true;
-        }
-      }
-      return false;
-    };
-  auto read_by_others = [&](size_t self, sas::NumVarId n) {
-      if (instant.nums.count(n)) {
+      const Reads & own = durative_reads[self];
+      if (others(whole_readers, v, own.whole)) {
         return true;
       }
-      for (size_t b = 0; b < durative_reads.size(); ++b) {
-        if (b != self && durative_reads[b].nums.count(n)) {
-          return true;
-        }
+      if (x != after && (!before || x != *before) &&
+        others(fact_readers, std::make_pair(v, x), own.facts))
+      {
+        return true;
       }
-      return false;
+      // A negated value w holds before and after but not now only if w is both
+      return after != x && (!before || *before == after) &&
+             others(not_fact_readers, std::make_pair(v, after), own.not_facts);
+    };
+  auto read_by_others = [&](size_t self, sas::NumVarId n) {
+      return instant.nums.count(n) || others(num_readers, n, durative_reads[self].nums);
     };
   for (size_t a = 0; a < task.durative_actions.size(); ++a) {
     const auto & da = task.durative_actions[a];

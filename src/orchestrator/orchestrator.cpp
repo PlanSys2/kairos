@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <exception>
 #include <fstream>
 #include <memory>
@@ -488,8 +489,12 @@ SolveResult run(
     if (options.stop_after_no_improvement) {
       auto window = options.stop_after_no_improvement->count();
       watchdog = std::jthread([&, window](std::stop_token st) {
+            // Wakes at once when the search ends, so small tasks do not wait for it
+            std::mutex m;
+            std::condition_variable_any wake;
+            std::unique_lock<std::mutex> lock(m);
             while (!st.stop_requested()) {
-              std::this_thread::sleep_for(std::chrono::milliseconds(5));
+              wake.wait_for(lock, st, std::chrono::milliseconds(5), [] {return false;});
               int64_t last = last_plan.load();
               auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
                 Clock::now() - t0).count();
