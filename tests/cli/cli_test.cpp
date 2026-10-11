@@ -15,7 +15,9 @@
 #include <gtest/gtest.h>
 #include <sys/wait.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -430,6 +432,188 @@ TEST_F(CliTest, HelpAndVersion)
   Outcome v = run("--version");
   EXPECT_EQ(v.code, 0);
   EXPECT_EQ(v.out, "kairos " + std::string(kairos::version()) + "\n");
+}
+
+// --- shell completion ---------------------------------------------------------------------------
+
+class CompletionTest : public CliTest
+{
+protected:
+  void SetUp() override
+  {
+    CliTest::SetUp();
+    write("notes.txt", "");
+    fs::create_directories(dir_ / "subdir");
+    Outcome r = run("--completion bash");
+    ASSERT_EQ(r.code, 0) << r.err;
+    script_ = write("kairos.bash", r.out);
+  }
+
+  // What _kairos offers for these words (the last one is being completed), one per line;
+  // `breaks` false: "=" does not split words
+  std::vector<std::string> complete(
+    const std::vector<std::string> & words, bool breaks = true, const std::string & cwd = "")
+  {
+    std::string array;
+    for (const auto & w : words) {
+      array += " '" + w + "'";
+    }
+    std::string body = (breaks ? "" : "COMP_WORDBREAKS=\"${COMP_WORDBREAKS//=/}\"; ") +
+      std::string("source '") + script_ + "'; cd '" + (cwd.empty() ? dir_.string() : cwd) +
+      "'; COMP_WORDS=(kairos" + array + "); COMP_CWORD=" + std::to_string(words.size()) +
+      "; _kairos; printf '%s\\n' \"${COMPREPLY[@]}\"";
+    write("complete.sh", body);
+    FILE * pipe = popen(("bash '" + path("complete.sh") + "' 2>&1").c_str(), "r");
+    std::string out;
+    char buffer[4096];
+    size_t n;
+    while ((n = fread(buffer, 1, sizeof(buffer), pipe)) > 0) {
+      out.append(buffer, n);
+    }
+    pclose(pipe);
+    auto all = lines(out);
+    std::vector<std::string> offered;
+    for (const auto & l : all) {
+      if (!l.empty()) {
+        offered.push_back(l);
+      }
+    }
+    std::sort(offered.begin(), offered.end());
+    return offered;
+  }
+
+  static bool has(const std::vector<std::string> & v, const std::string & x)
+  {
+    return std::find(v.begin(), v.end(), x) != v.end();
+  }
+
+  std::string script_;
+};
+
+TEST_F(CompletionTest, CommandsAndPddlFilesFirst)
+{
+  auto first = complete({""});
+  EXPECT_TRUE(has(first, "solve"));
+  EXPECT_TRUE(has(first, "validate"));
+  EXPECT_TRUE(has(first, "check"));
+  EXPECT_TRUE(has(first, "domain.pddl"));
+  EXPECT_TRUE(has(first, "problem.pddl"));
+  EXPECT_TRUE(has(first, "subdir"));
+  EXPECT_FALSE(has(first, "notes.txt"));  // PDDL files when there are some
+  // After the domain: files, no commands
+  auto second = complete({"domain.pddl", "pro"});
+  EXPECT_EQ(second, std::vector<std::string>({"problem.pddl"}));
+  // No PDDL file there: any file
+  auto other = complete({"no"}, true, (dir_ / "subdir").string());
+  EXPECT_TRUE(other.empty());
+  fs::create_directories(dir_ / "plain");
+  std::ofstream(dir_ / "plain" / "readme.txt") << "";
+  auto plain = complete({""}, true, (dir_ / "plain").string());
+  EXPECT_TRUE(has(plain, "readme.txt"));
+}
+
+TEST_F(CompletionTest, OptionsOfEachCommand)
+{
+  EXPECT_EQ(complete({"--eng"}), std::vector<std::string>({"--engine"}));
+  EXPECT_EQ(complete({"--comp"}), std::vector<std::string>({"--completion"}));
+  auto solve = complete({"domain.pddl", "problem.pddl", "--"});
+  for (const char * o : {"--timeout", "--engine", "--search", "--format", "--output",
+      "--no-improvement", "--debug", "--dump", "--dump-dir", "--anytime", "--no-anytime"})
+  {
+    EXPECT_TRUE(has(solve, o)) << o;
+  }
+  EXPECT_FALSE(has(solve, "--problem"));
+  EXPECT_FALSE(has(solve, "--version"));  // only as the first word
+  EXPECT_EQ(complete({"solve", "--sea"}), std::vector<std::string>({"--search"}));
+  EXPECT_EQ(complete({"validate", "--"}), std::vector<std::string>({"--epsilon"}));
+  EXPECT_EQ(complete({"check", "--"}), std::vector<std::string>({"--problem"}));
+  EXPECT_EQ(complete({"-"}).size(), complete({"--"}).size() + 1);  // and -v
+}
+
+TEST_F(CompletionTest, OptionValues)
+{
+  EXPECT_EQ(
+    complete({"d.pddl", "p.pddl", "--engine", ""}),
+    std::vector<std::string>({"auto", "m1", "m2", "m3"}));
+  EXPECT_EQ(complete({"--format", "j"}), std::vector<std::string>({"json"}));
+  EXPECT_EQ(
+    complete({"--search", "lama"}), std::vector<std::string>({"lama", "lama-novelty"}));
+  EXPECT_EQ(
+    complete({"--completion", ""}), std::vector<std::string>({"bash", "fish", "zsh"}));
+  EXPECT_TRUE(complete({"--timeout", ""}).empty());
+  EXPECT_TRUE(complete({"--no-improvement", "1"}).empty());
+  EXPECT_EQ(complete({"--dump-dir", "s"}), std::vector<std::string>({"subdir"}));
+  EXPECT_EQ(complete({"--output", "n"}), std::vector<std::string>({"notes.txt"}));
+  EXPECT_EQ(complete({"check", "--problem", "pro"}), std::vector<std::string>({"problem.pddl"}));
+  // "--engine=" as one word, and split at "="
+  EXPECT_EQ(complete({"--engine", "=", "m"}), std::vector<std::string>({"m1", "m2", "m3"}));
+  EXPECT_EQ(complete({"--format=p"}, false), std::vector<std::string>({"--format=popf"}));
+}
+
+TEST_F(CompletionTest, CommaListsAfterTheEqualSign)
+{
+  EXPECT_EQ(
+    complete({"--debug", "=", "se"}), std::vector<std::string>({"search", "semantic"}));
+  EXPECT_EQ(
+    complete({"--debug", "=", "search,gr"}), std::vector<std::string>({"search,ground"}));
+  auto dumps = complete({"--dump", "="});
+  EXPECT_EQ(dumps, std::vector<std::string>({"ast", "ground", "lifted", "plan-trace", "sas"}));
+  EXPECT_EQ(
+    complete({"--dump=sas,pl"}, false), std::vector<std::string>({"--dump=sas,plan-trace"}));
+  // Without "=" the option takes no value: the next word is a file
+  EXPECT_TRUE(has(complete({"--debug", ""}), "domain.pddl"));
+}
+
+TEST_F(CompletionTest, EveryOfferedValueIsAccepted)
+{
+  // The script comes from the parser lists: what it offers, the parser takes
+  for (const char * option : {"--engine", "--format", "--search"}) {
+    for (const auto & value : complete({option, ""})) {
+      Outcome r = run(solve_args() + " " + option + " " + value + " --timeout 5");
+      EXPECT_FALSE(contains(r.err, "unknown")) << option << " " << value << ": " << r.err;
+      EXPECT_NE(r.code, 2) << option << " " << value << ": " << r.err;
+    }
+  }
+  for (const char * option : {"--debug", "--dump"}) {
+    for (const auto & value : complete({option, "="})) {
+      Outcome r = run(
+        solve_args() + " " + option + "=" + value + " --dump-dir '" + path("dump") + "'");
+      EXPECT_EQ(r.code, 0) << option << "=" << value << ": " << r.err;
+    }
+  }
+}
+
+TEST_F(CompletionTest, ZshAndFish)
+{
+  Outcome z = run("--completion zsh");
+  EXPECT_EQ(z.code, 0);
+  EXPECT_TRUE(contains(z.out, "bashcompinit"));
+  EXPECT_TRUE(contains(z.out, "complete -F _kairos kairos"));
+  Outcome f = run("--completion fish");
+  EXPECT_EQ(f.code, 0);
+  EXPECT_TRUE(contains(f.out, "complete -c kairos -n '__fish_use_subcommand' -a 'solve validate"));
+  EXPECT_TRUE(contains(f.out, "-l engine -x -a 'auto m1 m2 m3'"));
+  EXPECT_TRUE(contains(f.out, "-l output -r -F"));
+  EXPECT_TRUE(contains(f.out, "__fish_seen_subcommand_from check' -l problem -r -F"));
+  EXPECT_TRUE(contains(f.out, "-s v"));
+  EXPECT_FALSE(contains(f.out, "-l debug=")) << f.out;
+  // Syntax, where the shells are installed
+  for (const std::string & shell : {std::string("zsh"), std::string("fish")}) {
+    if (std::system(("command -v " + shell + " >/dev/null 2>&1").c_str()) == 0) {
+      write("script." + shell, shell == "zsh" ? z.out : f.out);
+      EXPECT_EQ(std::system((shell + " -n '" + path("script." + shell) + "'").c_str()), 0);
+    }
+  }
+}
+
+TEST_F(CompletionTest, BadShell)
+{
+  Outcome r = run("--completion tcsh");
+  EXPECT_EQ(r.code, 2);
+  EXPECT_TRUE(contains(r.err, "bash, zsh or fish"));
+  EXPECT_EQ(run("--completion").code, 2);
+  EXPECT_EQ(run("--completion bash zsh").code, 2);
+  EXPECT_TRUE(contains(run("--help").out, "--completion"));
 }
 
 // --- check and validate -----------------------------------------------------------------------

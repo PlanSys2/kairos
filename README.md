@@ -132,6 +132,15 @@ kairos validate domain.pddl problem.pddl plan.txt
 Exit codes: 0 solved, 10 unsolvable, 11 timeout, 12 out of memory, 13 unsupported, 2 invalid
 input, 1 internal error. `kairos --help` lists every option.
 
+Shell completion of commands, options, their values and PDDL files (bash, zsh and fish):
+
+```bash
+eval "$(kairos --completion bash)"      # in ~/.bashrc; zsh: --completion zsh
+kairos --completion fish | source       # fish
+```
+
+In a colcon workspace it comes with the workspace: see [Building](#building).
+
 ## With PlanSys2
 
 A native PlanSys2 plugin comes later. Until then, Kairos runs behind PlanSys2's POPF plugin:
@@ -183,7 +192,11 @@ Inside a colcon workspace:
 ```bash
 colcon build --packages-select kairos
 colcon test --packages-select kairos
+source install/setup.bash    # kairos on the PATH, with its completion (bash and zsh)
 ```
+
+Installed in a system prefix, the completion goes to the standard places of bash-completion
+and fish.
 
 As a conda package, with [pixi](https://pixi.sh) and the `pixi-build-cmake` backend (see
 [pixi.toml](pixi.toml)); the package has the library, its headers, the CMake package and the

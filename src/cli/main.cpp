@@ -29,6 +29,7 @@
 #include <thread>
 #include <vector>
 
+#include "completion.hpp"
 #include "kairos/kairos.hpp"
 
 namespace
@@ -58,6 +59,8 @@ const char * kUsage =
   "  kairos check DOMAIN [PROBLEM]            check a domain, or a problem against it\n"
   "  kairos check --problem PROBLEM           check a problem alone\n"
   "  kairos --version | --help\n"
+  "  kairos --completion bash|zsh|fish        shell completion, e.g. in ~/.bashrc:\n"
+  "                                           eval \"$(kairos --completion bash)\"\n"
   "\n"
   "Options for solve:\n"
   "  --timeout S             seconds (default 30)\n"
@@ -129,6 +132,45 @@ const std::vector<std::string> kWithValue = {
 // Options with an optional "=value", and plain flags
 const std::vector<std::string> kOptionalValue = {"--debug", "--dump"};
 const std::vector<std::string> kFlags = {"--anytime", "--no-anytime"};
+// Values of some options
+const std::vector<std::string> kFormats = {"ipc", "popf", "json"};
+const std::vector<std::string> kDumps = {"ast", "lifted", "ground", "sas", "plan-trace"};
+
+// What shell completion offers, from the lists the parser uses
+kairos::cli::CompletionSpec completion_spec()
+{
+  kairos::cli::CompletionSpec spec;
+  spec.commands = {"solve", "validate", "check"};
+  spec.options[""] = {"--help", "--version", "--completion"};
+  auto & solve = spec.options["solve"];
+  for (const auto & o : kWithValue) {
+    if (o != "--problem") {
+      solve.push_back(o);
+    }
+  }
+  solve.insert(solve.end(), kOptionalValue.begin(), kOptionalValue.end());
+  solve.insert(solve.end(), kFlags.begin(), kFlags.end());
+  solve.push_back("-v");
+  spec.options["validate"] = {"--epsilon"};
+  spec.options["check"] = {"--problem"};
+  spec.values["--engine"] = {"auto", "m1", "m2", "m3"};
+  spec.values["--search"] = {"auto"};
+  for (const auto & p : kairos::search_presets()) {
+    spec.values["--search"].push_back(p);
+  }
+  spec.values["--format"] = kFormats;
+  spec.values["--completion"] = {"bash", "zsh", "fish"};
+  spec.lists["--debug"] = {"all"};
+  for (size_t c = 0; c < static_cast<size_t>(kairos::LogChannel::Count); ++c) {
+    spec.lists["--debug"].emplace_back(kairos::to_string(static_cast<kairos::LogChannel>(c)));
+  }
+  spec.lists["--dump"] = kDumps;
+  spec.file_options = {"--output", "--problem"};
+  spec.dir_options = {"--dump-dir"};
+  spec.number_options = {"--timeout", "--memory", "--threads", "--epsilon", "--seed",
+    "--target-cost", "--no-improvement"};
+  return spec;
+}
 
 bool listed(const std::vector<std::string> & names, const std::string & name)
 {
@@ -348,11 +390,11 @@ int solve_command(const Args & a)
   }
   PlanFormat format = PlanFormat::Ipc;
   if (auto it = a.options.find("--format"); it != a.options.end()) {
-    if (it->second == "ipc") {
+    if (it->second == kFormats[0]) {
       format = PlanFormat::Ipc;
-    } else if (it->second == "popf") {
+    } else if (it->second == kFormats[1]) {
       format = PlanFormat::Popf;
-    } else if (it->second == "json") {
+    } else if (it->second == kFormats[2]) {
       format = PlanFormat::Json;
     } else {
       error = "unknown format " + it->second;
@@ -389,7 +431,7 @@ int solve_command(const Args & a)
     std::stringstream ss(it->second);
     std::string w;
     while (std::getline(ss, w, ',')) {
-      if (w != "ast" && w != "lifted" && w != "ground" && w != "sas" && w != "plan-trace") {
+      if (!listed(kDumps, w)) {
         error = "unknown dump " + w;
       }
       o.dump.insert(w);
@@ -508,6 +550,16 @@ int main(int argc, char ** argv)
     std::find(args.begin(), args.end(), "-h") != args.end())
   {
     std::cout << kUsage;
+    return kSolved;
+  }
+  if (args[0] == "--completion") {
+    auto script = args.size() == 2 ?
+      kairos::cli::completion_script(args[1], completion_spec()) : std::nullopt;
+    if (!script) {
+      std::cerr << "kairos: --completion takes bash, zsh or fish\n";
+      return kInvalidInput;
+    }
+    std::cout << *script;
     return kSolved;
   }
   if (args[0] == "--version") {

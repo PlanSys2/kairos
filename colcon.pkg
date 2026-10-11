@@ -1,0 +1,6 @@
+{
+  "hooks": [
+    "share/kairos/completion/kairos.bash",
+    "share/kairos/completion/kairos.zsh"
+  ]
+}
