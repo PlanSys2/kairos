@@ -30,8 +30,9 @@ organization and will become a planner for PlanSys2, but it does not depend on R
 > Downward's translator (fewer where its static filters are tighter), several times faster.
 > Ground tasks become SAS+ tasks with mutex groups found by invariant synthesis (also for
 > durative actions), matching Fast Downward's, whose states are packed and expanded with a
-> decision-tree successor generator (about 900,000 states per second). Heuristics and search
-> are next. Nothing can be planned yet.
+> decision-tree successor generator (about 900,000 states per second), with blind, goal count,
+> hmax, hadd and FF heuristics (numeric subgoaling, preferred operators). Search is next.
+> Nothing can be planned yet.
 
 ## Why another planner?
 
