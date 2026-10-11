@@ -386,84 +386,62 @@ SolveResult run(
       compressed ? compressed->task : (snapped ? snapped->task : sas_task);
 
     // Search (M1, or M1 on the compressed task)
-    bool action_costs = heuristics::metric_costs_apply(search_task);
     bool length_metric = in.problem.metric == std::nullopt;
-    auto costs = heuristics::action_costs(
-      search_task, action_costs ? heuristics::CostModel::Metric : heuristics::CostModel::Unit);
     // Temporal tasks minimizing the makespan (the default): each durative action costs its
     // duration (at the initial state), so the search prefers short and spread work, which the
     // schedule then overlaps
     bool time_metric = temporal_task && sas_task.metric.minimize &&
       (length_metric || sas_task.metric.expr.tree.op == ground::ExprOp::TotalTime);
-    if (time_metric) {
-      std::vector<double> initial;
-      for (const auto & n : sas_task.initial_numeric) {
-        initial.push_back(n ? *n : state::kUndefined);
-      }
-      for (uint32_t a = 0; a < costs.size(); ++a) {
-        double c = 0.001;  // instantaneous actions (and ends) take no time
-        if (compressed && a >= compressed->instant) {
-          c = state::evaluate(compressed->duration[a - compressed->instant], initial.data());
-        } else if (snapped && snapped->is_start(a)) {
-          c = temporal::bounds(
-            sas_task.durative_actions[snapped->durative(a)], initial.data()).lo;
-        } else if (snapped && a >= snapped->tils) {
-          c = 0.0;
+    std::vector<double> initial_numbers;
+    for (const auto & n : sas_task.initial_numeric) {
+      initial_numbers.push_back(n ? *n : state::kUndefined);
+    }
+    // The cost of each action of a search task, and whether bounds may prune
+    auto costs_of = [&](
+      const sas::Task & of, const temporal::Compressed * comp, const temporal::SnapTask * snap,
+      bool & prune) {
+        bool action_costs = heuristics::metric_costs_apply(of);
+        auto costs = heuristics::action_costs(
+          of, action_costs ? heuristics::CostModel::Metric : heuristics::CostModel::Unit);
+        if (time_metric) {
+          for (uint32_t a = 0; a < costs.size(); ++a) {
+            double c = 0.001;  // instantaneous actions (and ends) take no time
+            if (comp && a >= comp->instant) {
+              c = state::evaluate(comp->duration[a - comp->instant], initial_numbers.data());
+            } else if (snap && snap->is_start(a)) {
+              c = temporal::bounds(
+                sas_task.durative_actions[snap->durative(a)], initial_numbers.data()).lo;
+            } else if (snap && a >= snap->tils) {
+              c = 0.0;
+            }
+            costs[a] = std::isnan(c) || c < 0.0 ? 0.001 : c;
+          }
+          action_costs = true;
         }
-        costs[a] = std::isnan(c) || c < 0.0 ? 0.001 : c;
-      }
-      action_costs = true;
-    }
-    if (!action_costs && !length_metric) {
-      res.diagnostics.push_back(Diagnostic::note(
-          "orchestrator.metric", "the search minimizes the number of actions; the metric of "
-          "the problem is reported for each plan but does not guide the search yet"));
-    }
-    log.info(
-      LogChannel::Orchestrator, "search: {} variables, {} actions, costs {}",
-      search_task.variables.size(), search_task.actions.size(),
-      time_metric ? "durations" : (action_costs ? "from the metric" : "unit"));
-    state::StateRegistry registry(search_task, &budget);
-    state::StateSpace space(search_task, registry);
-    std::unique_ptr<temporal::TemporalFilter> filter;
-    if (snapped) {
-      filter = std::make_unique<temporal::TemporalFilter>(
-        sas_task, *snapped, space, options.epsilon);
-    }
+        prune = action_costs || length_metric;
+        return costs;
+      };
 
-    // Plans: validated against the original task before anyone sees them
+    // Plans: validated against the original task before anyone sees them; only better ones
+    // (by the metric, or the makespan or length) are kept and handed over
     std::mutex mutex;
     std::vector<uint32_t> best_actions;
+    const sas::Task * best_task = &search_task;
     std::atomic<bool> target_reached{false};
     std::atomic<int64_t> last_plan{-1};  // ms since t0
     size_t invalid = 0;
     auto search_start = Clock::now();
-    search::PlanSink sink([&](const search::PlanSink::Entry & e) {
-        Plan plan;
-        if (compressed) {
-          auto temporal_plan = temporal::schedule(
-            sas_task, *compressed, space, e.actions, options.epsilon);
-          if (!temporal_plan) {
-            ++invalid;
-            log.error(LogChannel::Orchestrator, "internal error: a plan could not be scheduled");
-            return;
-          }
-          plan = std::move(*temporal_plan);
-        } else if (filter) {
-          auto temporal_plan = filter->plan(e.actions);
-          if (!temporal_plan) {
-            ++invalid;
-            log.error(LogChannel::Orchestrator, "internal error: a plan could not be scheduled");
-            return;
-          }
-          plan = std::move(*temporal_plan);
-        } else {
-          plan = search::to_plan(sas_task, e.actions);
+    auto offer = [&](std::optional<Plan> plan, const std::vector<uint32_t> & actions,
+      const sas::Task & from) {
+        if (!plan) {
+          ++invalid;
+          log.error(LogChannel::Orchestrator, "internal error: a plan could not be scheduled");
+          return;
         }
         ValidateOptions vo;
         vo.epsilon = options.epsilon;
         auto report = val::validate(in.domain, in.domain_model, in.problem, in.problem_model,
-          plan, vo);
+          *plan, vo);
         if (!report.valid()) {
           ++invalid;
           log.error(
@@ -472,32 +450,38 @@ SolveResult run(
           return;
         }
         // Without a metric: the makespan of temporal plans, the length of sequential ones
-        plan.cost = report.metric ? *report.metric :
-        (plan.temporal ? plan.makespan() : static_cast<double>(plan.steps.size()));
+        plan->cost = report.metric ? *report.metric :
+          (plan->temporal ? plan->makespan() : static_cast<double>(plan->steps.size()));
+        bool minimize = !in.problem.metric || sas_task.metric.minimize;
         uint32_t index;
-        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-          Clock::now() - t0);
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0);
         {
           std::lock_guard<std::mutex> lock(mutex);
+          if (res.plan && res.plan->cost &&
+            (minimize ? *plan->cost >= *res.plan->cost : *plan->cost <= *res.plan->cost))
+          {
+            return;  // cheaper for the search, not better by the metric
+          }
           index = static_cast<uint32_t>(res.stats.plans++);
-          res.plan = plan;
-          best_actions = e.actions;
+          res.plan = *plan;
+          best_actions = actions;
+          best_task = &from;
           if (!res.stats.first_plan_ms) {
             res.stats.first_plan_ms = ms_since(t0);
           }
         }
         last_plan = elapsed.count();
         log.info(
-          LogChannel::Search, "plan {} with {} actions, cost {}", index, plan.steps.size(),
-          *plan.cost);
+          LogChannel::Search, "plan {} with {} actions, cost {}", index, plan->steps.size(),
+          *plan->cost);
         if (on_plan) {
-          on_plan(plan, index, elapsed);
+          on_plan(*plan, index, elapsed);
         }
-        if (options.target_cost && *plan.cost <= *options.target_cost) {
+        if (options.target_cost && *plan->cost <= *options.target_cost) {
           target_reached = true;
           internal.request_stop();
         }
-      });
+      };
     // Stop when no plan improves for a while
     std::atomic<bool> no_improvement{false};
     std::jthread watchdog;
@@ -517,46 +501,182 @@ SolveResult run(
             }
           });
     }
-    search::SearchContext ctx(search_task, registry, space, costs, sink, &budget);
-    if (filter) {
-      ctx.accept = [&filter](state::StateId p, uint32_t a, state::StateId c) {
-          return filter->accept(p, a, c);
-        };
+    // The phases of the search, each on a task (plain, compressed for M2 or snap for M3) with a
+    // search configuration and a share of the remaining time:
+    // - classical and numeric tasks: one phase;
+    // - M3 with "auto": a portfolio, since no configuration wins everywhere (lazy LAMA finds
+    //   PlanSys2's bt_example at once; eager search with novelty, match-cellar);
+    // - simple temporal tasks with "auto" and anytime: M2 for the first plan (its improvements
+    //   lower the sum of durations, which says little of the makespan), then the M3 portfolio
+    //   with g the makespan of the partial plan
+    enum class Kind : uint8_t {Plain, Compressed, Snap};
+    struct Phase
+    {
+      Kind kind;
+      std::string search;
+      double share;      // of the time left when it starts (1: all)
+      bool improve;
+      bool makespan_g;   // g is the makespan of the partial plan (M3)
+    };
+    std::vector<Phase> phases;
+    bool portfolio = options.search == "auto";
+    auto m3_portfolio = [&](bool makespan_g) {
+        phases.push_back({Kind::Snap, "lama", 0.2, true, makespan_g});
+        phases.push_back({Kind::Snap, "eager-lama", 0.375, true, makespan_g});
+        phases.push_back({Kind::Snap, "lama-novelty", 1.0, true, makespan_g});
+      };
+    std::optional<temporal::SnapTask> improver;
+    if (compressed && portfolio && options.anytime && options.engine == Engine::Auto &&
+      time_metric)
+    {
+      improver = temporal::snap(sas_task);
+      if (!improver->unsupported.empty()) {
+        improver.reset();
+      }
     }
-    ctx.logger = log;
-    ctx.prune_with_bound = action_costs || length_metric;
-    if (options.search == "auto") {
-      std::string chosen = resolve_auto(search_task, snapped.has_value());
-      configured = preset(chosen);
-      log.info(LogChannel::Orchestrator, "search: {} (auto)", chosen);
+    if (snapped) {
+      if (portfolio) {
+        m3_portfolio(time_metric && options.anytime);
+      } else {
+        phases.push_back({Kind::Snap, options.search, 1.0, options.anytime, false});
+      }
+    } else if (compressed) {
+      phases.push_back({Kind::Compressed, options.search, improver ? 0.0 : 1.0,
+          options.anytime && !improver, false});
+      if (improver) {
+        m3_portfolio(true);
+      }
+    } else {
+      phases.push_back({Kind::Plain, options.search, 1.0, options.anytime, false});
     }
-    search::AnytimeOptions ao = *configured;
-    ao.improve = options.anytime;
-    auto outcome = search::anytime(ctx, ao);
+    const temporal::SnapTask * snap_task = snapped ? &*snapped : (improver ? &*improver : nullptr);
+
+    if (!time_metric && !heuristics::metric_costs_apply(search_task) && !length_metric) {
+      res.diagnostics.push_back(Diagnostic::note(
+          "orchestrator.metric", "the search minimizes the number of actions; the metric of "
+          "the problem is reported for each plan but does not guide the search yet"));
+    }
+    search::AnytimeResult outcome = search::AnytimeResult::Failed;
+    search::SearchStats stats;
+    size_t states = 0;
+    double bytes_per_state = 0.0;
+    bool proof = false;           // a complete phase exhausted its space without a plan
+    bool m3_exhausted = false;
+    for (size_t k = 0; k < phases.size(); ++k) {
+      const Phase & ph = phases[k];
+      if (budget.check() != BudgetState::Ok || target_reached || no_improvement) {
+        break;
+      }
+      const sas::Task & task_k = ph.kind == Kind::Compressed ? compressed->task :
+        (ph.kind == Kind::Snap ? snap_task->task : sas_task);
+      // Its own deadline, unless it is the last phase (then the global budget)
+      std::optional<Budget> own;
+      if (ph.share < 1.0 && k + 1 < phases.size()) {
+        BudgetConfig pc = bc;
+        auto left = (bc.deadline ? *bc.deadline : t0 + options.timeout) - Clock::now();
+        pc.deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(
+          left * ph.share);
+        if (ph.share == 0.0) {
+          pc.deadline = bc.deadline;  // until its first plan (it does not improve)
+        }
+        own.emplace(pc);
+      }
+      Budget & bk = own ? *own : budget;
+      bool prune = false;
+      auto costs = costs_of(task_k, ph.kind == Kind::Compressed ? &*compressed : nullptr,
+          ph.kind == Kind::Snap ? snap_task : nullptr, prune);
+      std::string chosen = ph.search == "auto" ?
+        resolve_auto(task_k, ph.kind == Kind::Snap) : ph.search;
+      if (ph.search == "auto") {
+        log.info(LogChannel::Orchestrator, "search: {} (auto)", chosen);
+      }
+      log.info(
+        LogChannel::Orchestrator, "{}: {} variables, {} actions, search {}, costs {}",
+        ph.kind == Kind::Compressed ? "engine M2" :
+        (ph.kind == Kind::Snap ? "engine M3" : "search"), task_k.variables.size(),
+        task_k.actions.size(), chosen, ph.makespan_g ? "makespan" :
+        (time_metric ? "durations" : (prune && !length_metric ? "from the metric" : "unit")));
+      state::StateRegistry registry(task_k, &bk);
+      state::StateSpace space(task_k, registry);
+      std::unique_ptr<temporal::TemporalFilter> filter;
+      if (ph.kind == Kind::Snap) {
+        filter = std::make_unique<temporal::TemporalFilter>(
+          sas_task, *snap_task, space, options.epsilon);
+      }
+      search::PlanSink sink([&](const search::PlanSink::Entry & e) {
+          if (ph.kind == Kind::Compressed) {
+            offer(temporal::schedule(sas_task, *compressed, space, e.actions, options.epsilon),
+              e.actions, task_k);
+          } else if (filter) {
+            offer(filter->plan(e.actions), e.actions, task_k);
+          } else {
+            offer(search::to_plan(sas_task, e.actions), e.actions, task_k);
+          }
+        });
+      search::SearchContext ctx(task_k, registry, space, costs, sink, &bk);
+      if (filter) {
+        ctx.accept = [&filter](state::StateId p, uint32_t a, state::StateId c) {
+            return filter->accept(p, a, c);
+          };
+        if (ph.makespan_g) {
+          ctx.path_cost = [&filter, &costs](
+            state::StateId p, uint32_t a, state::StateId c, double g) {
+              return filter->makespan(p, a, c, g + costs[a]);
+            };
+        }
+      }
+      ctx.logger = log;
+      ctx.prune_with_bound = prune;
+      search::AnytimeOptions ao = *preset(chosen);
+      ao.improve = ph.improve;
+      auto result = search::anytime(ctx, ao);
+      stats.expanded += ctx.stats.expanded;
+      stats.generated += ctx.stats.generated;
+      stats.evaluated += ctx.stats.evaluated;
+      states += registry.size();
+      bytes_per_state = registry.bytes_per_state() + 32.0;  // and the search node
+      if (res.plan && best_task == &task_k) {
+        dump(options, "plan-trace", "plan-trace.txt", [&]() {
+            return plan_trace(task_k, best_actions);
+          }, log);
+      }
+      outcome = result;
+      if (result == search::AnytimeResult::Exhausted && !res.plan) {
+        // No plan in its whole space: a proof for the plain task and a complete M2; strong
+        // evidence for M3 (one partial plan per state)
+        proof = ph.kind == Kind::Plain || (ph.kind == Kind::Compressed && m2_complete);
+        m3_exhausted = ph.kind == Kind::Snap;
+        if (proof || m3_exhausted) {
+          break;
+        }
+      }
+      if (result == search::AnytimeResult::ProvenOptimal && ph.kind == Kind::Plain) {
+        break;  // nothing better exists
+      }
+    }
     if (watchdog.joinable()) {
       watchdog.request_stop();
       watchdog.join();
     }
     res.stats.search_ms = ms_since(search_start);
-    res.stats.expanded = ctx.stats.expanded;
-    res.stats.generated = ctx.stats.generated;
-    res.stats.evaluated = ctx.stats.evaluated;
-    res.stats.states = registry.size();
-    res.stats.bytes_per_state = registry.bytes_per_state() + 32.0;  // and the search node
+    res.stats.expanded = stats.expanded;
+    res.stats.generated = stats.generated;
+    res.stats.evaluated = stats.evaluated;
+    res.stats.states = states;
+    res.stats.bytes_per_state = bytes_per_state;
     if (res.plan) {
-      dump(options, "plan-trace", "plan-trace.txt", [&]() {
-          return plan_trace(search_task, best_actions);
-        }, log);
       StopReason reason = StopReason::NoImprovement;
-      if (outcome == search::AnytimeResult::ProvenOptimal) {
-        // In M2 and M3 the search proves the sum of durations optimal, not the makespan
-        reason = temporal_task ? StopReason::Exhausted : StopReason::ProvenOptimal;
-      } else if (target_reached) {
+      if (target_reached) {
         reason = StopReason::TargetReached;
       } else if (no_improvement) {
         reason = StopReason::NoImprovement;
-      } else if (outcome == search::AnytimeResult::Stopped) {
+      } else if (outcome == search::AnytimeResult::ProvenOptimal) {
+        // In M2 and M3 the search proves the sum of durations optimal, not the makespan
+        reason = temporal_task ? StopReason::Exhausted : StopReason::ProvenOptimal;
+      } else if (outcome == search::AnytimeResult::Stopped || budget.check() != BudgetState::Ok) {
         reason = budget_status().second;
+      } else if (outcome == search::AnytimeResult::Exhausted && temporal_task) {
+        reason = StopReason::Exhausted;
       }
       return finish(Status::Solved, reason);
     }
@@ -565,30 +685,29 @@ SolveResult run(
           "orchestrator.invalid_plans", "every plan found failed validation (a bug in Kairos)"));
       return finish(Status::InternalError, StopReason::Exhausted);
     }
-    switch (outcome) {
-      case search::AnytimeResult::Exhausted:
-        if (!m2_complete) {
-          res.diagnostics.push_back(Diagnostic::error(
-              "unsupported.m2_incomplete",
-              "engine M2 found no plan, which does not prove there is none for this task "
-              "(variable durations or possible required concurrency: engine M3, step 15d)"));
-          return finish(Status::Unsupported, StopReason::Exhausted);
-        }
-        if (snapped) {
-          res.diagnostics.push_back(Diagnostic::note(
-              "orchestrator.m3_exhausted", "engine M3 found no plan; as POPF, it keeps one "
-              "partial plan per state, so this is strong evidence but not a proof"));
-        }
-        return finish(Status::Unsolvable, StopReason::Exhausted);
-      case search::AnytimeResult::Stopped: {
-          auto [s, r] = budget_status();
-          return finish(s, r);
-        }
-      default:
-        res.diagnostics.push_back(Diagnostic::error(
-            "orchestrator.no_plan", "the search ended without a plan and without a proof"));
-        return finish(Status::InternalError, StopReason::Exhausted);
+    if (proof) {
+      return finish(Status::Unsolvable, StopReason::Exhausted);
     }
+    if (m3_exhausted) {
+      res.diagnostics.push_back(Diagnostic::note(
+          "orchestrator.m3_exhausted", "engine M3 found no plan; as POPF, it keeps one "
+          "partial plan per state, so this is strong evidence but not a proof"));
+      return finish(Status::Unsolvable, StopReason::Exhausted);
+    }
+    if (outcome == search::AnytimeResult::Exhausted) {
+      res.diagnostics.push_back(Diagnostic::error(
+          "unsupported.m2_incomplete",
+          "engine M2 found no plan, which does not prove there is none for this task "
+          "(variable durations or possible required concurrency)"));
+      return finish(Status::Unsupported, StopReason::Exhausted);
+    }
+    if (outcome == search::AnytimeResult::Stopped || budget.check() != BudgetState::Ok) {
+      auto [st, r] = budget_status();
+      return finish(st, r);
+    }
+    res.diagnostics.push_back(Diagnostic::error(
+        "orchestrator.no_plan", "the search ended without a plan and without a proof"));
+    return finish(Status::InternalError, StopReason::Exhausted);
   } catch (const std::exception & e) {
     res.diagnostics.push_back(Diagnostic::error("orchestrator.exception", e.what()));
     return finish(Status::InternalError, StopReason::Exhausted);

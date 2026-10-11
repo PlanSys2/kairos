@@ -248,10 +248,7 @@ SnapTask snap(const sas::Task & task)
 struct TemporalFilter::Builder
 {
   Stn stn;
-  std::map<sas::VarId, Stn::Node> last_write;
-  std::map<sas::VarId, std::vector<Stn::Node>> readers;
-  std::map<sas::NumVarId, Stn::Node> last_num_write;
-  std::map<sas::NumVarId, std::vector<Stn::Node>> num_readers;
+  Orderer<Stn::Node> order;
   // Per durative action while it runs: its start and its end (created with the start, so the
   // STN sees its duration and what must happen before it from the start on)
   struct Open
@@ -265,47 +262,6 @@ struct TemporalFilter::Builder
 
   explicit Builder(size_t durative)
   : open(durative) {}
-
-  // The happenings a new one must follow
-  std::set<Stn::Node> before(const Access & acc) const
-  {
-    std::set<Stn::Node> out;
-    auto scan = [&](const auto & last, const auto & seen_by, const auto & rd, const auto & wr) {
-        for (auto v : rd) {
-          if (auto it = last.find(v); it != last.end()) {
-            out.insert(it->second);
-          }
-        }
-        for (auto v : wr) {
-          if (auto it = last.find(v); it != last.end()) {
-            out.insert(it->second);
-          }
-          if (auto it = seen_by.find(v); it != seen_by.end()) {
-            out.insert(it->second.begin(), it->second.end());
-          }
-        }
-      };
-    scan(last_write, readers, acc.reads, acc.writes);
-    scan(last_num_write, num_readers, acc.num_reads, acc.num_writes);
-    return out;
-  }
-
-  void record(Stn::Node node, const Access & acc)
-  {
-    auto put = [&](auto & last, auto & seen_by, const auto & rd, const auto & wr) {
-        for (auto v : wr) {
-          last[v] = node;
-          seen_by[v].clear();
-        }
-        for (auto v : rd) {
-          if (!std::binary_search(wr.begin(), wr.end(), v)) {
-            seen_by[v].push_back(node);
-          }
-        }
-      };
-    put(last_write, readers, acc.reads, acc.writes);
-    put(last_num_write, num_readers, acc.num_reads, acc.num_writes);
-  }
 };
 
 namespace
@@ -326,8 +282,9 @@ std::vector<Access> accesses(const sas::Task & original, const SnapTask & s)
       acc.effect(e);
     }
     if (s.is_start(a) || s.is_end(a)) {
-      // Over all conditions: read at start and at end, so no write breaks them in between
-      acc.read(original.durative_actions[s.durative(a)].over_all);
+      // Over all conditions: read at start and at end (with no separation: they hold in the
+      // open interval), so no write breaks them in between
+      acc.invariant(original.durative_actions[s.durative(a)].over_all);
     }
     acc.finish(bases);
   }
@@ -450,7 +407,7 @@ bool TemporalFilter::add(
   bool record) const
 {
   const Access & acc = access_[action];
-  auto prev = b.before(acc);
+  auto prev = b.order.before(acc, epsilon_);
   bool start = snap_.is_start(action);
   bool end = snap_.is_end(action);
   size_t self = start || end ? snap_.durative(action) : 0;
@@ -465,8 +422,8 @@ bool TemporalFilter::add(
   } else {
     node = b.stn.add_node();
   }
-  for (auto p : prev) {
-    if (!b.stn.at_least(p, node, epsilon_)) {
+  for (auto [p, sep] : prev) {
+    if (!b.stn.at_least(p, node, sep)) {
       return false;
     }
   }
@@ -477,7 +434,7 @@ bool TemporalFilter::add(
   } else if (auto deadline = next_til(b.tils_done, acc)) {
     // Timed initial literals happen anyway: a happening that interferes with one the plan has
     // not applied yet comes before it (to come after, the plan applies that literal first)
-    if (!b.stn.add(Stn::kOrigin, node, *deadline - epsilon_)) {
+    if (!b.stn.add(Stn::kOrigin, node, *deadline)) {
       return false;
     }
   }
@@ -488,7 +445,7 @@ bool TemporalFilter::add(
       return false;
     }
     if (auto deadline = next_til(b.tils_done, access_[action + 1])) {
-      if (!b.stn.add(Stn::kOrigin, end_node, *deadline - epsilon_)) {
+      if (!b.stn.add(Stn::kOrigin, end_node, *deadline)) {
         return false;
       }
     }
@@ -496,11 +453,12 @@ bool TemporalFilter::add(
       if (r == self || b.open[r].end == UINT32_MAX) {
         continue;
       }
-      // Its over all condition must hold until it ends: an end that breaks it comes after
-      if (breaks(r, self) && !b.stn.at_least(end_node, b.open[r].end, epsilon_)) {
+      // Its over all condition must hold until it ends (the open interval: the same instant
+      // is fine): an end that breaks it does not come before
+      if (breaks(r, self) && !b.stn.at_least(end_node, b.open[r].end, 0.0)) {
         return false;
       }
-      if (breaks(self, r) && !b.stn.at_least(b.open[r].end, end_node, epsilon_)) {
+      if (breaks(self, r) && !b.stn.at_least(b.open[r].end, end_node, 0.0)) {
         return false;
       }
     }
@@ -513,42 +471,40 @@ bool TemporalFilter::add(
     } else if (action >= snap_.tils) {
       ++b.tils_done;
     }
-    b.record(node, acc);
+    b.order.record(node, acc);
   }
   return true;
 }
 
 // The time of the first timed initial literal from `from` on that interferes with a happening
 // (changes what it reads or changes, or reads what it changes)
+// The latest time a happening can have before the timed initial literals the plan has not
+// applied yet (from `from` on): epsilon before one that changes what it reads or changes, or
+// reads what it changes; the same instant for one that changes an over all condition
 std::optional<double> TemporalFilter::next_til(size_t from, const Access & acc) const
 {
   std::optional<double> best;
-  auto first = [&](const std::vector<uint32_t> & tils) {
+  auto first = [&](const std::vector<uint32_t> & tils, double sep) {
       auto it = std::lower_bound(tils.begin(), tils.end(), static_cast<uint32_t>(from));
       if (it != tils.end()) {
-        double t = snap_.til_time[*it];
+        double t = snap_.til_time[*it] - sep;
         best = best ? std::min(*best, t) : t;
       }
     };
-  for (const auto * vars : {&acc.reads, &acc.writes}) {
-    for (auto v : *vars) {
-      if (auto it = til_writes_.find(v); it != til_writes_.end()) {
-        first(it->second);
+  auto scan = [&](const auto & vars, const auto & map, double sep) {
+      for (auto v : vars) {
+        if (auto it = map.find(v); it != map.end()) {
+          first(it->second, sep);
+        }
       }
-    }
-  }
-  for (auto v : acc.writes) {
-    if (auto it = til_reads_.find(v); it != til_reads_.end()) {
-      first(it->second);
-    }
-  }
-  for (const auto * nums : {&acc.num_reads, &acc.num_writes}) {
-    for (auto n : *nums) {
-      if (auto it = til_num_writes_.find(n); it != til_num_writes_.end()) {
-        first(it->second);
-      }
-    }
-  }
+    };
+  scan(acc.reads, til_writes_, epsilon_);
+  scan(acc.writes, til_writes_, epsilon_);
+  scan(acc.writes, til_reads_, epsilon_);
+  scan(acc.inv_reads, til_writes_, 0.0);
+  scan(acc.num_reads, til_num_writes_, epsilon_);
+  scan(acc.num_writes, til_num_writes_, epsilon_);
+  scan(acc.inv_num_reads, til_num_writes_, 0.0);
   return best;
 }
 
@@ -566,6 +522,7 @@ void TemporalFilter::rebuild(state::StateId parent)
   }
   builder_->mark = builder_->stn.mark();
   cached_ = parent;
+  makespans_.clear();
 }
 
 int32_t TemporalFilter::node_of(state::StateId s) const
@@ -594,6 +551,14 @@ bool TemporalFilter::accept(state::StateId parent, uint32_t action, state::State
   // Try the happening on the parent's STN, then undo it: each child is tried alone
   Stn::Node node;
   bool ok = add(*builder_, action, d, node, false);
+  if (ok) {
+    // The makespan of the plan with it (pending ends included): for a search minimizing it
+    double makespan = 0.0;
+    for (Stn::Node n = 1; n < builder_->stn.nodes(); ++n) {
+      makespan = std::max(makespan, builder_->stn.earliest(n));
+    }
+    makespans_[{action, child}] = makespan;
+  }
   builder_->stn.undo(builder_->mark);
   if (!ok) {
     return false;
@@ -606,6 +571,16 @@ bool TemporalFilter::accept(state::StateId parent, uint32_t action, state::State
     node_of_[child] = static_cast<int32_t>(nodes_.size() - 1);
   }
   return true;
+}
+
+double TemporalFilter::makespan(
+  state::StateId parent, uint32_t action, state::StateId child, double fallback) const
+{
+  if (parent != cached_) {
+    return fallback;
+  }
+  auto it = makespans_.find({action, child});
+  return it == makespans_.end() ? fallback : it->second;
 }
 
 std::optional<Plan> TemporalFilter::plan(const std::vector<uint32_t> & actions)

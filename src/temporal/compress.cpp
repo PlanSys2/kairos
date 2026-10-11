@@ -362,44 +362,17 @@ std::optional<Plan> schedule(
   std::vector<Step> steps;
   // Happenings (start and end of each step) in the order the compressed plan executes them;
   // each goes after the last happening that wrote what it reads or writes, and after those
-  // that read what it writes since. Over all conditions are read at start and at end, so no
-  // later write can break them while the action runs
-  std::map<sas::VarId, Stn::Node> last_write;
-  std::map<sas::VarId, std::vector<Stn::Node>> readers;
-  std::map<sas::NumVarId, Stn::Node> last_num_write;
-  std::map<sas::NumVarId, std::vector<Stn::Node>> num_readers;
+  // that read what it writes since. Over all conditions are read at start and at end (with no
+  // separation: they hold in the open interval), so no later write can break them
+  Orderer<Stn::Node> order;
   std::vector<uint32_t> step_of;  // per STN node
   step_of.push_back(UINT32_MAX);
   auto happen = [&](Stn::Node node, uint32_t k, const Access & acc) {
-      std::set<Stn::Node> before;
-      auto order = [&](auto & last, auto & seen_by, const auto & rd, const auto & wr) {
-          for (auto v : rd) {
-            if (auto it = last.find(v); it != last.end()) {
-              before.insert(it->second);
-            }
-          }
-          for (auto v : wr) {
-            if (auto it = last.find(v); it != last.end()) {
-              before.insert(it->second);
-            }
-            auto & r = seen_by[v];
-            before.insert(r.begin(), r.end());
-          }
-          for (auto v : wr) {
-            last[v] = node;
-            seen_by[v].clear();
-          }
-          for (auto v : rd) {
-            if (!std::binary_search(wr.begin(), wr.end(), v)) {
-              seen_by[v].push_back(node);
-            }
-          }
-        };
-      order(last_write, readers, acc.reads, acc.writes);
-      order(last_num_write, num_readers, acc.num_reads, acc.num_writes);
-      for (Stn::Node b : before) {
+      auto before = order.before(acc, epsilon);
+      order.record(node, acc);
+      for (auto [b, sep] : before) {
         // Within a step the duration already orders start and end
-        if (step_of[b] != k && !stn.at_least(b, node, epsilon)) {
+        if (step_of[b] != k && !stn.at_least(b, node, sep)) {
           return false;
         }
       }
@@ -419,11 +392,11 @@ std::optional<Plan> schedule(
         return std::nullopt;
       }
       at_start.read(da.at_start);
-      at_start.read(da.over_all);
+      at_start.invariant(da.over_all);
       for (const auto & dc : da.duration) {
         at_start.read(dc.value.tree);
       }
-      at_end.read(da.over_all);
+      at_end.invariant(da.over_all);
       at_end.read(da.at_end);
       for (const auto & f : da.start) {
         at_start.writes.push_back(f.var);

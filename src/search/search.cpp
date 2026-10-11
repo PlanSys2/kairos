@@ -438,6 +438,11 @@ private:
 
   bool out_of_budget() {return ctx_.budget && ctx_.budget->exhausted();}
 
+  double step_cost(StateId parent, uint32_t op, StateId child, double g) const
+  {
+    return ctx_.path_cost ? ctx_.path_cost(parent, op, child, g) : g + ctx_.costs[op];
+  }
+
   bool pruned(double g) const {return ctx_.prune_with_bound && g >= ctx_.sink.bound();}
 
   Outcome found(StateId goal)
@@ -446,8 +451,12 @@ private:
     // the g stored in the goal node
     auto plan = space_.path(goal);
     double g = 0.0;
-    for (uint32_t op : plan) {
-      g += ctx_.costs[op];
+    if (ctx_.path_cost) {
+      g = space_[goal].g;  // depends on the path: the one the node keeps
+    } else {
+      for (uint32_t op : plan) {
+        g += ctx_.costs[op];
+      }
     }
     if (ctx_.sink.offer(plan, g)) {
       ctx_.logger.info(
@@ -578,7 +587,7 @@ private:
         if (out_of_budget()) {
           return Outcome::Stopped;
         }
-        double g2 = g + ctx_.costs[op];
+        double g2 = step_cost(e.state, op, t, g);
         if (pruned(g2)) {
           continue;
         }
@@ -682,7 +691,7 @@ private:
         if (!next || (ctx_.accept && !ctx_.accept(e.state, e.action, *next))) {
           continue;
         }
-        double g2 = space_[e.state].g + ctx_.costs[e.action];
+        double g2 = step_cost(e.state, e.action, *next, space_[e.state].g);
         if (pruned(g2)) {
           continue;
         }
@@ -756,7 +765,7 @@ private:
           {
             continue;
           }
-          double g2 = space_[t].g + ctx_.costs[op];
+          double g2 = step_cost(t, op, *next, space_[t].g);
           auto cn = context(*next, g2);
           transition(t, op, cn);
           auto rr = evaluate(cn);

@@ -25,6 +25,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "kairos/plan.hpp"
@@ -91,6 +92,11 @@ public:
 
   bool accept(state::StateId parent, uint32_t action, state::StateId child);
 
+  /// @brief The makespan of the plan of `parent` plus a transition accepted while expanding it
+  /// (pending ends included); `fallback` if unknown.
+  double makespan(
+    state::StateId parent, uint32_t action, state::StateId child, double fallback) const;
+
   /// @brief The temporal plan of a sequence of snap actions (nullopt if inconsistent).
   std::optional<Plan> plan(const std::vector<uint32_t> & actions);
 
@@ -132,6 +138,7 @@ private:
   std::vector<Node> nodes_;
   std::unique_ptr<Builder> builder_;  // the STN of the plan of the parent being expanded
   state::StateId cached_ = state::kNoState;
+  std::map<std::pair<uint32_t, state::StateId>, double> makespans_;  // of the cached parent
 };
 
 }  // namespace kairos::temporal

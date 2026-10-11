@@ -400,8 +400,8 @@ TEST(PlannerApiTest, IndependentWorkOverlaps)
   ASSERT_EQ(r.status, Status::Solved);
   ASSERT_EQ(r.plan->steps.size(), 4u);
   EXPECT_TRUE(validate(p, *r.plan).valid());
-  EXPECT_NEAR(r.plan->makespan(), 8.001, 1e-9);  // clean starts epsilon after the move ends
-  EXPECT_NEAR(*r.plan->cost, 8.001, 1e-9);       // no metric: the makespan
+  EXPECT_NEAR(r.plan->makespan(), 8.0, 1e-9);  // clean starts when the move ends (over all)
+  EXPECT_NEAR(*r.plan->cost, 8.0, 1e-9);       // no metric: the makespan
 }
 
 TEST(PlannerApiTest, EnginesAndDurativeActions)
@@ -443,8 +443,8 @@ TEST(PlannerApiTest, RequiredConcurrencyWithEngineM3)
   const auto & mend = r.plan->steps[1];
   EXPECT_EQ(light.action(), "(light-match m1)");
   EXPECT_EQ(mend.action(), "(mend f1 m1)");
-  EXPECT_GT(mend.time, light.time);
-  EXPECT_LT(mend.time + mend.duration, light.time + light.duration);
+  EXPECT_GE(mend.time, light.time);
+  EXPECT_LE(mend.time + mend.duration, light.time + light.duration);
   // Forcing M2: no plan, and that proves nothing
   SolveOptions m2 = quick();
   m2.engine = Engine::M2;
@@ -452,6 +452,31 @@ TEST(PlannerApiTest, RequiredConcurrencyWithEngineM3)
   EXPECT_EQ(f.status, Status::Unsupported);
   EXPECT_TRUE(has_code(f.diagnostics, "orchestrator.forced_m2"));
   EXPECT_TRUE(has_code(f.diagnostics, "unsupported.m2_incomplete"));
+}
+
+TEST(PlannerApiTest, OverAllConditionsHoldInTheOpenInterval)
+{
+  // Time windows compiled as in IPC 2004's airport: a wrapper of 10 gives a phase marker over
+  // all; idle (4) then work (6) must fill it exactly. Work needs idle's end only over all, so it
+  // starts at that instant, and it ends with the wrapper: with epsilon separations no plan exists
+  const char * domain =
+    "(define (domain w) (:requirements :durative-actions)"
+    " (:predicates (go) (global) (idle0) (idle1) (done))"
+    " (:durative-action wrapper :parameters () :duration (= ?duration 10)"
+    "  :condition (at start (go))"
+    "  :effect (and (at start (not (go))) (at start (global)) (at start (idle0))"
+    "   (at end (not (global)))))"
+    " (:durative-action idle :parameters () :duration (= ?duration 4)"
+    "  :condition (and (over all (idle0)) (over all (global)))"
+    "  :effect (and (at end (idle1)) (at end (not (idle0)))))"
+    " (:durative-action work :parameters () :duration (= ?duration 6)"
+    "  :condition (and (over all (idle1)) (over all (global)))"
+    "  :effect (and (at end (done)) (at end (not (idle1))))))";
+  Problem p = problem(domain, "(define (problem x) (:domain w) (:init (go)) (:goal (done)))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved) << (r.diagnostics.empty() ? "" : r.diagnostics[0].message);
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+  EXPECT_NEAR(r.plan->makespan(), 10.0, 1e-9);
 }
 
 TEST(PlannerApiTest, TimedInitialLiteralsWithEngineM3)
@@ -468,7 +493,7 @@ TEST(PlannerApiTest, TimedInitialLiteralsWithEngineM3)
   SolveResult r = Planner().solve(p, quick());
   ASSERT_EQ(r.status, Status::Solved);
   ASSERT_EQ(r.plan->steps.size(), 1u);
-  EXPECT_NEAR(r.plan->steps[0].time, 3.001, 1e-9);
+  EXPECT_NEAR(r.plan->steps[0].time, 3.0, 1e-9);
   EXPECT_TRUE(validate(p, *r.plan).valid());
   // Open from 3 to 6: no room for 4
   Problem q = problem(domain,

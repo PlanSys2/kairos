@@ -108,6 +108,10 @@ struct SearchContext
   /// @brief Optional: whether a transition may be taken (the temporal engine checks over all
   /// conditions and the temporal network); a rejected one counts as an invalid step
   std::function<bool(state::StateId parent, uint32_t action, state::StateId child)> accept;
+  /// @brief Optional: g of a child, when it depends on the path and not on a cost per action
+  /// (the makespan of a temporal plan; never below the parent's g)
+  std::function<double(state::StateId parent, uint32_t action, state::StateId child, double g)>
+  path_cost;
   SearchStats stats;
 };
 

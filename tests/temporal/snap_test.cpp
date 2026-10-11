@@ -150,7 +150,8 @@ TEST(SnapTest, RequiredConcurrencyAndItsPlan)
   EXPECT_EQ(plan->steps[0].action(), "(light-match m1)");
   EXPECT_EQ(plan->steps[0].time, 0.0);
   EXPECT_EQ(plan->steps[0].duration, 8.0);
-  EXPECT_NEAR(plan->steps[1].time, 0.001, 1e-9);
+  // The light is needed over all (the open interval): mending may start at the same instant
+  EXPECT_EQ(plan->steps[1].time, 0.0);
   EXPECT_EQ(plan->steps[1].duration, 5.0);
 }
 
@@ -212,10 +213,11 @@ TEST(SnapTest, VariableDurations)
   for (const auto & st : plan->steps) {
     at[st.action()] = {st.time, st.duration};
   }
-  // wait stretches to cover use (from 0.001 to 4.001) and a bit more: 4.002
+  // use needs q over all, from wait's start to its end: both start at 0, and wait stretches to
+  // end with it (4, above its minimum 2)
   EXPECT_EQ(at["(wait)"].first, 0.0);
-  EXPECT_NEAR(at["(wait)"].second, 4.002, 1e-9);
-  EXPECT_NEAR(at["(use)"].first, 0.001, 1e-9);
+  EXPECT_NEAR(at["(wait)"].second, 4.0, 1e-9);
+  EXPECT_EQ(at["(use)"].first, 0.0);
   EXPECT_EQ(at["(use)"].second, 4.0);
 }
 
@@ -242,7 +244,7 @@ TEST(SnapTest, TimedInitialLiteralsOpenAndCloseWindows)
   auto plan = b->filter->plan(b->taken);
   ASSERT_TRUE(plan);
   ASSERT_EQ(plan->steps.size(), 1u);  // the timed literals are not part of the plan
-  EXPECT_NEAR(plan->steps[0].time, 3.001, 1e-9);
+  EXPECT_NEAR(plan->steps[0].time, 3.0, 1e-9);  // open over all: when the window opens
 
   // Open from 3 to 6: no room for 4
   auto c = bench(kWindow,

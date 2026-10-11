@@ -193,9 +193,11 @@ TEST(ScheduleTest, IndependentStepsOverlapAndDependentOnesWait)
   }
   EXPECT_EQ(at["(move r1 a b)"], 0.0);
   EXPECT_EQ(at["(move r2 c d)"], 0.0);           // the other robot: at once
-  EXPECT_NEAR(at["(clean r1 b)"], 5.001, 1e-9);  // after its move ends
-  EXPECT_NEAR(at["(clean r2 d)"], 5.001, 1e-9);
-  EXPECT_NEAR(p->makespan(), 8.001, 1e-9);
+  // When its move ends: cleaning asks the robot there over all (the open interval), so the
+  // same instant is fine
+  EXPECT_NEAR(at["(clean r1 b)"], 5.0, 1e-9);
+  EXPECT_NEAR(at["(clean r2 d)"], 5.0, 1e-9);
+  EXPECT_NEAR(p->makespan(), 8.0, 1e-9);
 }
 
 TEST(ScheduleTest, OrdersHappeningsNotWholeActions)
