@@ -67,6 +67,7 @@ add_subdirectory(validate)
 add_subdirectory(normalize)
 add_subdirectory(ground)
 add_subdirectory(sas)
+add_subdirectory(state)
 
 target_sources(kairos PRIVATE api/check.cpp api/validate.cpp api/version.cpp)
 target_include_directories(kairos PUBLIC
