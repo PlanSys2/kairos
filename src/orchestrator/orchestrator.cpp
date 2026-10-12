@@ -552,7 +552,13 @@ SolveResult run(
       double share = improver ? 0.0 : 1.0;  // M2 before M3: until its first plan
       bool improve = options.anytime && !improver;
       const sas::Task & first_task = compressed ? compressed->task : sas_task;
-      if (portfolio && resolve_auto(first_task, false) == "lama-novelty") {
+      if (portfolio && compressed && resolve_auto(first_task, false) == "lama") {
+        // Temporal without numeric conditions: when lmcount misleads (airport: lazy LAMA finds
+        // nothing in 30 s, FF alone a plan in 1.4 s), FF after a quarter of the time
+        log.info(LogChannel::Orchestrator, "search: lama, then ff (auto)");
+        phases.push_back({kind, "lama", 0.25, improve, false});
+        phases.push_back({kind, "ff", share, improve, false, true});
+      } else if (portfolio && resolve_auto(first_task, false) == "lama-novelty") {
         // Numeric: lazy LAMA finds most first plans at once (cooking, factory); eager search
         // with novelty, the ones it misses
         log.info(LogChannel::Orchestrator, "search: lama, then lama-novelty (auto)");
@@ -657,6 +663,10 @@ SolveResult run(
       // Durations are what the search minimizes there: nothing to adapt (timed initial
       // literals cost 0 but are forced)
       ao.adapt_zero_costs = !time_metric;
+      // Unit costs for the first plan only in M2 (durations as costs): not on snap actions,
+      // where ends cost 0.001 and starts their duration, an unevenness that guides
+      // (turn-and-open lost an instance), nor on action costs of classical tasks (parking 7 -> 3)
+      ao.unit_first = ph.kind == Kind::Compressed;
       auto result = search::anytime(ctx, ao);
       stats.expanded += ctx.stats.expanded;
       stats.generated += ctx.stats.generated;

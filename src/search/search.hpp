@@ -151,6 +151,8 @@ struct AnytimeOptions
   /// @brief With actions of cost 0: heuristics with unit costs for the first plan and cost + 1
   /// for the improving restarts, as LAMA
   bool adapt_zero_costs = true;
+  /// @brief Unit costs for the heuristics of the first plan whenever costs differ (LAMA)
+  bool unit_first = true;
 };
 
 enum class AnytimeResult : uint8_t

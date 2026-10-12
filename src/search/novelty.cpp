@@ -138,6 +138,12 @@ int Novelty::evaluate(
   }
   bool new_pair = false;
   auto pair = [&](size_t i, size_t j) {
+      // The cap holds inside one evaluation too: a state of 20 000 features has 200 million
+      // pairs, and doubling the table for them went past the memory limit
+      if ((size_ + 1) * 4 > table_.size() * 3 && table_.size() * 2 * sizeof(uint64_t) > cap_) {
+        pairs_dropped_ = true;
+        return false;
+      }
       size_t a = std::min(i, j), b = std::max(i, j);
       return insert(combine(combine(p ^ 0xa5a5a5a5ull, features_[a]), features_[b]));
     };
@@ -157,21 +163,22 @@ int Novelty::evaluate(
       }
     }
     for (size_t i : changed_) {
-      for (size_t j = 0; j < features_.size(); ++j) {
+      for (size_t j = 0; j < features_.size() && !pairs_dropped_; ++j) {
         if (j != i && pair(i, j)) {
           new_pair = true;
         }
       }
     }
-  } else {
-    for (size_t i = 0; i < features_.size(); ++i) {
-      for (size_t j = i + 1; j < features_.size(); ++j) {
+  } else if (features_.size() <= kIncremental) {
+    for (size_t i = 0; i < features_.size() && !pairs_dropped_; ++i) {
+      for (size_t j = i + 1; j < features_.size() && !pairs_dropped_; ++j) {
         if (pair(i, j)) {
           new_pair = true;
         }
       }
     }
   }
+  // A large state without its parent (the initial one): only its features, not all its pairs
   return w == 1 ? 1 : (new_pair ? 2 : 3);
 }
 

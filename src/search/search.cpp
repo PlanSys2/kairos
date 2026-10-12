@@ -18,6 +18,7 @@
 #include <array>
 #include <cmath>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
 #include <queue>
@@ -848,8 +849,14 @@ AnytimeResult anytime(SearchContext & ctx, const AnytimeOptions & options)
 {
   bool zero_costs = options.adapt_zero_costs &&
     std::any_of(ctx.costs.begin(), ctx.costs.end(), [](double c) {return c <= 0.0;});
+  // The first plan with unit costs when they differ, as LAMA's first iteration: costs
+  // (durations) make the heuristic prefer cheap actions over progress
+  bool uneven = std::adjacent_find(ctx.costs.begin(), ctx.costs.end(),
+      std::not_equal_to<double>()) != ctx.costs.end();
   EngineOptions first = options.first;
-  if (zero_costs && first.heuristic_costs == EngineOptions::HeuristicCosts::Real) {
+  if ((zero_costs || (options.unit_first && uneven)) &&
+    first.heuristic_costs == EngineOptions::HeuristicCosts::Real)
+  {
     first.heuristic_costs = EngineOptions::HeuristicCosts::One;
   }
   Outcome o = run_engine(ctx, first);
