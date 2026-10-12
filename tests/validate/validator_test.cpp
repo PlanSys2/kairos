@@ -221,6 +221,70 @@ TEST(ValidateSequentialTest, DerivedWithNegationInALowerStratum)
   EXPECT_FALSE(check(domain, problem, "(go a)\n").valid());
 }
 
+TEST(ValidateSequentialTest, DerivedThroughEqualityAndNestedExists)
+{
+  // The variable fixed by (= ?t yes) and the one of the nested exists join with the atoms
+  const char * domain =
+    "(define (domain d) (:requirements :derived-predicates :negative-preconditions :equality)"
+    " (:constants yes none)"
+    " (:predicates (design ?d) (solves ?d ?f) (active ?f ?t) (done ?f))"
+    " (:derived (active ?f ?t) (and (= ?t yes)"
+    "   (exists (?d) (and (design ?d) (solves ?d ?f) (not (= ?d none))))))"
+    " (:action use :parameters (?f ?t) :precondition (active ?f ?t) :effect (done ?f)))";
+  const char * problem = "(define (problem p) (:domain d) (:objects f1 f2 f3 d1 d2)"
+    " (:init (design d1) (solves d1 f1) (design none) (solves none f2) (solves d2 f3))"
+    " (:goal (done f1)))";
+  EXPECT_TRUE(check(domain, problem, "(use f1 yes)\n").valid());
+  // Not with the other constant, nor through the excluded design, nor a non-design
+  EXPECT_EQ(error_code(check(domain, problem, "(use f1 none)\n")),
+    "validate.precondition_failed");
+  EXPECT_EQ(error_code(check(domain, problem, "(use f2 yes)\n")),
+    "validate.precondition_failed");
+  EXPECT_EQ(error_code(check(domain, problem, "(use f3 yes)\n")),
+    "validate.precondition_failed");
+}
+
+TEST(ValidateSequentialTest, ExistentialVariablesTheBodyNeverMentions)
+{
+  const char * domain =
+    "(define (domain d) (:requirements :typing :existential-preconditions :equality"
+    " :negative-preconditions) (:types thing ghost)"
+    " (:predicates (p ?x - thing) (done))"
+    " (:action some :parameters ()"
+    "  :precondition (exists (?a ?b - thing ?c ?e - thing) (and (p ?a) (p ?b) (not (= ?a ?b))))"
+    "  :effect (done))"
+    " (:action haunted :parameters ()"
+    "  :precondition (exists (?a - thing ?g - ghost) (p ?a)) :effect (done)))";
+  const char * two = "(define (problem p) (:domain d) (:objects t1 t2 t3 - thing)"
+    " (:init (p t1) (p t2)) (:goal (done)))";
+  const char * one = "(define (problem p) (:domain d) (:objects t1 t2 t3 - thing)"
+    " (:init (p t1)) (:goal (done)))";
+  EXPECT_TRUE(check(domain, two, "(some)\n").valid());
+  EXPECT_FALSE(check(domain, one, "(some)\n").valid());
+  // An unused variable of a type without objects: no witness
+  EXPECT_EQ(error_code(check(domain, two, "(haunted)\n")), "validate.precondition_failed");
+}
+
+TEST(ValidateSequentialTest, DerivedAtomsFollowOnlyTheChangesTheyRead)
+{
+  const char * domain =
+    "(define (domain d) (:requirements :derived-predicates)"
+    " (:predicates (p ?x) (q ?x) (m) (used ?x))"
+    " (:derived (q ?x) (p ?x))"
+    " (:action set :parameters (?x) :effect (p ?x))"
+    " (:action unset :parameters (?x) :effect (not (p ?x)))"
+    " (:action mark :effect (m))"
+    " (:action use :parameters (?x) :precondition (q ?x) :effect (used ?x)))";
+  const char * problem = "(define (problem pr) (:domain d) (:objects a b)"
+    " (:init) (:goal (used a)))";
+  EXPECT_TRUE(check(domain, problem, "(set a)\n(mark)\n(use a)\n").valid());
+  EXPECT_TRUE(check(domain, problem, "(mark)\n(set a)\n(mark)\n(use a)\n(unset a)\n").valid());
+  EXPECT_EQ(error_code(check(domain, problem, "(set a)\n(use a)\n(unset a)\n(mark)\n(use a)\n")),
+    "validate.precondition_failed");
+  EXPECT_EQ(error_code(check(domain, problem, "(set b)\n(mark)\n(use a)\n")),
+    "validate.precondition_failed");
+}
+
 TEST(ValidateSequentialTest, GoalPreferencesCountViolations)
 {
   const char * problem =
@@ -560,6 +624,30 @@ TEST(ValidatePerformanceTest, LongSequentialPlan)
   const char * problem = "(define (problem p) (:domain counter) (:init (= (n) 0))"
     " (:goal (>= (n) 20000)))";
   auto r = check(kCounter, problem, plan);
+  EXPECT_TRUE(r.valid()) << dump(r);
+}
+
+TEST(ValidatePerformanceTest, ManyUntypedObjectsWithDerivedPredicates)
+{
+  // As in PlanSys2's suave domain: untyped exists with unused variables and a derived
+  // predicate over every object, rechecked at each of 1000 steps over 1000 objects
+  const char * domain =
+    "(define (domain s) (:requirements :derived-predicates :existential-preconditions"
+    " :negative-preconditions :equality) (:constants on)"
+    " (:predicates (f ?x) (solves ?d ?x) (active ?x ?t) (found ?p))"
+    " (:derived (active ?x ?t) (and (= ?t on) (exists (?d) (and (f ?x) (solves ?d ?x)))))"
+    " (:action search :parameters (?p)"
+    "  :precondition (exists (?a ?b ?u ?v) (and (active ?a on) (active ?b on) (not (= ?a ?b))))"
+    "  :effect (found ?p)))";
+  std::string objects, goal, plan;
+  for (int i = 0; i < 1000; ++i) {
+    objects += " p" + std::to_string(i);
+    goal += " (found p" + std::to_string(i) + ")";
+    plan += "(search p" + std::to_string(i) + ")\n";
+  }
+  std::string problem = "(define (problem p) (:domain s) (:objects g1 g2 d1" + objects + ")"
+    " (:init (f g1) (f g2) (solves d1 g1) (solves d1 g2)) (:goal (and" + goal + ")))";
+  auto r = check(domain, problem, plan);
   EXPECT_TRUE(r.valid()) << dump(r);
 }
 

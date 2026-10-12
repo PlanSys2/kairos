@@ -164,6 +164,46 @@ TEST(NormalizeTest, ExistentialsWithSeveralVariablesBecomeAuxiliaryPredicates)
   EXPECT_TRUE(m->task.axioms.empty());
 }
 
+TEST(NormalizeTest, QuantifiedVariablesTheBodyNeverReadsAreDropped)
+{
+  // As PlanSys2's suave domain: (exists (?a ?f1 ?f2 ?fd1 ?fd2) ...) without ?fd1 ?fd2 in the
+  // body; kept, they multiplied the instances by every pair of objects
+  auto n = normalize_text(domain_with(
+      "(:action act :parameters (?x - item) :precondition (exists (?y ?u ?v - item) (r ?x ?y))"
+      " :effect (q ?x))"
+      " (:action all :parameters (?x - item) :precondition (forall (?u - item) (p ?x))"
+      " :effect (z))"), kProblem);
+  const Task & t = n->task;
+  EXPECT_TRUE(t.axioms.empty());
+  const Action & a = t.actions.at(0);
+  EXPECT_EQ(a.hidden, 1u);
+  EXPECT_EQ(cond(t, a.precondition, a.variables), "(r ?x ?y)");
+  const Action & b = t.actions.at(1);
+  EXPECT_EQ(cond(t, b.precondition, b.variables), "(p ?x)");
+}
+
+TEST(NormalizeTest, UnusedVariablesOfATypeWithoutObjects)
+{
+  // No witness: the existential is false, the universal true
+  const char * domain =
+    "(define (domain d) (:requirements :adl :typing) (:types item ghost)"
+    " (:predicates (p ?x - item) (q ?x - item) (z))"
+    " (:action haunted :parameters (?x - item) :precondition (and (p ?x)"
+    "  (exists (?g - ghost) (q ?x))) :effect (z))"
+    " (:action vacuous :parameters (?x - item) :precondition (and (p ?x)"
+    "  (forall (?g - ghost) (q ?x))) :effect (z)))";
+  const char * problem = "(define (problem pr) (:domain d) (:objects a b - item)"
+    " (:init (p a)) (:goal (z)))";
+  auto n = normalize_text(domain, problem);
+  const Task & t = n->task;
+  std::map<std::string, std::string> pre;
+  for (const auto & a : t.actions) {
+    pre[a.name] = cond(t, a.precondition, a.variables);
+  }
+  EXPECT_EQ(pre.count("haunted"), 0u) << pre["haunted"];  // never applicable
+  EXPECT_EQ(pre["vacuous"], "(p ?x)");
+}
+
 TEST(NormalizeTest, ForallStaysWhenItsBodyIsConjunctive)
 {
   auto n = normalize_text(domain_with(

@@ -82,6 +82,7 @@ RelaxedGraph::RelaxedGraph(const sas::Task & task, const std::vector<double> & c
   {
     std::vector<uint32_t> pre;
     condition(task.goal, pre);
+    goal_op_ = static_cast<uint32_t>(ops_.size());
     add_op(std::move(pre), goal_, 0.0, kNone);
   }
   // A negated fact is reached by any other value of its variable
@@ -122,7 +123,40 @@ RelaxedGraph::RelaxedGraph(const sas::Task & task, const std::vector<double> & c
     for (uint32_t p : ops_[o].pre) {
       triggers_[p].push_back(o);
     }
+    if (ops_[o].pre.empty()) {
+      free_ops_.push_back(o);
+    }
   }
+  op_.assign(ops_.size(), OpState{});
+  for (uint32_t o = 0; o < ops_.size(); ++o) {
+    op_[o].preconditions = static_cast<uint32_t>(ops_[o].pre.size());
+  }
+}
+
+void RelaxedGraph::set_goal(const std::vector<sas::Fact> & facts, bool any)
+{
+  Op & op = ops_[goal_op_];
+  for (uint32_t p : op.pre) {
+    auto & t = triggers_[p];
+    t.erase(std::remove(t.begin(), t.end(), goal_op_), t.end());
+  }
+  op.pre.clear();
+  for (const auto & f : facts) {
+    op.pre.push_back(fact_offset_[f.var] + f.value);
+  }
+  std::sort(op.pre.begin(), op.pre.end());
+  op.pre.erase(std::unique(op.pre.begin(), op.pre.end()), op.pre.end());
+  for (uint32_t p : op.pre) {
+    triggers_[p].push_back(goal_op_);
+  }
+  op_[goal_op_].preconditions = any && !op.pre.empty() ? 1 :
+    static_cast<uint32_t>(op.pre.size());
+  free_ops_.erase(std::remove(free_ops_.begin(), free_ops_.end(), goal_op_), free_ops_.end());
+  if (op.pre.empty()) {
+    free_ops_.push_back(goal_op_);
+  }
+  // Nothing to reset: the next run has a new epoch, and its operators count their
+  // preconditions again when touched
 }
 
 uint32_t RelaxedGraph::add_node()
@@ -326,10 +360,11 @@ bool RelaxedGraph::pop(double & cost, uint32_t & node)
 
 void RelaxedGraph::relax(uint32_t node, double cost, uint32_t supporter, uint32_t repeat)
 {
-  if (cost < cost_[node] && node != blocked_) {
-    cost_[node] = cost;
-    supporter_[node] = supporter;
-    repeat_[node] = repeat;
+  NodeState & x = touch(node);
+  if (cost < x.cost && node != blocked_) {
+    x.cost = cost;
+    x.supporter = supporter;
+    x.repeat = repeat;
     if (node_action_[node] >= 0) {
       expand(node, cost);  // an action fires its effects right away, as FD's unary operators
     } else {
@@ -341,13 +376,17 @@ void RelaxedGraph::relax(uint32_t node, double cost, uint32_t supporter, uint32_
 void RelaxedGraph::expand(uint32_t n, double c)
 {
   for (uint32_t o : triggers_[n]) {
+    OpState & x = touch_op(o);
     if (mode_ == Mode::Add) {
-      op_cost_[o] += c;
+      x.cost += c;
     } else {
-      op_cost_[o] = std::max(op_cost_[o], c);
+      x.cost = std::max(x.cost, c);
     }
-    if (--unsatisfied_[o] == 0) {
-      relax(ops_[o].effect, op_cost_[o] + ops_[o].base, o, 0);
+    if (--x.unsatisfied == 0) {
+      if (o == goal_op_) {
+        goal_trigger_ = n;
+      }
+      relax(ops_[o].effect, x.cost + ops_[o].base, o, 0);
     }
   }
   int32_t a = node_action_[n];
@@ -385,7 +424,7 @@ double RelaxedGraph::run(const EvalContext & ctx, Mode mode)
 {
   mode_ = mode;
   explore(ctx, true);
-  return cost_[goal_];
+  return cost(goal_);
 }
 
 void RelaxedGraph::run_all(const EvalContext & ctx)
@@ -397,12 +436,19 @@ void RelaxedGraph::run_all(const EvalContext & ctx)
 void RelaxedGraph::explore(const EvalContext & ctx, bool stop_at_goal)
 {
   ctx_ = &ctx;
-  cost_.assign(nodes_, kInfinity);
-  op_cost_.assign(ops_.size(), 0.0);
-  unsatisfied_.resize(ops_.size());
-  supporter_.assign(nodes_, kNone);
-  repeat_.assign(nodes_, 0);
-  initial_.assign(nodes_, 0);
+  goal_trigger_ = kNone;
+  if (node_.size() != nodes_) {
+    node_.assign(nodes_, NodeState{});
+  }
+  if (++epoch_ == 0) {  // wrapped: no stamp may look current
+    for (auto & x : node_) {
+      x.stamp = 0;
+    }
+    for (auto & x : op_) {
+      x.stamp = 0;
+    }
+    epoch_ = 1;
+  }
   for (auto & bucket : buckets_) {
     bucket.clear();
   }
@@ -410,9 +456,6 @@ void RelaxedGraph::explore(const EvalContext & ctx, bool stop_at_goal)
   in_buckets_ = 0;
   heap_ = {};
   seq_ = 0;
-  for (uint32_t o = 0; o < ops_.size(); ++o) {
-    unsatisfied_[o] = static_cast<uint32_t>(ops_[o].pre.size());
-  }
   missing_.assign(num_.size(), 0.0);
   best_ratio_.assign(num_.size(), kInfinity);
   for (uint32_t n = 0; n < num_.size(); ++n) {
@@ -429,13 +472,11 @@ void RelaxedGraph::explore(const EvalContext & ctx, bool stop_at_goal)
     }
   }
   // As FD: operators without preconditions first, then the facts of the state
-  for (uint32_t o = 0; o < ops_.size(); ++o) {
-    if (ops_[o].pre.empty()) {
-      relax(ops_[o].effect, ops_[o].base, o, 0);
-    }
+  for (uint32_t o : free_ops_) {
+    relax(ops_[o].effect, ops_[o].base, o, 0);
   }
   auto start = [&](uint32_t n) {
-      initial_[n] = 1;
+      touch(n).initial = 1;
       relax(n, 0.0, kNone, 0);
     };
   for (sas::VarId v = 0; v < task_.variables.size(); ++v) {
@@ -455,7 +496,7 @@ void RelaxedGraph::explore(const EvalContext & ctx, bool stop_at_goal)
   double c = 0.0;
   uint32_t n = 0;
   while (pop(c, n)) {
-    if (c > cost_[n]) {
+    if (c > cost(n)) {
       continue;
     }
     if (n == goal_ && stop_at_goal) {
@@ -482,7 +523,7 @@ std::vector<uint8_t> RelaxedGraph::reachable(const EvalContext & ctx, uint32_t b
   blocked_ = kNone;
   std::vector<uint8_t> out(nodes_);
   for (uint32_t n = 0; n < nodes_; ++n) {
-    out[n] = cost_[n] < kInfinity ? 1 : 0;
+    out[n] = cost(n) < kInfinity ? 1 : 0;
   }
   return out;
 }
@@ -492,22 +533,28 @@ double RelaxedGraph::relaxed_plan(std::vector<uint32_t> * preferred)
   // Best supporters back from the goal; an action counts once, or as many times as a numeric
   // condition needs it
   std::map<uint32_t, uint32_t> times;
-  std::vector<uint8_t> seen(nodes_, 0);
+  if (seen_stamp_.size() != nodes_) {
+    seen_stamp_.assign(nodes_, 0);
+  }
+  if (++seen_epoch_ == 0) {
+    std::fill(seen_stamp_.begin(), seen_stamp_.end(), 0);
+    seen_epoch_ = 1;
+  }
   std::vector<uint32_t> stack{goal_};
   while (!stack.empty()) {
     uint32_t n = stack.back();
     stack.pop_back();
-    if (seen[n] || initial_[n]) {
-      continue;
+    if (seen_stamp_[n] == seen_epoch_ || !fresh(n) || node_[n].initial) {
+      continue;  // a node of no run's plan has no supporter
     }
-    seen[n] = 1;
-    uint32_t s = supporter_[n];
+    seen_stamp_[n] = seen_epoch_;
+    uint32_t s = node_[n].supporter;
     if (s == kNone) {
       continue;
     }
     if (node_num_[n] >= 0) {
       auto & t = times[s];
-      t = std::max(t, repeat_[n]);
+      t = std::max(t, node_[n].repeat);
       stack.push_back(act_node_[s]);
       continue;
     }

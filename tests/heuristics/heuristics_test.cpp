@@ -28,6 +28,8 @@
 #include <vector>
 
 #include "heuristics/heuristic.hpp"
+#include "heuristics/relaxed.hpp"
+#include "sas/translate.hpp"
 #include "state/registry.hpp"
 #include "state/successors.hpp"
 #include "support/pddl_helpers.hpp"
@@ -258,6 +260,49 @@ TEST(HeuristicsTest, DerivedGoalsCostTheirSupport)
   EXPECT_EQ(b->value("ff", s0), 3.0);
 }
 
+TEST(HeuristicsTest, ChangingTheGoalOfTheRelaxedGraph)
+{
+  auto b = bench(world(""), problem("(at s0)", "(at s3)"));
+  const auto & t = b->p->sas;
+  auto fact = [&](const std::string & name) {
+      for (sas::VarId v = 0; v < t.variables.size(); ++v) {
+        for (uint32_t x = 0; x < t.variables[v].size(); ++x) {
+          if (sas::fact_name(t, {v, x}).find(name) != std::string::npos) {
+            return sas::Fact{v, x};
+          }
+        }
+      }
+      ADD_FAILURE() << "no fact " << name;
+      return sas::Fact{};
+    };
+  RelaxedGraph g(t, b->costs);
+  std::vector<uint32_t> v;
+  StateId s0 = b->reg->initial();
+  b->reg->unpack(s0, v);
+  std::vector<double> n(b->reg->numbers(s0).begin(), b->reg->numbers(s0).end());
+  EvalContext ctx{s0, v.data(), n.data(), 0.0};
+  EXPECT_EQ(g.run(ctx, RelaxedGraph::Mode::Add), 3.0);
+  g.set_goal({fact("at s2")});
+  EXPECT_EQ(g.run(ctx, RelaxedGraph::Mode::Add), 2.0);
+  EXPECT_EQ(g.relaxed_plan(nullptr), 2.0);
+  // Any of them: the nearest, and which one it was
+  g.set_goal({fact("at s3"), fact("at s1"), fact("at s2")}, true);
+  EXPECT_EQ(g.run(ctx, RelaxedGraph::Mode::Add), 1.0);
+  auto f = g.fact_of(g.goal_fact());
+  ASSERT_TRUE(f);
+  EXPECT_EQ(sas::fact_name(t, {f->first, f->second}).find("at s1") != std::string::npos, true);
+  // All of them again (hadd sums them), and a goal true already, and none
+  g.set_goal({fact("at s3"), fact("at s1")});
+  EXPECT_EQ(g.run(ctx, RelaxedGraph::Mode::Add), 4.0);
+  EXPECT_EQ(g.relaxed_plan(nullptr), 3.0);
+  g.set_goal({fact("at s0")});
+  EXPECT_EQ(g.run(ctx, RelaxedGraph::Mode::Add), 0.0);
+  g.set_goal({});
+  EXPECT_EQ(g.run(ctx, RelaxedGraph::Mode::Add), 0.0);
+  g.set_goal({fact("at s3")}, true);
+  EXPECT_EQ(g.run(ctx, RelaxedGraph::Mode::Max), 3.0);
+}
+
 TEST(HeuristicsTest, DeadEnds)
 {
   // drop loses the key for good: then open is unreachable even relaxed
@@ -364,6 +409,7 @@ Space explore(const Bench & b, size_t limit)
   auto hmax = make_heuristic("hmax", b.p->sas, b.costs);
   auto hadd = make_heuristic("hadd", b.p->sas, b.costs);
   auto ff = make_heuristic("ff", b.p->sas, b.costs);
+  size_t checked_fresh = 0;
   for (StateId s : sp.states) {
     auto it = sp.h_star.find(s);
     double star = it == sp.h_star.end() ? kInfinity : it->second;
@@ -381,6 +427,19 @@ Space explore(const Bench & b, size_t limit)
     if (ad.value + 1e-9 < mx.value || f.value + 1e-9 < mx.value) {
       return ::testing::AssertionFailure() << "hadd " << ad.value << " or ff " << f.value <<
              " below hmax " << mx.value;
+    }
+    // One instance over many states gives what a new one gives (its per-state values are
+    // reset lazily)
+    if (checked_fresh++ < 300) {
+      for (const char * name : {"hmax", "hadd", "ff"}) {
+        auto fresh = make_heuristic(name, b.p->sas, b.costs);
+        double reused = std::string(name) == "hmax" ? mx.value :
+          (std::string(name) == "hadd" ? ad.value : f.value);
+        double v = b.eval(*fresh, s).value;
+        if (!(v == reused || (std::isinf(v) && std::isinf(reused)))) {
+          return ::testing::AssertionFailure() << name << " reused " << reused << ", new " << v;
+        }
+      }
     }
     std::vector<uint32_t> ops;
     b.space->applicable(s, ops);

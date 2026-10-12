@@ -242,7 +242,7 @@ struct State
   std::unordered_map<Key, uint32_t, KeyHash> objects;  // object fluents
   double time = 0.0;
 
-  // Derived atoms, computed on demand and dropped on any change
+  // Derived atoms, computed on demand and dropped on a change of what the axioms read
   mutable KeySet derived;
   mutable bool derived_ready = false;
   // Atoms by predicate, to bind variables from true atoms instead of every object
@@ -250,13 +250,15 @@ struct State
   mutable bool atom_index_ready = false;
   mutable std::unordered_map<uint32_t, std::vector<Key>> derived_index;
 
-  void changed() const
+  void changed(bool derived_too = true) const
   {
-    derived.clear();
-    derived_ready = false;
+    if (derived_too) {
+      derived.clear();
+      derived_ready = false;
+      derived_index.clear();
+    }
     atom_index.clear();
     atom_index_ready = false;
-    derived_index.clear();
   }
 
   const std::vector<Key> & atoms_of(uint32_t pred) const
@@ -372,11 +374,18 @@ public:
   /**
    * @brief Like for_each_binding, but a variable that appears in a positive atom of `body` (or
    * of its top conjunction) takes only the values of the true atoms of that predicate that
-   * agree with what is already bound: much fewer than every object of its type.
+   * agree with what is already bound: much fewer than every object of its type. A variable
+   * in (= ?x object) takes that object. The existentials of the conjunction join too, so the
+   * leaf may run more than once for the same values of `vars`. The variables from
+   * `existential_from` on that `body` never mentions take only one object (any witness does).
    */
   void for_each_joined_binding(
     const Vars & vars, FormulaId body,
-    const Ctx & c, Bindings & b, const std::function<bool()> & leaf);
+    const Ctx & c, Bindings & b, const std::function<bool()> & leaf,
+    size_t existential_from = 0);
+
+  /// Whether the variable appears in the formula
+  bool mentions(FormulaId id, Symbol var) const;
 
 private:
   mutable std::vector<int64_t> predicate_cache_;  // per symbol: -2 not looked up, -1 none
@@ -480,7 +489,13 @@ public:
     for (auto & [l, g] : found) {
       groups.push_back(std::move(g));
     }
+    for (const auto & dv : d.derived) {
+      collect_reads(dv.body);
+    }
   }
+
+  /// Whether atoms of this predicate are read by an axiom (a change of them drops the derived)
+  bool axioms_read(uint32_t predicate) const {return axiom_predicates.count(predicate) != 0;}
 
   const ast::Domain & domain;
   const sem::DomainModel & dm;
@@ -495,6 +510,8 @@ public:
     bool recursive = false;
   };
   std::vector<RuleGroup> groups;  // by stratum, dependencies first
+  std::set<uint32_t> axiom_predicates;  // read by the axioms
+  bool axioms_read_fluents = false;
 
   const std::vector<uint32_t> & objects_of(const sem::TypeSpec & spec)
   {
@@ -585,13 +602,48 @@ public:
                 changed = true;
               }
               return true;
-            });
+            }, head_vars);
         }
       }
     }
   }
 
 private:
+  void collect_reads(FormulaId id)
+  {
+    const ast::Formula & f = domain.nodes.formulas[id];
+    if (f.kind == ast::FormulaKind::Atom) {
+      if (auto pred = dm.predicates.find(domain.symbols.name(f.name))) {
+        axiom_predicates.insert(pred->value());
+      }
+      for (TermId t : f.args) {
+        axioms_read_fluents = axioms_read_fluents ||
+          domain.nodes.terms[t].kind == ast::TermKind::Function;
+      }
+    } else if (f.kind == ast::FormulaKind::Compare) {
+      axioms_read_fluents = axioms_read_fluents || reads_fluent(f.lhs) || reads_fluent(f.rhs);
+    }
+    for (FormulaId ch : f.children) {
+      collect_reads(ch);
+    }
+  }
+
+  bool reads_fluent(ExprId id) const
+  {
+    const ast::Expr & e = domain.nodes.exprs[id];
+    if (e.kind == ast::ExprKind::Function ||
+      (e.kind == ast::ExprKind::Term && domain.nodes.terms[e.term].kind == ast::TermKind::Function))
+    {
+      return true;
+    }
+    for (ExprId ch : e.children) {
+      if (reads_fluent(ch)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   void collect_deps(
     FormulaId id, bool positive, std::vector<std::pair<std::string, bool>> & out,
     const std::map<std::string, int> & derived)
@@ -675,24 +727,139 @@ void Evaluator::for_each_binding(
   rec(0);
 }
 
-void Evaluator::for_each_joined_binding(
-  const Vars & vars, FormulaId body,
-  const Ctx & c, Bindings & b, const std::function<bool()> & leaf)
+bool Evaluator::mentions(FormulaId id, Symbol var) const
 {
-  // Positive atoms of the top conjunction
+  auto in_term = [&](TermId t) {
+      const ast::Term & term = nodes_.terms[t];
+      if (term.kind == ast::TermKind::Variable) {
+        return term.name == var;
+      }
+      return term.kind == ast::TermKind::Function;  // nested object fluents: assume it does
+    };
+  std::function<bool(ExprId)> in_expr = [&](ExprId e) {
+      const ast::Expr & x = nodes_.exprs[e];
+      if (x.kind == ast::ExprKind::Term && in_term(x.term)) {
+        return true;
+      }
+      for (TermId a : x.args) {
+        if (in_term(a)) {
+          return true;
+        }
+      }
+      for (ExprId ch : x.children) {
+        if (in_expr(ch)) {
+          return true;
+        }
+      }
+      return false;
+    };
+  const ast::Formula & f = nodes_.formulas[id];
+  for (TermId t : f.args) {
+    if (in_term(t)) {
+      return true;
+    }
+  }
+  if (f.kind == ast::FormulaKind::Compare && (in_expr(f.lhs) || in_expr(f.rhs))) {
+    return true;
+  }
+  for (const auto & p : f.params) {
+    if (p.name == var) {
+      return false;  // shadowed
+    }
+  }
+  for (FormulaId ch : f.children) {
+    if (mentions(ch, var)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void Evaluator::for_each_joined_binding(
+  const Vars & outer, FormulaId body,
+  const Ctx & c, Bindings & b, const std::function<bool()> & leaf, size_t existential_from)
+{
+  auto bound = [&](Symbol n) -> std::optional<uint32_t> {
+      for (auto it = b.rbegin(); it != b.rend(); ++it) {
+        if (it->first == n) {
+          return it->second;
+        }
+      }
+      return std::nullopt;
+    };
+  // Positive atoms and (= ?x object) of the top conjunction, also those inside its
+  // existentials, whose variables then join too (the leaf still checks the whole body)
+  Vars vars = outer;
   std::vector<const ast::Formula *> atoms;
-  const ast::Formula & top = nodes_.formulas[body];
-  auto collect = [&](const ast::Formula & f) {
+  std::vector<std::pair<Symbol, uint32_t>> equals;
+  auto mentioned = [&](Symbol n, size_t atoms_from, size_t equals_from) {
+      for (size_t a = atoms_from; a < atoms.size(); ++a) {
+        for (TermId t : atoms[a]->args) {
+          if (nodes_.terms[t].kind == ast::TermKind::Variable && nodes_.terms[t].name == n) {
+            return true;
+          }
+        }
+      }
+      for (size_t e = equals_from; e < equals.size(); ++e) {
+        if (equals[e].first == n) {
+          return true;
+        }
+      }
+      return false;
+    };
+  std::function<void(const ast::Formula &)> collect = [&](const ast::Formula & f) {
       if (f.kind == ast::FormulaKind::Atom) {
         atoms.push_back(&f);
+      } else if (f.kind == ast::FormulaKind::And) {
+        for (FormulaId ch : f.children) {
+          collect(nodes_.formulas[ch]);
+        }
+      } else if (f.kind == ast::FormulaKind::Compare && f.compare == ast::CompareOp::Eq) {
+        const ast::Expr & l = nodes_.exprs[f.lhs];
+        const ast::Expr & r = nodes_.exprs[f.rhs];
+        if (l.kind != ast::ExprKind::Term || r.kind != ast::ExprKind::Term) {
+          return;
+        }
+        const ast::Term & x = nodes_.terms[l.term];
+        const ast::Term & y = nodes_.terms[r.term];
+        for (const auto & [v, o] : {std::pair{&x, &y}, std::pair{&y, &x}}) {
+          if (v->kind == ast::TermKind::Variable && o->kind == ast::TermKind::Name) {
+            if (auto obj = object(o->name)) {
+              equals.emplace_back(v->name, obj->value());
+            }
+          }
+        }
+      } else if (f.kind == ast::FormulaKind::Exists) {
+        // Only if its variables shadow nothing, and each is in one of its atoms (one bound by
+        // nothing would multiply the bindings instead)
+        for (const auto & p : f.params) {
+          bool clash = bound(p.name).has_value();
+          for (const auto & v : vars) {
+            clash = clash || v.first == p.name;
+          }
+          if (clash) {
+            return;
+          }
+        }
+        size_t vars_from = vars.size(), atoms_from = atoms.size(), equals_from = equals.size();
+        for (const auto & p : f.params) {
+          vars.emplace_back(p.name, world_.resolve(p.types, symbols_));
+        }
+        collect(nodes_.formulas[f.children.at(0)]);
+        for (const auto & p : f.params) {
+          if (!mentioned(p.name, atoms_from, equals_from)) {
+            vars.resize(vars_from);
+            atoms.resize(atoms_from);
+            equals.resize(equals_from);
+            return;
+          }
+        }
       }
     };
-  if (top.kind == ast::FormulaKind::And) {
-    for (FormulaId ch : top.children) {
-      collect(nodes_.formulas[ch]);
-    }
-  } else {
-    collect(top);
+  collect(nodes_.formulas[body]);
+  std::vector<bool> unused(vars.size(), false);
+  for (size_t k = existential_from; k < outer.size(); ++k) {
+    unused[k] = !mentions(body, vars[k].first);
   }
   std::vector<const std::vector<uint32_t> *> allowed(vars.size(), nullptr);
   std::vector<bool> assigned(vars.size(), false);
@@ -703,14 +870,6 @@ void Evaluator::for_each_joined_binding(
         }
       }
       return -1;
-    };
-  auto bound = [&](Symbol n) -> std::optional<uint32_t> {
-      for (auto it = b.rbegin(); it != b.rend(); ++it) {
-        if (it->first == n) {
-          return it->second;
-        }
-      }
-      return std::nullopt;
     };
   auto allowed_of = [&](size_t k) -> const std::vector<uint32_t> & {
       if (!allowed[k]) {
@@ -726,6 +885,21 @@ void Evaluator::for_each_joined_binding(
       }
       if (i == vars.size()) {
         return leaf();
+      }
+      // A variable equal to an object takes it
+      for (const auto & [n, o] : equals) {
+        if (local(n) == static_cast<int>(i)) {
+          const auto & al = allowed_of(i);
+          if (!std::binary_search(al.begin(), al.end(), o)) {
+            return true;
+          }
+          b.emplace_back(vars[i].first, o);
+          assigned[i] = true;
+          bool go_on = rec(i + 1);
+          assigned[i] = false;
+          b.pop_back();
+          return go_on;
+        }
       }
       // The atom mentioning vars[i] with the fewest other unbound variables
       const ast::Formula * best = nullptr;
@@ -775,6 +949,9 @@ void Evaluator::for_each_joined_binding(
       }
       if (!best) {
         for (uint32_t o : allowed_of(i)) {
+          if (unused[i] && o != allowed_of(i).front()) {
+            break;
+          }
           b.emplace_back(vars[i].first, o);
           assigned[i] = true;
           bool go_on = rec(i + 1);
@@ -1639,7 +1816,7 @@ bool Validator::integrate(double from, double to)
     }
     it->second += rate * dt;
   }
-  state_.changed();
+  state_.changed(w_.axioms_read_fluents);
   return true;
 }
 
@@ -1888,15 +2065,20 @@ void Validator::run()
     // atom keeps it), then fluents
     State before;
     before.numbers = state_.numbers;
+    bool axioms = false;  // whether the changes touch what the axioms read
     for (const auto & ev : group) {
       for (const auto & k : ev.changes.dels) {
+        axioms = axioms || w_.axioms_read(k[0]);
         state_.atoms.erase(k);
       }
     }
     for (const auto & ev : group) {
       for (const auto & k : ev.changes.adds) {
+        axioms = axioms || w_.axioms_read(k[0]);
         state_.atoms.insert(k);
       }
+      axioms = axioms || (w_.axioms_read_fluents && (!ev.changes.nums.empty() ||
+        !ev.changes.objs.empty()));
     }
     for (const auto & ev : group) {
       for (const auto & n : ev.changes.nums) {
@@ -1927,7 +2109,7 @@ void Validator::run()
         }
       }
     }
-    state_.changed();
+    state_.changed(axioms);
 
     for (const auto & ev : group) {
       if (ev.kind == EventInfo::Kind::Start) {

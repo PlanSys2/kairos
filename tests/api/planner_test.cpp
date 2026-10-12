@@ -1103,6 +1103,111 @@ std::string auto_choice(const Problem & p)
   return chosen;
 }
 
+// Every "(auto)" choice of the log, in order
+std::vector<std::string> auto_choices(const Problem & p, unsigned threads = 1)
+{
+  std::vector<std::string> chosen;
+  SolveOptions o = quick();
+  o.threads = threads;
+  o.anytime = false;  // the first plan is what the choice is about
+  o.log.callback = [&](LogLevel, LogChannel, std::string_view text) {
+      if (text.find("(auto)") != std::string_view::npos) {
+        chosen.emplace_back(text);
+      }
+    };
+  SolveResult r = Planner().solve(p, o);
+  EXPECT_EQ(r.status, Status::Solved);
+  if (r.plan) {
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+  }
+  return chosen;
+}
+
+// Robots looking at every place of a grid: instant or durative actions
+std::pair<std::string, std::string> patrol_grid(int side, bool durative)
+{
+  std::string domain =
+    "(define (domain patrol) (:requirements :strips :typing :durative-actions)"
+    " (:types robot place)"
+    " (:predicates (at ?r - robot ?p - place) (link ?a ?b - place) (seen ?p - place))";
+  if (durative) {
+    domain +=
+      " (:durative-action move :parameters (?r - robot ?a ?b - place) :duration (= ?duration 5)"
+      "  :condition (and (at start (at ?r ?a)) (over all (link ?a ?b)))"
+      "  :effect (and (at start (not (at ?r ?a))) (at end (at ?r ?b))))"
+      " (:durative-action look :parameters (?r - robot ?p - place) :duration (= ?duration 2)"
+      "  :condition (over all (at ?r ?p)) :effect (at end (seen ?p))))";
+  } else {
+    domain +=
+      " (:action move :parameters (?r - robot ?a ?b - place)"
+      "  :precondition (and (at ?r ?a) (link ?a ?b)) :effect (and (not (at ?r ?a)) (at ?r ?b)))"
+      " (:action look :parameters (?r - robot ?p - place)"
+      "  :precondition (at ?r ?p) :effect (seen ?p)))";
+  }
+  std::string objects, links, goals;
+  auto name = [](int x, int y) {return "p" + std::to_string(x) + "_" + std::to_string(y);};
+  for (int x = 0; x < side; ++x) {
+    for (int y = 0; y < side; ++y) {
+      objects += " " + name(x, y);
+      goals += " (seen " + name(x, y) + ")";
+      for (auto [dx, dy] : {std::pair{1, 0}, std::pair{0, 1}}) {
+        if (x + dx < side && y + dy < side) {
+          links += " (link " + name(x, y) + " " + name(x + dx, y + dy) + ")";
+          links += " (link " + name(x + dx, y + dy) + " " + name(x, y) + ")";
+        }
+      }
+    }
+  }
+  return {domain, "(define (problem g) (:domain patrol) (:objects r1 r2 - robot" + objects +
+    " - place) (:init (at r1 p0_0) (at r2 " + name(side - 1, side - 1) + ")" + links +
+    ") (:goal (and" + goals + ")))"};
+}
+
+TEST(PlannerApiTest, ManyGoalsAreReachedOneAtATimeFirst)
+{
+  for (bool durative : {false, true}) {
+    auto [d, p] = patrol_grid(5, durative);  // 25 goals
+    for (unsigned threads : {1u, 3u}) {
+      auto chosen = auto_choices(problem(d, p), threads);
+      ASSERT_FALSE(chosen.empty());
+      EXPECT_EQ(chosen.front(), "search: incremental goals first (auto)") << durative;
+    }
+    auto [d4, p4] = patrol_grid(4, durative);  // 16 goals: one search as before
+    for (const auto & c : auto_choices(problem(d4, p4))) {
+      EXPECT_EQ(c.find("incremental"), std::string::npos) << c;
+    }
+  }
+}
+
+TEST(PlannerApiTest, WithoutAnytimeTheFirstPlanStopsEveryPhase)
+{
+  // In parallel the other phases went on until the timeout, in order they searched again
+  auto [d, p] = patrol_grid(6, true);
+  for (unsigned threads : {1u, 3u}) {
+    SolveOptions o = quick();
+    o.anytime = false;
+    o.threads = threads;
+    auto t0 = std::chrono::steady_clock::now();
+    SolveResult r = Planner().solve(problem(d, p), o);
+    ASSERT_EQ(r.status, Status::Solved) << threads;
+    EXPECT_EQ(r.stats.plans, 1u) << threads;
+    EXPECT_EQ(r.stop_reason, StopReason::NoImprovement) << threads;
+    EXPECT_LT(std::chrono::steady_clock::now() - t0, 5s) << threads;
+  }
+}
+
+TEST(PlannerApiTest, IncrementalGoalsAskedForSolvesAlsoFewGoals)
+{
+  // As the only search, with fewer goals than auto needs: then improved to a proof
+  SolveOptions o = quick();
+  o.search = "goals";
+  auto [d, p] = patrol_grid(3, false);
+  SolveResult r = Planner().solve(problem(d, p), o);
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_TRUE(validate(problem(d, p), *r.plan).valid());
+  EXPECT_EQ(r.stop_reason, StopReason::ProvenOptimal);
+}
+
 TEST(PlannerApiTest, AutoSearchFollowsTheTask)
 {
   // Classical: LAMA; numeric conditions: lazy LAMA, then LAMA with novelty

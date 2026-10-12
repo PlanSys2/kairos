@@ -38,6 +38,7 @@
 #include "orchestrator/explain.hpp"
 #include "pddl/printer.hpp"
 #include "sas/translate.hpp"
+#include "search/goals.hpp"
 #include "search/search.hpp"
 #include "temporal/compress.hpp"
 #include "temporal/durations.hpp"
@@ -183,6 +184,10 @@ std::optional<search::AnytimeOptions> preset(const std::string & name)
     f.kind = search::EngineOptions::Kind::EnforcedHillClimbing;
     f.heuristic = "ff";
     ao.improve_heuristic = "ff";
+  } else if (name == "goals") {
+    // Incremental goals for the first plan (search/goals.hpp), then improved as ff
+    f.heuristic = "ff";
+    ao.improve_heuristic = "ff";
   } else {
     return std::nullopt;
   }
@@ -227,7 +232,7 @@ std::string resolve_auto(const sas::Task & task, bool snap)
 
 std::vector<std::string> presets()
 {
-  return {"ff", "lama", "eager-lama", "novelty", "lama-novelty", "ehc"};
+  return {"ff", "lama", "eager-lama", "novelty", "lama-novelty", "ehc", "goals"};
 }
 
 namespace
@@ -577,6 +582,12 @@ private:
       target_reached_ = true;
       internal_.request_stop();
     }
+    if (!o_.anytime) {
+      // The first plan is all that was asked: the other phases stop (in parallel they would
+      // go on until the timeout, and in order search again)
+      first_only_ = true;
+      internal_.request_stop();
+    }
   }
 
   // The phases, from the task, the engine and the options (see Phase)
@@ -606,6 +617,13 @@ private:
       double share = improver_ ? 0.0 : 1.0;  // M2 before M3: until its first plan
       bool improve = o_.anytime && !improver_;
       const sas::Task & first_task = compressed_ ? compressed_->task : *sas_;
+      if (portfolio && search::goals_apply(first_task)) {
+        // Many goal facts (patrolling, visiting, delivering): one at a time first, where one
+        // search for all meets plateaus that grow with the agents (B6 patrol L: no plan in
+        // 100 s, 0.1 s this way); the searches below if it fails
+        log_.info(LogChannel::Orchestrator, "search: incremental goals first (auto)");
+        phases_.push_back({kind, "goals", 0.5, improve, false});
+      }
       if (portfolio && compressed_ && resolve_auto(first_task, false) == "lama") {
         // Temporal without numeric conditions: when lmcount misleads (airport: lazy LAMA finds
         // nothing in 30 s, FF alone a plan in 1.4 s), FF after a quarter of the time
@@ -738,7 +756,22 @@ private:
     // With numeric conditions cost + 1 instead: unit costs slowed the large cooking example
     // (150 ms -> 0.7 s), real costs lost temporal numeric instances (transport, rovers)
     ao.plus_one_first = has_numeric_conditions(task_k);
-    auto result = search::anytime(ctx, ao);
+    search::AnytimeResult result;
+    if (chosen == "goals") {
+      // Then improved as the other searches; if it fails, a lazy search when it is the only
+      // phase (asked for), else the next phases go on
+      auto r = search::incremental_goals(ctx);
+      ao.skip_first = r == search::Outcome::Solved;
+      if (r == search::Outcome::Stopped) {
+        result = search::AnytimeResult::Stopped;
+      } else if (r == search::Outcome::Solved || phases_.size() == 1) {
+        result = search::anytime(ctx, ao);
+      } else {
+        result = search::AnytimeResult::Failed;
+      }
+    } else {
+      result = search::anytime(ctx, ao);
+    }
     std::lock_guard<std::mutex> lock(mutex_);
     stats_.expanded += ctx.stats.expanded;
     stats_.generated += ctx.stats.generated;
@@ -756,10 +789,10 @@ private:
   // With several threads: the phases at once, each with the whole budget (a pool of
   // options.threads threads takes them in order). A proof or an optimum stops the others.
   // Not deterministic: which phase finds a plan first depends on the machine.
-  void run_phases_parallel()
+  void run_phases_parallel(size_t first = 0)
   {
     std::vector<search::AnytimeResult> results(phases_.size(), search::AnytimeResult::Failed);
-    std::atomic<size_t> next{0};
+    std::atomic<size_t> next{first};
     std::atomic<bool> optimal{false};
     auto worker = [&]() {
         for (size_t k; (k = next++) < phases_.size(); ) {
@@ -786,12 +819,13 @@ private:
       };
     {
       std::vector<std::jthread> pool;
-      for (unsigned i = 0; i < std::min<size_t>(o_.threads, phases_.size()); ++i) {
+      for (unsigned i = 0; i < std::min<size_t>(o_.threads, phases_.size() - first); ++i) {
         pool.emplace_back(worker);
       }
     }
     // As the sequential loop would see it: an optimum, else a phase that exhausted its space,
     // else a stop, else how the last phase ended
+    results.erase(results.begin(), results.begin() + static_cast<std::ptrdiff_t>(first));
     outcome_ = results.empty() ? search::AnytimeResult::Failed : results.back();
     auto any = [&](search::AnytimeResult r) {
         return std::find(results.begin(), results.end(), r) != results.end();
@@ -811,7 +845,18 @@ private:
     best_task_ = &search_task();
     start_watchdog();
     if (o_.threads > 1 && phases_.size() > 1) {
-      run_phases_parallel();
+      // Incremental goals alone first: it needs little, the others at once would take the
+      // memory it needs (B6 patrol XL: out of 2 GB with 4 threads, solved in 3.6 s alone)
+      size_t first = 0;
+      if (phases_[0].search == "goals") {
+        outcome_ = run_phase(phases_[0], false);
+        first = 1;
+      }
+      if (first == 0 || (budget_->check() == BudgetState::Ok && !target_reached_ &&
+        !no_improvement_ && !first_only_))
+      {
+        run_phases_parallel(first);
+      }
       if (watchdog_.joinable()) {
         watchdog_.request_stop();
         watchdog_.join();
@@ -862,7 +907,7 @@ private:
       StopReason reason = StopReason::NoImprovement;
       if (target_reached_) {
         reason = StopReason::TargetReached;
-      } else if (no_improvement_) {
+      } else if (no_improvement_ || first_only_) {
         reason = StopReason::NoImprovement;
       } else if (outcome_ == search::AnytimeResult::ProvenOptimal) {
         // In M2 and M3 the search proves the sum of durations optimal, not the makespan
@@ -938,6 +983,7 @@ private:
   std::atomic<int64_t> last_plan_{-1};  // ms since t0
   size_t invalid_ = 0;
   std::atomic<bool> no_improvement_{false};
+  std::atomic<bool> first_only_{false};  // without anytime, the first plan stopped the search
   std::jthread watchdog_;
   // How the phases ended
   Clock::time_point search_start_;

@@ -159,7 +159,7 @@ stdout instead. Without a plan, stdout is empty.
 | [`--timeout`](#--timeout-s) | seconds (30) | time budget of the search |
 | [`--anytime`, `--no-anytime`](#--anytime---no-anytime) | flag (anytime) | keep improving after the first plan, or not |
 | [`--engine`](#engines---engine) | `auto` `m1` `m2` `m3` (`auto`) | planning engine |
-| [`--search`](#search-presets---search) | `auto` `ff` `lama` `eager-lama` `novelty` `lama-novelty` `ehc` (`auto`) | search configuration |
+| [`--search`](#search-presets---search) | `auto` `ff` `lama` `eager-lama` `novelty` `lama-novelty` `ehc` `goals` (`auto`) | search configuration |
 | [`--format`](#--format-ipcpopfjson) | `ipc` `popf` `json` (`ipc`) | plan format |
 | [`--output`](#--output-file) | file (stdout) | write plans to files |
 | [`--memory`](#--memory-mb) | MB (half of what is available) | memory limit |
@@ -588,13 +588,19 @@ heuristic of the preset.
 
 | Value | First plan | Use it when |
 |-------|-----------|-------------|
-| `auto` (default) | `lama`; with numeric conditions, `lama` for a quarter of the time and then `lama-novelty` (below); the portfolio on M3 | almost always |
+| `auto` (default) | with 20 goals or more, all of them facts, `goals` first (half of the time); then `lama`; with numeric conditions, `lama` for a quarter of the time and then `lama-novelty` (below); the portfolio on M3 | almost always |
 | `ff` | lazy greedy best-first search, FF heuristic, preferred operators | simple tasks; a cheap baseline |
 | `lama` | lazy greedy best-first search, FF and landmark-count heuristics in alternation, preferred operators (as LAMA) | classical tasks |
 | `eager-lama` | as `lama`, with eager search | when lazy search wastes evaluations (many children per state) |
 | `novelty` | eager greedy search, FF heuristic plus a novelty queue (width 2) | numeric tasks; plateaus where the heuristic does not guide |
 | `lama-novelty` | eager greedy search, FF and landmark count plus a novelty queue (width 2) | numeric tasks, M3 tasks |
 | `ehc` | enforced hill climbing with FF and helpful actions; falls back to lazy greedy search if it fails | tasks where greedy progress is reliable |
+| `goals` | incremental goals: the nearest goal fact not yet true, by a short lazy greedy search (FF) that keeps the ones already true, then the next; falls back to lazy greedy search if it fails | many goals that are facts: patrolling, visiting, delivering |
+
+With many goals `auto` starts with `goals`, alone even with several threads: one search for all
+of them meets plateaus that grow with the robots and the goals (a patrol of 1000 places, 200 of
+them to patrol and 6 robots: no plan in 100 s with `lama`, 0.2 s with `goals`). It is greedy:
+it may spend a robot's energy one goal needs next, so the other searches follow if it fails.
 
 With numeric conditions `auto` starts with lazy `lama`, which finds most first plans at once
 (robots carrying units of a resource: [the cooking examples](examples.md)), and moves on to
@@ -738,7 +744,7 @@ invalid
 
 ```console
 $ kairos --version
-kairos 0.3.0
+kairos 0.4.0
 ```
 
 `--version` must be the first argument. It prints to stdout and exits with 0.

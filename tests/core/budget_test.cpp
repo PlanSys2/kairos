@@ -47,6 +47,7 @@ BudgetConfig with_clock(FakeClock & fake)
       ++fake.reads;
       return fake.now;
     };
+  config.check_period = std::chrono::microseconds(0);  // full checks by calls only
   return config;
 }
 
@@ -301,6 +302,55 @@ TEST(BudgetTest, RealClockDeadline)
     ASSERT_LT(Clock::now() - start, seconds(5)) << "deadline never reached";
   }
   EXPECT_EQ(budget.state(), BudgetState::Timeout);
+}
+
+TEST(BudgetTest, RareCallsStillSeeTheDeadlineByTime)
+{
+  // A search whose expansions take 10 ms: a million calls between checks would be hours
+  BudgetConfig config;
+  config.deadline = Clock::now() + std::chrono::milliseconds(30);
+  config.check_interval = 1000000;
+  Budget budget(config);
+  int calls = 0;
+  while (!budget.exhausted()) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_LT(++calls, 200) << "the deadline was not seen by time";
+  }
+  EXPECT_EQ(budget.state(), BudgetState::Timeout);
+  EXPECT_GE(calls, 2);
+}
+
+TEST(BudgetTest, ZeroPeriodChecksOnlyByCalls)
+{
+  BudgetConfig config;
+  config.deadline = Clock::now();
+  config.check_interval = 5;
+  config.check_period = std::chrono::microseconds(0);
+  Budget budget(config);
+  std::this_thread::sleep_for(std::chrono::milliseconds(15));
+  for (int i = 0; i < 4; ++i) {
+    EXPECT_FALSE(budget.exhausted());
+  }
+  EXPECT_TRUE(budget.exhausted());  // call 5
+  EXPECT_EQ(budget.state(), BudgetState::Timeout);
+}
+
+TEST(BudgetTest, FastCallsDoNotCheckOnEveryCall)
+{
+  // Within one period, only every check_interval calls read the clock
+  FakeClock fake;
+  auto config = with_clock(fake);
+  config.check_period = std::chrono::seconds(60);
+  config.deadline = Clock::time_point{} + seconds(10);
+  config.check_interval = 1000;
+  Budget budget(config);
+  fake.reads = 0;
+  for (int i = 0; i < 999; ++i) {
+    EXPECT_FALSE(budget.exhausted());
+  }
+  EXPECT_EQ(fake.reads, 0);
+  EXPECT_FALSE(budget.exhausted());
+  EXPECT_EQ(fake.reads, 1);
 }
 
 TEST(BudgetTest, ConcurrentPollingAndAccounting)

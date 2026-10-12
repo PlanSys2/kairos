@@ -79,6 +79,16 @@ public:
   /// @brief The (variable, value) of a fact node, or nullopt for other nodes.
   std::optional<std::pair<sas::VarId, uint32_t>> fact_of(uint32_t node) const;
   uint32_t goal_node() const {return goal_;}
+  /// @brief Replaces the goal by these facts (the next run() reaches them instead); with any,
+  /// the goal is reached with the first of them (goal_fact() tells which).
+  void set_goal(const std::vector<sas::Fact> & facts, bool any = false);
+  /// @brief With an "any" goal: the node of the fact that reached it in the last run().
+  uint32_t goal_fact() const {return goal_trigger_;}
+  /// @brief Cost of a node in the last run() (infinity if not reached before it stopped).
+  double cost(uint32_t node) const
+  {
+    return node_[node].stamp == epoch_ ? node_[node].cost : kInfinity;
+  }
   uint32_t action_node(uint32_t action) const {return act_node_[action];}
   /// @brief The action of an action node, or -1.
   int32_t node_action(uint32_t node) const {return node_action_[node];}
@@ -138,18 +148,57 @@ private:
   std::vector<std::vector<NumEffect>> num_effects_;     // per action
   std::vector<std::vector<uint32_t>> action_num_;       // per action: numeric nodes it changes
   uint32_t goal_ = 0;
+  uint32_t goal_op_ = 0;
+  uint32_t goal_trigger_ = kNone;
   std::vector<Op> ops_;
   std::vector<std::vector<uint32_t>> triggers_;  // per node: ops it is a precondition of
   std::vector<uint32_t> act_op_;                 // per action: its precondition op
 
   // Per evaluation
   Mode mode_ = Mode::Add;
-  std::vector<double> cost_;
-  std::vector<double> op_cost_;
-  std::vector<uint32_t> unsatisfied_;
-  std::vector<uint32_t> supporter_;   // op (or action, for numeric nodes)
-  std::vector<uint32_t> repeat_;      // numeric nodes: repetitions of the supporter
-  std::vector<uint8_t> initial_;      // true in the state itself
+  // Per-run values are reset lazily: a node or operator holds this run's values only if its
+  // stamp is the run's epoch (a run that stops near the state touches a few of millions).
+  // Each in one struct, so the hot loop reads one place per operator
+  struct NodeState
+  {
+    double cost;
+    uint32_t stamp = 0;
+    uint32_t supporter;  // op (or action, for numeric nodes)
+    uint32_t repeat;     // numeric nodes: repetitions of the supporter
+    uint8_t initial;     // true in the state itself
+  };
+  struct OpState
+  {
+    double cost;
+    uint32_t stamp = 0;
+    uint32_t unsatisfied;
+    uint32_t preconditions;  // what unsatisfied starts from
+  };
+  uint32_t epoch_ = 0;
+  std::vector<NodeState> node_;
+  std::vector<OpState> op_;
+  std::vector<uint32_t> free_ops_;    // operators without preconditions
+  std::vector<uint32_t> seen_stamp_;  // relaxed_plan
+  uint32_t seen_epoch_ = 0;
+  NodeState & touch(uint32_t n)
+  {
+    NodeState & x = node_[n];
+    if (x.stamp != epoch_) {
+      x = NodeState{kInfinity, epoch_, kNone, 0, 0};
+    }
+    return x;
+  }
+  OpState & touch_op(uint32_t o)
+  {
+    OpState & x = op_[o];
+    if (x.stamp != epoch_) {
+      x.cost = 0.0;
+      x.stamp = epoch_;
+      x.unsatisfied = x.preconditions;
+    }
+    return x;
+  }
+  bool fresh(uint32_t n) const {return node_[n].stamp == epoch_;}
   std::vector<double> missing_;       // per numeric node
   std::vector<double> best_ratio_;    // per numeric node: least cost per unit (hmax)
   // As FD's bucket queue: whole costs in buckets, last in first out within a cost (ties in the

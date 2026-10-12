@@ -860,7 +860,8 @@ AnytimeResult anytime(SearchContext & ctx, const AnytimeOptions & options)
     first.heuristic_costs = options.plus_one_first && !zero_costs ?
       EngineOptions::HeuristicCosts::PlusOne : EngineOptions::HeuristicCosts::One;
   }
-  Outcome o = run_engine(ctx, first);
+  bool have_plan = options.skip_first && !std::isinf(ctx.sink.bound());
+  Outcome o = have_plan ? Outcome::Solved : run_engine(ctx, first);
   if (o == Outcome::Failed && options.first.kind == EngineOptions::Kind::EnforcedHillClimbing &&
     options.fallback_after_ehc)
   {

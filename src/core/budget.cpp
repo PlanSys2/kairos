@@ -14,6 +14,8 @@
 
 #include "core/budget.hpp"
 
+#include <time.h>
+
 #include <algorithm>
 #include <utility>
 
@@ -22,6 +24,24 @@
 namespace kairos
 {
 
+namespace
+{
+
+// Nanoseconds of a monotonic clock that is cheap to read in hot loops (a few ms coarse on Linux)
+int64_t coarse_ns() noexcept
+{
+#ifdef CLOCK_MONOTONIC_COARSE
+  timespec ts;
+  clock_gettime(CLOCK_MONOTONIC_COARSE, &ts);
+  return int64_t{ts.tv_sec} *1'000'000'000 + ts.tv_nsec;
+#else
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+    std::chrono::steady_clock::now().time_since_epoch()).count();
+#endif
+}
+
+}  // namespace
+
 Budget::Budget(BudgetConfig config)
 : config_(std::move(config))
 {
@@ -29,6 +49,7 @@ Budget::Budget(BudgetConfig config)
     config_.check_interval = 1;
   }
   config_.memory_warning_fraction = std::clamp(config_.memory_warning_fraction, 0.0, 1.0);
+  last_check_ns_.store(coarse_ns(), std::memory_order_relaxed);
   if (config_.memory_limit_bytes > 0) {
     rss_baseline_ = probe();
   }
@@ -45,13 +66,18 @@ bool Budget::exhausted() noexcept
   }
   uint32_t calls = calls_.fetch_add(1, std::memory_order_relaxed) + 1;
   if (calls % config_.check_interval != 0) {
-    return false;
+    int64_t period = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      config_.check_period).count();
+    if (period <= 0 || coarse_ns() - last_check_ns_.load(std::memory_order_relaxed) < period) {
+      return false;
+    }
   }
   return check() != BudgetState::Ok;
 }
 
 BudgetState Budget::check() noexcept
 {
+  last_check_ns_.store(coarse_ns(), std::memory_order_relaxed);
   if (state() != BudgetState::Ok) {
     return state();
   }

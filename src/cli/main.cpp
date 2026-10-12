@@ -67,7 +67,7 @@ const char * kUsage =
   "  --anytime | --no-anytime  keep improving after the first plan (default: anytime)\n"
   "  --engine auto|m1|m2|m3\n"
   "  --search NAME           M1 search: auto (default), ff, lama, eager-lama, novelty,\n"
-  "                          lama-novelty, ehc\n"
+  "                          lama-novelty, ehc, goals\n"
   "  --format ipc|popf|json  plan format (default ipc; popf on stdout: only the best plan)\n"
   "  --output FILE           write plans to FILE (anytime: FILE.1, FILE.2, ...)\n"
   "  --memory MB             memory limit (default: half of what is available)\n"

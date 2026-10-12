@@ -15,6 +15,7 @@
 # The validator judges the plans
 kairos_add_test(search_tests
   SOURCES
+    goals_test.cpp
     novelty_test.cpp
     search_test.cpp
   DEPENDS

@@ -386,6 +386,14 @@ private:
   }
 
   // Adds typed variables to the owner's table and the scope
+  // Whether some object has the type
+  bool inhabited(const TypeSpec & spec) const
+  {
+    return std::any_of(
+      pm_.objects.items.begin(), pm_.objects.items.end(),
+      [&](const auto & o) {return dm_.types.fits(o.types, spec);});
+  }
+
   std::vector<uint32_t> declare(
     const Source & s, const std::vector<ast::TypedName> & params, std::vector<Variable> & owner,
     Scope & scope)
@@ -524,9 +532,25 @@ private:
           bool exists = (f.kind == ast::FormulaKind::Exists) == positive;
           n.kind = exists ? NF::Kind::Exists : NF::Kind::Forall;
           size_t mark = scope.size();
-          n.vars = declare(s, f.params, owner, scope);
-          n.children.push_back(to_nf(s, f.children.at(0), positive, time, owner, scope));
+          std::vector<uint32_t> vars = declare(s, f.params, owner, scope);
+          NF body = to_nf(s, f.children.at(0), positive, time, owner, scope);
           scope.resize(mark);
+          // A variable the body never reads only needs its type to have objects: without
+          // it, no product of witnesses (an unused ?x ?y over 1000 objects: 10^6 of them)
+          std::set<uint32_t> used;
+          free_vars(body, used);
+          for (uint32_t v : vars) {
+            if (used.count(v)) {
+              n.vars.push_back(v);
+            } else if (!inhabited(owner[v].types)) {
+              n.kind = exists ? NF::Kind::False : NF::Kind::True;
+              return n;
+            }
+          }
+          if (n.vars.empty()) {
+            return body;
+          }
+          n.children.push_back(std::move(body));
           return n;
         }
       case ast::FormulaKind::Atom: {

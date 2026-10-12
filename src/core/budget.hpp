@@ -46,6 +46,9 @@ struct BudgetConfig
   size_t memory_limit_bytes = 0;      // 0 = no memory limit
   double memory_warning_fraction = 0.8;
   uint32_t check_interval = 1024;     // exhausted() calls between full checks; 0 is taken as 1
+  // Also a full check when this much real time passed since the last one, however rarely
+  // exhausted() is called (zero: only by calls)
+  std::chrono::microseconds check_period{5000};
   std::function<Clock::time_point()> clock;           // default: Clock::now
   std::function<std::optional<size_t>()> memory_probe;  // default: current_rss_bytes
 };
@@ -53,8 +56,9 @@ struct BudgetConfig
 /**
  * @brief Tells long-running stages when to stop.
  *
- * - exhausted() is the hot-loop call: it reads the stop token every time, and the clock and
- *   memory only every `check_interval` calls.
+ * - exhausted() is the hot-loop call: it reads the stop token and a coarse clock every time,
+ *   and the clock and memory only every `check_interval` calls or `check_period`, whichever
+ *   comes first (a search whose expansions take 30 ms still sees its deadline in time).
  * - Memory used = max(bytes accounted with account(), RSS growth since construction). RSS
  *   growth, not total RSS, because Kairos may live inside a larger process.
  * - The first reason to stop wins and is sticky.
@@ -106,6 +110,7 @@ private:
   std::atomic<size_t> used_{0};
   std::atomic<bool> pressure_{false};
   std::atomic<uint32_t> calls_{0};
+  std::atomic<int64_t> last_check_ns_{0};  // coarse clock, at the last full check
 };
 
 }  // namespace kairos

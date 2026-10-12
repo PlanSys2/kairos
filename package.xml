@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>kairos</name>
-  <version>0.3.0</version>
+  <version>0.4.0</version>
   <description>Modern temporal and numeric PDDL planner, usable as a library and as an executable</description>
   <maintainer email="fmrico@gmail.com">Francisco Martín Rico</maintainer>
   <license>Apache-2.0</license>

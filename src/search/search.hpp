@@ -155,6 +155,9 @@ struct AnytimeOptions
   bool unit_first = true;
   /// @brief With unit_first: cost + 1 instead of unit costs (keeps some of the costs)
   bool plus_one_first = false;
+  /// @brief No first search when ctx.sink already has a plan (from another method): only
+  /// the improving restarts
+  bool skip_first = false;
 };
 
 enum class AnytimeResult : uint8_t
