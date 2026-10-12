@@ -188,6 +188,32 @@ TEST(BudgetTest, AccountedMemoryOverTheLimit)
   EXPECT_EQ(budget.accounted_bytes(), 1000u);
 }
 
+TEST(BudgetTest, ReserveBeforeALargeAllocation)
+{
+  size_t rss = 100;
+  BudgetConfig config;
+  config.memory_limit_bytes = 1000;
+  config.memory_probe = [&rss]() {return std::optional<size_t>{rss};};
+  Budget budget(config);  // baseline 100
+  rss = 500;                              // 400 used
+  EXPECT_TRUE(budget.reserve(600));       // 400 + 600 fits exactly
+  EXPECT_EQ(budget.state(), BudgetState::Ok);
+  EXPECT_FALSE(budget.reserve(601));
+  EXPECT_EQ(budget.state(), BudgetState::OutOfMemory);
+  EXPECT_FALSE(budget.reserve(1));        // sticky
+  EXPECT_TRUE(budget.exhausted());
+
+  // Without a memory limit everything fits; a stop is still a stop
+  std::stop_source stop;
+  BudgetConfig free;
+  free.stop = stop.get_token();
+  Budget unlimited(free);
+  EXPECT_TRUE(unlimited.reserve(size_t{1} << 40));
+  stop.request_stop();
+  EXPECT_FALSE(unlimited.reserve(1));
+  EXPECT_EQ(unlimited.state(), BudgetState::Cancelled);
+}
+
 TEST(BudgetTest, NegativeAccountingClampsToZero)
 {
   BudgetConfig config;

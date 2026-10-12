@@ -20,6 +20,7 @@
 
 #include <span>  // cpplint takes it for a C header
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -146,6 +147,14 @@ private:
   uint32_t intern(uint32_t predicate, std::span<const uint32_t> args);
   uint32_t lookup(uint32_t predicate, std::span<const uint32_t> args, uint32_t hash) const;
   void grow();
+  // Whether an allocation of this size fits in the budget (once one does not, nothing grows)
+  bool room(size_t bytes);
+  template<typename T>
+  bool room_to_add(const std::vector<T> & v, size_t n = 1)
+  {
+    return v.size() + n <= v.capacity() || room(std::max(2 * v.capacity(), v.size() + n) *
+           sizeof(T));
+  }
   double distinct(uint32_t predicate, size_t position);
   void process(uint32_t fact);
   uint64_t key_of(const CompiledRule & r, const uint32_t * binding) const;
@@ -154,6 +163,8 @@ private:
   std::vector<bool> static_;
   std::vector<std::vector<double>> distinct_;  // static predicates: values per position
   std::vector<std::string> names_;
+  Budget * budget_ = nullptr;  // during solve()
+  bool full_ = false;          // an allocation did not fit
   std::vector<uint32_t> pool_;
   std::vector<FactRef> facts_;
   std::vector<std::vector<uint32_t>> by_predicate_;

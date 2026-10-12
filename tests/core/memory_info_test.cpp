@@ -257,6 +257,31 @@ TEST(SnapshotTest, RealSystem)
   auto rss = current_rss_bytes();
   ASSERT_TRUE(rss.has_value());
   EXPECT_GT(*rss, size_t{0});
+  auto peak = peak_rss_bytes();
+  ASSERT_TRUE(peak.has_value());
+  EXPECT_GE(*peak, *rss);
+}
+
+TEST(ParseTest, KbFieldsOfProcFiles)
+{
+  const char * status = "Name:\tkairos\nVmPeak:\t  900 kB\nVmHWM:\t  2048 kB\nVmRSS:\t 1024 kB\n";
+  EXPECT_EQ(parse_kb_field(status, "VmHWM:"), size_t{2048 * 1024});
+  EXPECT_EQ(parse_kb_field(status, "VmRSS:"), size_t{1024 * 1024});
+  EXPECT_FALSE(parse_kb_field(status, "VmSwap:"));
+  EXPECT_FALSE(parse_kb_field("VmHWM: lots kB\n", "VmHWM:"));
+  EXPECT_EQ(parse_kb_field("Plain: 12\n", "Plain:"), size_t{12});  // without unit: bytes
+  EXPECT_FALSE(parse_kb_field("", "VmHWM:"));
+}
+
+TEST(PeakRssTest, MissingOrBrokenStatus)
+{
+  TempDir dir;
+  MemoryPaths paths;
+  paths.self_status = dir.path() / "none";
+  EXPECT_FALSE(peak_rss_bytes(paths));
+  dir.write("status", "VmHWM:\t 64 kB\n");
+  paths.self_status = dir.path() / "status";
+  EXPECT_EQ(peak_rss_bytes(paths), size_t{64 * 1024});
 }
 
 TEST(ReadTextFileTest, ExistingAndMissing)

@@ -111,6 +111,20 @@ BudgetState Budget::check() noexcept
   return state();
 }
 
+bool Budget::reserve(size_t bytes) noexcept
+{
+  if (check() != BudgetState::Ok) {
+    return false;
+  }
+  if (config_.memory_limit_bytes > 0 && used_.load(std::memory_order_relaxed) + bytes >
+    config_.memory_limit_bytes)
+  {
+    stop_with(BudgetState::OutOfMemory);
+    return false;
+  }
+  return true;
+}
+
 void Budget::account(std::ptrdiff_t delta_bytes) noexcept
 {
   accounted_.fetch_add(static_cast<int64_t>(delta_bytes), std::memory_order_relaxed);

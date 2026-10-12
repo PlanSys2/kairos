@@ -14,12 +14,14 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <chrono>
 #include <random>
 #include <set>
 #include <stdexcept>
 #include <vector>
 
+#include "core/memory_info.hpp"
 #include "ground/datalog.hpp"
 
 namespace kairos::datalog
@@ -220,6 +222,30 @@ TEST(DatalogTest, BudgetStopsTheEvaluation)
   Budget budget(cfg);
   EXPECT_FALSE(p.solve(&budget));
   EXPECT_LT(p.stats().facts, 2000u + 2000u * 2000u);
+}
+
+TEST(DatalogTest, StopsWithinTheMemoryLimit)
+{
+  // 3000 x 3000 pairs need ~400 MB: the doubling vectors would pass a limit of 96 MB by far
+  // between two full checks; reserving before each large allocation stops in time
+  Program p;
+  uint32_t n = p.add_predicate(1, "n");
+  uint32_t pair = p.add_predicate(2, "pair");
+  for (uint32_t i = 0; i < 3000; ++i) {
+    fact(p, n, {i});
+  }
+  p.add_rule(Rule{Atom{pair, {V(0), V(1)}}, {Atom{n, {V(0)}}, Atom{n, {V(1)}}}, 2, {}});
+  BudgetConfig cfg;
+  cfg.memory_limit_bytes = size_t{96} << 20;
+  cfg.check_interval = 1000000;  // only the reservations and the period
+  auto before = current_rss_bytes();
+  Budget budget(cfg);
+  EXPECT_FALSE(p.solve(&budget));
+  EXPECT_EQ(budget.state(), BudgetState::OutOfMemory);
+  EXPECT_LT(p.stats().facts, 3000u + 3000u * 3000u);
+  auto after = current_rss_bytes();
+  ASSERT_TRUE(before && after);
+  EXPECT_LT(*after - std::min(*after, *before), size_t{160} << 20);
 }
 
 // Naive fixpoint: apply every rule to every combination until nothing changes

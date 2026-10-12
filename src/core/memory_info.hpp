@@ -34,6 +34,7 @@ struct MemoryPaths
   std::filesystem::path self_cgroup = "/proc/self/cgroup";
   std::filesystem::path cgroup_root = "/sys/fs/cgroup";
   std::filesystem::path self_statm = "/proc/self/statm";
+  std::filesystem::path self_status = "/proc/self/status";
 };
 
 /// @brief Available memory according to each source, in bytes. Missing = unknown or unlimited.
@@ -68,6 +69,12 @@ MemorySnapshot read_memory_snapshot(const MemoryPaths & paths = {});
 
 /// @brief Half of the smallest known available figure, or kFallbackMemoryLimit.
 size_t default_memory_limit(const MemorySnapshot & snapshot);
+
+/// @brief A "Key:   123 kB" line of /proc files (meminfo, status), in bytes.
+std::optional<size_t> parse_kb_field(std::string_view content, std::string_view key);
+
+/// @brief Highest resident set size of this process so far (VmHWM), if readable.
+std::optional<size_t> peak_rss_bytes(const MemoryPaths & paths = {});
 
 /// @brief Resident set size of this process, if readable.
 std::optional<size_t> current_rss_bytes(const MemoryPaths & paths = {});

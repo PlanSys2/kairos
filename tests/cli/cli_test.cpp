@@ -21,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <regex>
 #include <string>
 #include <vector>
 
@@ -389,6 +390,31 @@ TEST_F(CliTest, MemoryLimitExitsTwelve)
     "'" + path("h.pddl") + "' '" + path("hp.pddl") + "' --memory 8 --timeout 60 --search ff");
   EXPECT_EQ(r.code, 12);
   EXPECT_TRUE(contains(r.err, "out of memory"));
+}
+
+TEST_F(CliTest, GroundingStaysWithinTheMemoryLimit)
+{
+  // Every triple of 400 objects: 64 million instances; with --memory 64 Kairos stops itself,
+  // and its peak stays near the limit (it went 25-45 % over when vectors doubled unchecked)
+  std::string objects;
+  for (int i = 0; i < 400; ++i) {
+    objects += " o" + std::to_string(i);
+  }
+  write("t.pddl", "(define (domain t) (:predicates (p ?x) (q ?x ?y ?z))"
+    " (:action a :parameters (?x ?y ?z) :precondition (and (p ?x) (p ?y) (p ?z))"
+    " :effect (q ?x ?y ?z)))");
+  std::string init;
+  for (int i = 0; i < 400; ++i) {
+    init += " (p o" + std::to_string(i) + ")";
+  }
+  write("tp.pddl", "(define (problem tp) (:domain t) (:objects" + objects + ") (:init" + init +
+    ") (:goal (q o1 o2 o3)))");
+  Outcome r = run("'" + path("t.pddl") + "' '" + path("tp.pddl") +
+      "' --memory 64 --timeout 120 -v");
+  EXPECT_EQ(r.code, 12);
+  std::smatch m;
+  ASSERT_TRUE(std::regex_search(r.err, m, std::regex("(\\d+) MB peak"))) << r.err;
+  EXPECT_LT(std::stoi(m[1]), 64 + 48) << r.err;  // the limit counts growth, not the baseline
 }
 
 TEST_F(CliTest, UnsupportedExitsThirteen)

@@ -212,7 +212,14 @@ uint32_t Program::intern(uint32_t predicate, std::span<const uint32_t> args)
   if (found != kUnbound) {
     return found;
   }
-  if ((facts_.size() + 1) * 2 > slots_.size()) {
+  auto & of_predicate = by_predicate_[predicate];
+  bool grows = (facts_.size() + 1) * 2 > slots_.size();
+  if (full_ || (grows && !room(std::max<size_t>(64, slots_.size() * 2) * sizeof(uint64_t))) ||
+    !room_to_add(facts_) || !room_to_add(pool_, args.size()) || !room_to_add(of_predicate))
+  {
+    return kUnbound;  // out of memory: solve() stops
+  }
+  if (grows) {
     grow();
   }
   auto id = static_cast<uint32_t>(facts_.size());
@@ -224,7 +231,7 @@ uint32_t Program::intern(uint32_t predicate, std::span<const uint32_t> args)
     i = (i + 1) & mask;
   }
   slots_[i] = (uint64_t{hash} << 32) | id;
-  by_predicate_[predicate].push_back(id);
+  of_predicate.push_back(id);
   return id;
 }
 
@@ -479,7 +486,14 @@ void Program::process(uint32_t fact)
       continue;
     }
     uint64_t key = key_of(r, scratch_a_.data());
-    r.index[side].insert(key, fact);
+    Index & mine = r.index[side];
+    if (full_ || ((mine.used + 1) * 2 > mine.keys.size() &&
+      !room(std::max<size_t>(16, mine.keys.size() * 2) * (sizeof(uint64_t) + sizeof(uint32_t)))) ||
+      !room_to_add(mine.fact) || !room_to_add(mine.next))
+    {
+      return;
+    }
+    mine.insert(key, fact);
     const Index & other = r.index[1 - side];
     for (uint32_t e = other.find(key); e != kUnbound; e = other.next[e]) {
       ++stats_.join_probes;
@@ -491,8 +505,19 @@ void Program::process(uint32_t fact)
   }
 }
 
+bool Program::room(size_t bytes)
+{
+  // Small allocations are left to the full checks of the budget
+  constexpr size_t kLarge = size_t{1} << 20;
+  if (full_ || (bytes >= kLarge && budget_ && !budget_->reserve(bytes))) {
+    full_ = true;
+  }
+  return !full_;
+}
+
 bool Program::solve(Budget * budget)
 {
+  budget_ = budget;
   for (const auto & r : ground_rules_) {
     fire(r.head, r.checks, nullptr);
   }
@@ -500,12 +525,14 @@ bool Program::solve(Budget * budget)
   stats_.rules = rules_.size();
   while (queue_ < facts_.size()) {
     process(static_cast<uint32_t>(queue_++));
-    if (budget && budget->exhausted()) {  // cheap: full checks every check_interval calls
+    if (full_ || (budget && budget->exhausted())) {  // cheap: full checks now and then
       stats_.facts = facts_.size();
+      budget_ = nullptr;
       return false;
     }
   }
   stats_.facts = facts_.size();
+  budget_ = nullptr;
   return true;
 }
 

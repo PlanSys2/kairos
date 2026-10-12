@@ -1138,7 +1138,7 @@ private:
   }
 
   // Checks the budget while instantiating (millions of instances may come); exhausted() is
-  // cheap and does the full check every check_interval calls
+  // cheap and does the full check every check_interval calls or 5 ms
   void tick()
   {
     if (budget_ && budget_->exhausted()) {
@@ -1294,6 +1294,9 @@ private:
     for (uint32_t p : preds) {
       total += prog_.facts(p).size();
     }
+    if (budget_ && !budget_->reserve(total * sizeof(Action))) {
+      throw OutOfBudget{};
+    }
     out.reserve(total);
     for (uint32_t s = 0; s < schemas.size(); ++s) {
       const auto & a = schemas[s];
@@ -1388,6 +1391,9 @@ private:
     size_t total = 0;
     for (uint32_t p : durative_end_) {
       total += prog_.facts(p).size();
+    }
+    if (budget_ && !budget_->reserve(total * sizeof(DurativeAction))) {
+      throw OutOfBudget{};
     }
     out_.durative_actions.reserve(total);
     for (uint32_t s = 0; s < t_.durative_actions.size(); ++s) {

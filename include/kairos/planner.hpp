@@ -100,7 +100,7 @@ struct Statistics
   size_t states = 0;
   size_t plans = 0;           // plans found (each better than the one before)
   size_t memory_limit_bytes = 0;
-  size_t peak_memory_bytes = 0;
+  size_t peak_memory_bytes = 0;  // highest resident size of the process (embedded: all of it)
   double bytes_per_state = 0.0;
 };
 

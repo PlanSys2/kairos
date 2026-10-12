@@ -80,9 +80,8 @@ std::optional<std::string> read_text_file(const std::filesystem::path & path)
   return ss.str();
 }
 
-std::optional<size_t> parse_meminfo_available(std::string_view content)
+std::optional<size_t> parse_kb_field(std::string_view content, std::string_view key)
 {
-  constexpr std::string_view key = "MemAvailable:";
   size_t pos = 0;
   while (pos < content.size()) {
     size_t end = content.find('\n', pos);
@@ -107,6 +106,11 @@ std::optional<size_t> parse_meminfo_available(std::string_view content)
     return *value * multiplier;
   }
   return std::nullopt;
+}
+
+std::optional<size_t> parse_meminfo_available(std::string_view content)
+{
+  return parse_kb_field(content, "MemAvailable:");
 }
 
 std::optional<size_t> parse_cgroup_value(std::string_view content)
@@ -219,6 +223,15 @@ size_t default_memory_limit(const MemorySnapshot & snapshot)
     }
   }
   return available ? *available / 2 : kFallbackMemoryLimit;
+}
+
+std::optional<size_t> peak_rss_bytes(const MemoryPaths & paths)
+{
+  auto status = read_text_file(paths.self_status);
+  if (!status) {
+    return std::nullopt;
+  }
+  return parse_kb_field(*status, "VmHWM:");
 }
 
 std::optional<size_t> current_rss_bytes(const MemoryPaths & paths)

@@ -325,7 +325,8 @@ private:
     res_.status = status;
     res_.stop_reason = reason;
     res_.stats.total_ms = ms_since(t0_);
-    if (auto rss = current_rss_bytes()) {
+    // The highest resident size (the current one is what is left after freeing)
+    if (auto rss = peak_rss_bytes() ? peak_rss_bytes() : current_rss_bytes()) {
       res_.stats.peak_memory_bytes = *rss;
     }
     log_.info(

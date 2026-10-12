@@ -85,6 +85,13 @@ public:
   /// @brief True if memory use reached the warning fraction at the last full check.
   bool memory_pressure() const noexcept {return pressure_.load(std::memory_order_relaxed);}
 
+  /**
+   * @brief Before allocating `bytes` at once (a large vector that doubles): false, and out of
+   * memory from then on, if they do not fit in what is left of the limit now. Between full
+   * checks one such allocation could take the process far past the limit.
+   */
+  bool reserve(size_t bytes) noexcept;
+
   /// @brief Adds (or with a negative delta, removes) bytes owned by Kairos structures.
   void account(std::ptrdiff_t delta_bytes) noexcept;
 
