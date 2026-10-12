@@ -20,6 +20,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <queue>
 #include <set>
 #include <string>
 #include <utility>
@@ -265,6 +266,21 @@ SnapTask snap(const sas::Task & task)
     s.task.goal.facts.push_back(sas::Fact{run, 1});
   }
   std::sort(s.task.goal.facts.begin(), s.task.goal.facts.end());
+  // For the heuristics: each end also needs the facts of its over all conditions. Not for the
+  // search: a happening at the same instant as the end may delete them (the interval is open
+  // there; compiled time windows end envelopes that way)
+  s.guide = s.task;
+  for (size_t i = 0; i < task.durative_actions.size(); ++i) {
+    const auto & oa = task.durative_actions[i].over_all;
+    auto & pre = s.guide.actions[s.instant + 2 * i + 1].pre;
+    pre.facts.insert(pre.facts.end(), oa.facts.begin(), oa.facts.end());
+    pre.not_facts.insert(pre.not_facts.end(), oa.not_facts.begin(), oa.not_facts.end());
+    std::sort(pre.facts.begin(), pre.facts.end());
+    pre.facts.erase(std::unique(pre.facts.begin(), pre.facts.end()), pre.facts.end());
+    std::sort(pre.not_facts.begin(), pre.not_facts.end());
+    pre.not_facts.erase(std::unique(pre.not_facts.begin(), pre.not_facts.end()),
+      pre.not_facts.end());
+  }
   return s;
 }
 
@@ -319,11 +335,278 @@ std::vector<Access> accesses(const sas::Task & original, const SnapTask & s)
 
 }  // namespace
 
+// Earliest times of facts in a relaxation with durations and the deadlines that timed initial
+// literals set: a fact that a later literal makes false and no action makes true again is
+// usable only until then. Sound for pruning: every time is a lower bound and nothing is
+// deleted, so a goal it cannot reach in time no plan reaches
+class TemporalFilter::Deadlines
+{
+public:
+  Deadlines(const sas::Task & original, const SnapTask & snap, double epsilon)
+  : o_(original), s_(snap), eps_(epsilon)
+  {
+    offset_.assign(o_.variables.size() + 1, 0);
+    for (size_t v = 0; v < o_.variables.size(); ++v) {
+      offset_[v + 1] = offset_[v] + static_cast<uint32_t>(o_.variables[v].size());
+    }
+    facts_ = offset_.back();
+    nodes_ = facts_ + static_cast<uint32_t>(o_.durative_actions.size());
+    producible_.assign(facts_, 0);
+    for (const auto & a : o_.actions) {
+      instant(a.pre, a.changes, a.effects, false);
+    }
+    for (const auto & a : o_.events) {
+      instant(a.pre, a.changes, a.effects, false);
+    }
+    for (const auto & ax : o_.axioms) {
+      instant(ax.body, {ax.head}, {}, true);
+    }
+    end_op_.resize(o_.durative_actions.size());
+    for (uint32_t i = 0; i < o_.durative_actions.size(); ++i) {
+      const auto & da = o_.durative_actions[i];
+      Op st;
+      st.kind = Op::Start;
+      st.index = i;
+      facts(da.at_start, st.pre);
+      facts(da.over_all, st.pre);
+      st.check = st.pre;
+      adds(da.start, da.effects, sas::Timing::Start, st.adds);
+      Op en;
+      en.kind = Op::End;
+      en.index = i;
+      facts(da.at_end, en.check);
+      facts(da.over_all, en.check);
+      en.pre = en.check;
+      en.pre.push_back(facts_ + i);
+      adds(da.end, da.effects, sas::Timing::End, en.adds);
+      ops_.push_back(std::move(st));
+      end_op_[i] = static_cast<uint32_t>(ops_.size());
+      ops_.push_back(std::move(en));
+    }
+    for (const auto & op : ops_) {
+      for (uint32_t f : op.adds) {
+        producible_[f] = 1;
+      }
+    }
+    triggers_.assign(nodes_, {});
+    for (uint32_t k = 0; k < ops_.size(); ++k) {
+      for (uint32_t n : ops_[k].pre) {
+        triggers_[n].push_back(k);
+      }
+    }
+    // The literals, in the order of the snap task, and whether one ever takes a value away
+    for (size_t k = s_.tils; k < s_.task.actions.size(); ++k) {
+      // Only the original variables: the snap task adds its own (which literals happened)
+      std::vector<sas::Fact> sets;
+      auto keep = [&](const sas::Fact & f) {
+          if (f.var < o_.variables.size()) {
+            sets.push_back(f);
+          }
+        };
+      for (const auto & f : s_.task.actions[k].changes) {
+        keep(f);
+      }
+      for (const auto & e : s_.task.actions[k].effects) {
+        if (e.kind == sas::Effect::Kind::Assign) {
+          keep(e.fact);
+        }
+      }
+      for (const auto & f : sets) {
+        for (uint32_t x = 0; x < o_.variables[f.var].size(); ++x) {
+          active_ = active_ || (x != f.value && !producible_[offset_[f.var] + x]);
+        }
+      }
+      tils_.push_back(std::move(sets));
+    }
+  }
+
+  bool active() const {return active_;}
+
+  /// @brief False if some goal fact cannot be reached in time. `written` gives the earliest
+  /// time since which a variable has its value; `running`, the earliest ends of the running
+  /// actions (durative action, time).
+  bool feasible(
+    const uint32_t * values, const double * numbers, size_t tils_done,
+    const std::function<double(sas::VarId)> & written,
+    const std::vector<std::pair<size_t, double>> & running)
+  {
+    time_.assign(nodes_, Stn::kInfinity);
+    deadline_.assign(facts_, Stn::kInfinity);
+    unsatisfied_.resize(ops_.size());
+    for (size_t k = 0; k < ops_.size(); ++k) {
+      unsatisfied_[k] = static_cast<uint32_t>(ops_[k].pre.size());
+    }
+    least_.resize(o_.durative_actions.size());
+    for (size_t i = 0; i < least_.size(); ++i) {
+      least_[i] = std::max(0.0, bounds(o_.durative_actions[i], numbers).lo);
+    }
+    heap_ = {};
+    // Deadlines: a later literal takes the value away and nothing gives it back
+    for (size_t k = tils_done; k < tils_.size(); ++k) {
+      for (const auto & f : tils_[k]) {
+        for (uint32_t x = 0; x < o_.variables[f.var].size(); ++x) {
+          uint32_t n = offset_[f.var] + x;
+          if (x == f.value || producible_[n] || set_later(k, f.var, x)) {
+            continue;
+          }
+          deadline_[n] = std::min(deadline_[n], s_.til_time[k]);
+        }
+      }
+    }
+    for (sas::VarId v = 0; v < o_.variables.size(); ++v) {
+      reach(offset_[v] + values[v], written(v));
+    }
+    for (size_t k = tils_done; k < tils_.size(); ++k) {
+      for (const auto & f : tils_[k]) {
+        reach(offset_[f.var] + f.value, s_.til_time[k]);
+      }
+    }
+    for (const auto & [i, t] : running) {
+      for (uint32_t f : ops_[end_op_[i]].adds) {
+        reach(f, t);
+      }
+    }
+    for (uint32_t k = 0; k < ops_.size(); ++k) {
+      if (ops_[k].pre.empty()) {
+        fire(k, 0.0);
+      }
+    }
+    while (!heap_.empty()) {
+      auto [t, n] = heap_.top();
+      heap_.pop();
+      if (t > time_[n]) {
+        continue;
+      }
+      for (uint32_t k : triggers_[n]) {
+        if (--unsatisfied_[k] == 0) {
+          fire(k, t);
+        }
+      }
+    }
+    return std::all_of(
+      o_.goal.facts.begin(), o_.goal.facts.end(),
+      [&](const sas::Fact & f) {return time_[offset_[f.var] + f.value] < Stn::kInfinity;});
+  }
+
+private:
+  struct Op
+  {
+    enum Kind : uint8_t {Instant, Axiom, Start, End};
+    Kind kind = Instant;
+    uint32_t index = 0;          // durative action of a start or an end
+    std::vector<uint32_t> pre;   // nodes
+    std::vector<uint32_t> check;  // facts that must not be past their deadline
+    std::vector<uint32_t> adds;
+  };
+
+  void facts(const sas::Condition & c, std::vector<uint32_t> & out) const
+  {
+    for (const auto & f : c.facts) {
+      out.push_back(offset_[f.var] + f.value);
+    }
+  }
+
+  // Facts an action may make true: conditional ones too, every value for a copy (optimistic)
+  void adds(
+    const std::vector<sas::Fact> & changes, const std::vector<sas::Effect> & effects,
+    std::optional<sas::Timing> timing, std::vector<uint32_t> & out) const
+  {
+    for (const auto & f : changes) {
+      out.push_back(offset_[f.var] + f.value);
+    }
+    for (const auto & e : effects) {
+      if (timing && e.timing != *timing) {
+        continue;
+      }
+      if (e.kind == sas::Effect::Kind::Assign) {
+        out.push_back(offset_[e.fact.var] + e.fact.value);
+      } else if (e.kind == sas::Effect::Kind::Copy) {
+        for (uint32_t x = 0; x < o_.variables[e.target].size(); ++x) {
+          out.push_back(offset_[e.target] + x);
+        }
+      }
+    }
+  }
+
+  void instant(
+    const sas::Condition & pre, const std::vector<sas::Fact> & changes,
+    const std::vector<sas::Effect> & effects, bool axiom)
+  {
+    Op op;
+    op.kind = axiom ? Op::Axiom : Op::Instant;
+    facts(pre, op.pre);
+    if (!axiom) {
+      op.check = op.pre;
+    }
+    adds(changes, effects, std::nullopt, op.adds);
+    ops_.push_back(std::move(op));
+  }
+
+  bool set_later(size_t k, sas::VarId v, uint32_t x) const
+  {
+    for (size_t j = k + 1; j < tils_.size(); ++j) {
+      for (const auto & f : tils_[j]) {
+        if (f.var == v && f.value == x) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  void reach(uint32_t n, double t)
+  {
+    if (t < time_[n]) {
+      time_[n] = t;
+      heap_.emplace(t, n);
+    }
+  }
+
+  void fire(uint32_t k, double t)
+  {
+    const Op & op = ops_[k];
+    for (uint32_t c : op.check) {
+      if (t > deadline_[c] - eps_) {
+        return;  // too late for that fact
+      }
+    }
+    for (uint32_t f : op.adds) {
+      reach(f, t);
+    }
+    if (op.kind == Op::Start) {
+      reach(facts_ + op.index, t + least_[op.index]);
+    }
+  }
+
+  const sas::Task & o_;
+  const SnapTask & s_;
+  double eps_;
+  std::vector<uint32_t> offset_;
+  uint32_t facts_ = 0;
+  uint32_t nodes_ = 0;  // facts, then one per durative action: its start happened
+  std::vector<Op> ops_;
+  std::vector<uint32_t> end_op_;
+  std::vector<uint8_t> producible_;
+  std::vector<std::vector<uint32_t>> triggers_;
+  std::vector<std::vector<sas::Fact>> tils_;
+  bool active_ = false;
+  std::vector<double> time_, deadline_, least_;
+  std::vector<uint32_t> unsatisfied_;
+  using Entry = std::pair<double, uint32_t>;
+  std::priority_queue<Entry, std::vector<Entry>, std::greater<Entry>> heap_;
+};
+
 TemporalFilter::TemporalFilter(
   const sas::Task & original, const SnapTask & snap, state::StateSpace & space, double epsilon)
 : original_(original), snap_(snap), space_(space), epsilon_(epsilon)
 {
   access_ = accesses(original, snap);
+  if (snap.tils < snap.task.actions.size()) {
+    deadlines_ = std::make_unique<Deadlines>(original, snap, epsilon);
+    if (!deadlines_->active()) {
+      deadlines_.reset();
+    }
+  }
   // What each durative action's end writes (values when known) and its over all reads
   for (size_t i = 0; i < original.durative_actions.size(); ++i) {
     const auto & da = original.durative_actions[i];
@@ -584,6 +867,9 @@ bool TemporalFilter::accept(state::StateId parent, uint32_t action, state::State
       makespan = std::max(makespan, builder_->stn.earliest(n));
     }
     makespans_[{action, child}] = makespan;
+    if (deadlines_) {
+      ok = in_time(action, node, child);
+    }
   }
   builder_->stn.undo(builder_->mark);
   if (!ok) {
@@ -597,6 +883,33 @@ bool TemporalFilter::accept(state::StateId parent, uint32_t action, state::State
     node_of_[child] = static_cast<int32_t>(nodes_.size() - 1);
   }
   return true;
+}
+
+// Whether the goal can still be reached in time after the happening just tried at `node`
+bool TemporalFilter::in_time(uint32_t action, Stn::Node node, state::StateId child)
+{
+  const Builder & b = *builder_;
+  const Access & acc = access_[action];
+  auto written = [&](sas::VarId v) {
+      if (std::binary_search(acc.writes.begin(), acc.writes.end(), v)) {
+        return b.stn.earliest(node);
+      }
+      auto last = b.order.last_write(v);
+      return last ? b.stn.earliest(*last) : 0.0;
+    };
+  std::vector<std::pair<size_t, double>> running;
+  size_t self = snap_.is_start(action) || snap_.is_end(action) ? snap_.durative(action) : SIZE_MAX;
+  for (size_t r = 0; r < b.open.size(); ++r) {
+    if (b.open[r].end != UINT32_MAX && !(snap_.is_end(action) && r == self)) {
+      running.emplace_back(r, b.stn.earliest(b.open[r].end));
+    }
+  }
+  if (snap_.is_start(action)) {
+    running.emplace_back(self, b.stn.earliest(node + 1));  // add() creates its end right after
+  }
+  size_t tils_done = b.tils_done + (action >= snap_.tils ? 1 : 0);
+  return deadlines_->feasible(
+    space_.values(child).data(), space_.numbers(child).data(), tils_done, written, running);
 }
 
 double TemporalFilter::makespan(

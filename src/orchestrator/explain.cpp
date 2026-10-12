@@ -144,7 +144,11 @@ private:
           value = binding[term.index];
         }
         if (vars && term.index < vars->size()) {
-          name = (*vars)[term.index].name;
+          const auto & var = (*vars)[term.index];
+          name = var.name;
+          if (!var.types.empty() && !value) {
+            name += " - " + t_.types.to_string(var.types);  // which objects it ranges over
+          }
         }
       }
       p.args.push_back(value);
@@ -226,6 +230,13 @@ private:
     }
     for (size_t k = 0; k < adders.size() && k < kMaxAdders; ++k) {
       const auto & [ad, binding] = adders[k];
+      // A variable of a type without objects: nothing else needs saying (combat without
+      // infantry said "needs (mine ?r)", true for every robot but not the reason)
+      if (auto empty = empty_type(*ad)) {
+        out.push_back(indent + ad->name + " adds it, but there is no object of type " +
+          *empty);
+        continue;
+      }
       std::vector<Pattern> blockers;
       for (const auto * l : ad->needs) {
         Pattern need = pattern(l->atom, ad->variables, binding);
@@ -248,6 +259,24 @@ private:
       out.push_back(indent + "(and " + std::to_string(adders.size() - kMaxAdders) +
         " more ways to add it)");
     }
+  }
+
+  // The type of a variable of the adder that no object has, if any
+  std::optional<std::string> empty_type(const Adder & ad) const
+  {
+    for (const auto & v : *ad.variables) {
+      if (v.types.empty()) {
+        continue;
+      }
+      bool some = false;
+      for (const auto & ot : t_.object_types) {
+        some = some || t_.types.fits(ot, v.types);
+      }
+      if (!some) {
+        return t_.types.to_string(v.types);
+      }
+    }
+    return std::nullopt;
   }
 
   const lifted::Task & t_;

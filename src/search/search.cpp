@@ -325,7 +325,8 @@ public:
       }
     }
     for (const auto & name : split(o.heuristic)) {
-      auto h = heuristics::make_heuristic(name, ctx.task, h_costs, ctx.budget);
+      auto h = heuristics::make_heuristic(
+        name, ctx.heuristic_task ? *ctx.heuristic_task : ctx.task, h_costs, ctx.budget);
       if (!h) {
         hs_.clear();
         return;

@@ -45,6 +45,17 @@ struct Input
 using PlanCallback = std::function<void (const Plan & plan, uint32_t index,
     std::chrono::milliseconds elapsed)>;
 
+/// @brief How far Kairos plans with a PDDL feature, and what to know about it: the one table
+/// behind unsupported(), `kairos --features` and `kairos check`.
+struct Support
+{
+  sem::Feature feature;
+  enum Level : uint8_t {Full, Partial, None} level;
+  const char * note;  // what is partial, or when it will come; empty when there is nothing
+  const char * code;  // the error of unsupported() (None only)
+};
+const std::vector<Support> & support_table();
+
 /// @brief Why Kairos cannot plan with these features yet (empty if it can). Shared with
 /// check_*() for CheckReport::plannable.
 std::vector<Diagnostic> unsupported(const sem::FeatureSet & features, Engine engine = Engine::Auto);

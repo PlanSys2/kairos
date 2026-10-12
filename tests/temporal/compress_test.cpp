@@ -95,7 +95,7 @@ std::unique_ptr<Bench> bench(const std::string & domain, const std::string & pro
   b->p = pipeline(domain, problem);
   EXPECT_TRUE(b->p->ok);
   b->c = compress(b->p->sas);
-  b->reg = std::make_unique<state::StateRegistry>(b->c.task);
+  b->reg = std::make_unique<state::StateRegistry>(b->c.task, nullptr, false);  // every value
   b->space = std::make_unique<state::StateSpace>(b->c.task, *b->reg);
   return b;
 }

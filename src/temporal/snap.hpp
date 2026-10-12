@@ -47,12 +47,15 @@ namespace kairos::temporal
  * - goal: the original goal and nothing running.
  *
  * Over all conditions are not in the task: the TemporalFilter checks them while the action
- * runs, and the STN checks durations, epsilon separations and the times of the timed initial
+ * runs (`guide`, for the heuristics, has them in the ends), and the STN checks durations, epsilon separations and the times of the timed initial
  * literals.
  */
 struct SnapTask
 {
   sas::Task task;
+  /// @brief The task with the facts of each over all condition also in the end: what the
+  /// heuristics see (combat: capture's "no enemy in the zone"), same actions and variables
+  sas::Task guide;
   size_t instant = 0;                // task.actions[0, instant): the original instant ones
   size_t tils = 0;                   // task.actions[tils, ...): timed initial literals
   std::vector<sas::VarId> running;   // per durative action: 0 running, 1 not
@@ -80,6 +83,12 @@ DurationBounds bounds(const sas::DurativeAction & a, const double * numbers);
  * conditions of the running actions hold in the new state, and the plan so far plus the new
  * happening has a consistent STN (durations, epsilon between happenings that interfere, the
  * times of the timed initial literals). Keeps, per state, the first plan that reached it.
+ *
+ * With timed initial literals that make facts false for good (deadlines), it also rejects a
+ * state from which some goal cannot be reached in time even in a relaxation that ignores
+ * deletes: each fact at its earliest time (what holds since the happening that wrote it, what
+ * running actions add at their earliest end, what later literals add at their time), actions
+ * with their least duration, and no action using a fact after its deadline.
  */
 class TemporalFilter
 {
@@ -108,6 +117,7 @@ private:
     DurationBounds duration;  // starts: from the state where they start
   };
   struct Builder;
+  class Deadlines;
 
   bool invariants(state::StateId s);
   void rebuild(state::StateId parent);
@@ -117,6 +127,7 @@ private:
   int32_t node_of(state::StateId s) const;
   std::optional<double> next_til(size_t from, const Access & acc) const;
   bool breaks(size_t r, size_t a) const;
+  bool in_time(uint32_t action, Stn::Node node, state::StateId child);
 
   const sas::Task & original_;
   const SnapTask & snap_;
@@ -137,6 +148,7 @@ private:
   std::vector<int32_t> node_of_;  // per state: the last node of its plan (-1 none, -2 unknown)
   std::vector<Node> nodes_;
   std::unique_ptr<Builder> builder_;  // the STN of the plan of the parent being expanded
+  std::unique_ptr<Deadlines> deadlines_;  // null without timed initial literals that expire
   state::StateId cached_ = state::kNoState;
   std::map<std::pair<uint32_t, state::StateId>, double> makespans_;  // of the cached parent
 };

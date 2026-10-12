@@ -197,10 +197,17 @@ uint32_t RelaxedGraph::num_node(const sas::LinearExpr & e, bool strict)
 
 void RelaxedGraph::condition(const sas::Condition & c, std::vector<uint32_t> & out)
 {
+  auto derived_false = [&](sas::VarId v) {
+      uint32_t n = false_node(v);
+      if (n != kNone) {
+        out.push_back(n);
+      }
+    };
   for (const auto & f : c.facts) {
     const auto & var = task_.variables[f.var];
     if (var.kind == sas::Variable::Kind::Derived && f.value == var.default_value) {
-      continue;  // a derived atom being false: optimistic
+      derived_false(f.var);
+      continue;
     }
     out.push_back(fact_offset_[f.var] + f.value);
   }
@@ -208,7 +215,8 @@ void RelaxedGraph::condition(const sas::Condition & c, std::vector<uint32_t> & o
     const auto & var = task_.variables[f.var];
     if (var.kind == sas::Variable::Kind::Derived) {
       if (f.value != var.default_value) {
-        continue;  // derived atom not true, i.e. false: optimistic
+        derived_false(f.var);  // derived atom not true, i.e. false
+        continue;
       }
       out.push_back(fact_offset_[f.var] + (1 - var.default_value));  // not false: true
       continue;
@@ -238,6 +246,50 @@ void RelaxedGraph::condition(const sas::Condition & c, std::vector<uint32_t> & o
   }
   std::sort(out.begin(), out.end());
   out.erase(std::unique(out.begin(), out.end()), out.end());
+}
+
+// A derived atom being false, as FD's negated axioms: in every rule that would make it true some
+// literal of the body is false, which the relaxation reaches as another value of a variable.
+// kNone (optimistic, as before) when a rule reads derived atoms or numbers
+uint32_t RelaxedGraph::false_node(sas::VarId v)
+{
+  if (auto it = false_of_.find(v); it != false_of_.end()) {
+    return it->second;
+  }
+  std::vector<const sas::Axiom *> rules;
+  for (const auto & ax : task_.axioms) {
+    if (ax.head.var != v) {
+      continue;
+    }
+    bool basic = ax.body.numeric.empty() && ax.body.vars.empty();
+    for (const auto & f : ax.body.facts) {
+      basic = basic && task_.variables[f.var].kind != sas::Variable::Kind::Derived;
+    }
+    for (const auto & f : ax.body.not_facts) {
+      basic = basic && task_.variables[f.var].kind != sas::Variable::Kind::Derived;
+    }
+    if (!basic) {
+      false_of_[v] = kNone;
+      return kNone;
+    }
+    rules.push_back(&ax);
+  }
+  uint32_t node = add_node();
+  false_of_[v] = node;
+  std::vector<uint32_t> each;  // per rule: reached when one of its literals is false
+  for (const sas::Axiom * ax : rules) {
+    uint32_t any = add_node();
+    for (const auto & f : ax->body.facts) {
+      add_op({neg_node(f.var, f.value)}, any, 0.0, kNone);
+    }
+    for (const auto & f : ax->body.not_facts) {
+      add_op({fact_offset_[f.var] + f.value}, any, 0.0, kNone);
+    }
+    each.push_back(any);  // an empty body: never false
+  }
+  std::sort(each.begin(), each.end());
+  add_op(std::move(each), node, 0.0, kNone);
+  return node;
 }
 
 void RelaxedGraph::add_op(std::vector<uint32_t> pre, uint32_t effect, double base, uint32_t action)
@@ -481,6 +533,11 @@ void RelaxedGraph::explore(const EvalContext & ctx, bool stop_at_goal)
     };
   for (sas::VarId v = 0; v < task_.variables.size(); ++v) {
     start(fact_offset_[v] + ctx.values[v]);
+  }
+  for (const auto & [v, n] : false_of_) {
+    if (n != kNone && ctx.values[v] == task_.variables[v].default_value) {
+      start(n);
+    }
   }
   for (size_t i = 0; i < neg_fact_.size(); ++i) {
     auto [var, value] = neg_fact_[i];

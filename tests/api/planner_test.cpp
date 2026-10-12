@@ -407,7 +407,8 @@ TEST(PlannerApiTest, ExplainsAnUnreachableGoal)
       " (:goal (told leia m1 jack)))");
   EXPECT_NE(w.find("(told leia m1 jack) can never be reached"), std::string::npos) << w;
   EXPECT_NE(w.find("talk adds it, but needs (near leia jack)"), std::string::npos) << w;
-  EXPECT_NE(w.find("approach adds it, but needs (person_at jack ?o)"), std::string::npos) << w;
+  EXPECT_NE(w.find("approach adds it, but needs (person_at jack ?o - room)"), std::string::npos)
+    << w;
   EXPECT_NE(w.find("no action adds it, and the initial state does not have it"),
     std::string::npos) << w;
 }
@@ -1206,6 +1207,104 @@ TEST(PlannerApiTest, IncrementalGoalsAskedForSolvesAlsoFewGoals)
   ASSERT_EQ(r.status, Status::Solved);
   EXPECT_TRUE(validate(problem(d, p), *r.plan).valid());
   EXPECT_EQ(r.stop_reason, StopReason::ProvenOptimal);
+}
+
+// PlanSys2's combat example, reduced: a drone spots a zone only while it runs, the artillery
+// bombards it meanwhile, then the infantry moves in and captures it while no enemy is there
+const char * kCombat =
+  "(define (domain combat) (:requirements :typing :durative-actions :fluents"
+  " :negative-preconditions :existential-preconditions)"
+  " (:types robot zone - object drone ground - robot infantry artillery tank - ground)"
+  " (:predicates (at ?r - robot ?z - zone) (connected ?a ?b - zone) (hostile ?r - robot)"
+  "  (spotted ?z - zone) (owned ?z - zone) (destroyed ?r - robot) (available ?r - robot))"
+  " (:functions (ammo ?r - artillery) (spent))"
+  " (:durative-action spot :parameters (?d - drone ?z - zone) :duration (= ?duration 12)"
+  "  :condition (and (at start (available ?d)) (over all (at ?d ?z)))"
+  "  :effect (and (at start (not (available ?d))) (at start (spotted ?z))"
+  "   (at end (not (spotted ?z))) (at end (available ?d))))"
+  " (:durative-action bombard :parameters (?r - artillery ?t - ground ?from ?to - zone)"
+  "  :duration (= ?duration 4)"
+  "  :condition (and (at start (available ?r)) (at start (hostile ?t)) (at start (at ?t ?to))"
+  "   (at start (connected ?from ?to)) (at start (>= (ammo ?r) 1)) (over all (at ?r ?from))"
+  "   (over all (spotted ?to)))"
+  "  :effect (and (at start (not (available ?r))) (at start (decrease (ammo ?r) 1))"
+  "   (at end (not (at ?t ?to))) (at end (destroyed ?t)) (at end (available ?r))"
+  "   (at end (increase (spent) 1000))))"
+  " (:durative-action move :parameters (?r - infantry ?a ?b - zone) :duration (= ?duration 10)"
+  "  :condition (and (at start (available ?r)) (at start (at ?r ?a)) (over all (connected ?a ?b))"
+  "   (at start (not (exists (?e - robot) (and (hostile ?e) (at ?e ?b))))))"
+  "  :effect (and (at start (not (available ?r))) (at start (not (at ?r ?a)))"
+  "   (at end (at ?r ?b)) (at end (available ?r)) (at end (increase (spent) 100))))"
+  " (:durative-action capture :parameters (?r - infantry ?z - zone) :duration (= ?duration 5)"
+  "  :condition (and (at start (available ?r)) (at start (not (owned ?z))) (over all (at ?r ?z))"
+  "   (over all (not (exists (?e - robot) (and (hostile ?e) (at ?e ?z))))))"
+  "  :effect (and (at start (not (available ?r))) (at end (owned ?z)) (at end (available ?r))"
+  "   (at end (increase (spent) 100)))))";
+
+TEST(PlannerApiTest, MetricOfEurosPlusTime)
+{
+  // spent + 10 * total-time: flying costs 100 euros and 1 s (110), walking 0 euros and 2 s
+  // twice (40). With unit costs the search took the one-step flight and stopped
+  Problem p = problem(
+    "(define (domain m) (:requirements :durative-actions :fluents)"
+    " (:predicates (at-a) (at-mid) (at-b)) (:functions (spent))"
+    " (:durative-action fly :parameters () :duration (= ?duration 1)"
+    "  :condition (at start (at-a)) :effect (and (at start (not (at-a))) (at end (at-b))"
+    "  (at end (increase (spent) 100))))"
+    " (:durative-action walk1 :parameters () :duration (= ?duration 2)"
+    "  :condition (at start (at-a)) :effect (and (at start (not (at-a))) (at end (at-mid))))"
+    " (:durative-action walk2 :parameters () :duration (= ?duration 2)"
+    "  :condition (at start (at-mid)) :effect (and (at start (not (at-mid))) (at end (at-b)))))",
+    "(define (problem p) (:domain m) (:init (at-a) (= (spent) 0)) (:goal (at-b))"
+    " (:metric minimize (+ (spent) (* 10 (total-time)))))");
+  SolveOptions o = quick();
+  o.threads = 1;
+  SolveResult r = Planner().solve(p, o);
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_TRUE(r.plan->cost);
+  EXPECT_NEAR(*r.plan->cost, 40.0, 0.1);
+  EXPECT_EQ(r.plan->steps.size(), 2u);
+  for (const auto & d : r.diagnostics) {
+    EXPECT_NE(d.code, "orchestrator.metric") << "the metric guides the search now";
+  }
+}
+
+TEST(PlannerApiTest, RequiredConcurrencyThenActionsThatNeedItsResult)
+{
+  // The end of capture needs "no enemy in the zone", a derived atom being false: the
+  // heuristics see it (it was optimistic, and over all conditions were not in the snap task),
+  // so the relaxed plan bombards
+  // On a 3x3 grid, two infantry units: before, 205 000 expansions and no plan in 10 s
+  const char * grid[3][3] = {{"nw", "nm", "ne"}, {"cw", "cm", "ce"}, {"sw", "sm", "se"}};
+  std::string zones, links;
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 3; ++c) {
+      zones += std::string(" ") + grid[r][c];
+      for (auto [dr, dc] : {std::pair{0, 1}, std::pair{1, 0}}) {
+        if (r + dr < 3 && c + dc < 3) {
+          std::string a = grid[r][c], b = grid[r + dr][c + dc];
+          links += " (connected " + a + " " + b + ") (connected " + b + " " + a + ")";
+        }
+      }
+    }
+  }
+  Problem p = problem(kCombat,
+      "(define (problem m6) (:domain combat) (:objects" + zones + " - zone d1 - drone"
+      " a1 - artillery i1 i2 - infantry e1 - tank)"
+      " (:init (at d1 nm) (at a1 nw) (at i1 nw) (at i2 cw) (at e1 nm) (hostile e1)" + links +
+      "  (available d1) (available a1) (available i1) (available i2) (= (ammo a1) 3)"
+      "  (= (spent) 0))"
+      " (:goal (owned nm)) (:metric minimize (spent)))");
+  for (unsigned threads : {1u, 3u}) {
+    SolveOptions o = quick();
+    o.anytime = false;
+    o.threads = threads;
+    SolveResult r = Planner().solve(p, o);
+    ASSERT_EQ(r.status, Status::Solved) << threads;
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+    EXPECT_LT(r.stats.expanded, 2000u) << threads;
+    EXPECT_EQ(r.plan->steps.size(), 4u);  // spot || bombard, move, capture
+  }
 }
 
 TEST(PlannerApiTest, AutoSearchFollowsTheTask)

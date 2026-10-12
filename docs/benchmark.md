@@ -12,10 +12,10 @@ Problems solved in 30 s with 3 GB per problem; every plan checked by Kairos's va
 | Suite | Kairos | OPTIC | TFD | POPF | LPG-td | ENHSP | Metric-FF | LAMA |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Robotics examples (11) | **11** | 8 | 5 | 6 | 2 | | | |
-| B2: required concurrency, temporal numeric (55) | **32** | 17 | 24 | 24 | 0 | | | |
+| B2: required concurrency, temporal numeric (55) | **33** | 17 | 24 | 24 | 0 | | | |
 | B1: temporal, IPC 2002-2014 (225) | **177** (**183** with 3 threads) | 107 | 110 | 104 | 125 | | | |
-| B3: numeric, IPC 2002/2023/2026 (420) | **253** | | | | | 103 | 57 | |
-| Classical, IPC 1998-2023 (220) | 117 | | | | | | | **151** |
+| B3: numeric, IPC 2002/2023/2026 (420) | **289** | | | | | 103 | 57 | |
+| Classical, IPC 1998-2023 (220) | 140 | | | | | | | **151** |
 | B6: PlanSys2 problems scaled up (144; 60 s, 2 GB) | **95** | 57 | 58 | 57 | | | | |
 
 The other planners were measured on 2026-10-11 with Kairos 0.3.0 at `023fe98`; the Kairos
@@ -26,7 +26,7 @@ planner does not handle that kind of problem, or was not run on it.
 
 - **Temporal planning** (B1, B2, robotics): Kairos solves the most problems and has the best
   plan quality in every suite.
-- **Numeric planning** (B3): Kairos solves more than twice as many as ENHSP and Metric-FF as
+- **Numeric planning** (B3): Kairos solves almost three times as many as ENHSP and Metric-FF as
   run here (both do not read part of the domains; see the notes).
 - **PlanSys2 problems at scale** (B6): Kairos solves 95 of 144, the others at most 58 (TAMER
   21 and Aries 9 of unified-planning); at the large sizes (L, XL) Kairos 26, the best of the
@@ -283,3 +283,4 @@ The generator, the reference plans and the runners are in the workspace's `bench
 | 2026-10-12 | step 19, 3 threads | **180** | 32 | | | The phases at once, each with the whole time: 8 more temporal problems, better plans (quality 166 -> 180), first plans in B2 much sooner (agile 19 -> 31) |
 | 2026-10-12 | step 20 (0.4.0), 1 thread | 177 | 32 | 253 | 117 | Incremental goals for tasks with many goals (B6: 95 of 144), unused quantified variables dropped, timeout seen by time, lazy reset of the relaxed graph. Classical -3: parking, hiking and rubiks-cube instances that took 21-29 s, now just over 30 (step 28) |
 | 2026-10-12 | step 20 (0.4.0), 3 threads | **183** | 32 | | | |
+| 2026-10-12 | step 23, 1 thread | 177 | **33** | **289** | **140** | Found with PlanSys2's combat example: numeric variables nothing reads (`total-cost`, euros spent) no longer tell states apart (barman 0 -> 10, sokoban 3 -> 9, forestfire 2 -> 10, settlers-snp 1 -> 8); derived atoms being false in the heuristics; over all conditions seen by M3's heuristics; novelty first in M3 with numeric conditions; metric of euros plus time; deadlines of timed initial literals (trucks 1 -> 2) |

@@ -21,6 +21,8 @@
 #include <condition_variable>
 #include <exception>
 #include <fstream>
+#include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -62,23 +64,51 @@ double ms_since(Clock::time_point t)
   return std::chrono::duration<double, std::milli>(Clock::now() - t).count();
 }
 
-// What each later phase will bring
-struct Missing
-{
-  sem::Feature feature;
-  const char * code;
-  const char * what;
-};
+}  // namespace
 
-const Missing kMissing[] = {
-  {sem::Feature::Processes, "unsupported.processes", "processes (PDDL+, phase F5)"},
-  {sem::Feature::Events, "unsupported.events", "events (PDDL+, phase F5)"},
-  {sem::Feature::Preferences, "unsupported.preferences", "preferences (PDDL3, phase F4)"},
-  {sem::Feature::TrajectoryConstraints, "unsupported.trajectory_constraints",
-    "trajectory constraints (PDDL3, phase F4)"},
-  {sem::Feature::GlobalConstraints, "unsupported.global_constraints",
-    "global constraints (phase F5)"},
-};
+const std::vector<Support> & support_table()
+{
+  using F = sem::Feature;
+  static const std::vector<Support> table = {
+    {F::Typing, Support::Full, "", ""},
+    {F::NegativePreconditions, Support::Full, "", ""},
+    {F::DisjunctivePreconditions, Support::Full, "", ""},
+    {F::Equality, Support::Full, "", ""},
+    {F::ExistentialPreconditions, Support::Full, "", ""},
+    {F::UniversalPreconditions, Support::Full, "", ""},
+    {F::ConditionalEffects, Support::Full, "", ""},
+    {F::NumericFluents, Support::Full, "", ""},
+    {F::ObjectFluents, Support::Partial,
+      "one that changes cannot be the argument of an atom yet (phase F4)", ""},
+    {F::NonLinearNumeric, Support::Partial,
+      "planned and validated exactly; the heuristics take non-linear conditions as true", ""},
+    {F::ActionCosts, Support::Full, "", ""},
+    {F::DurativeActions, Support::Full, "required concurrency included, in engine M3", ""},
+    {F::DurationInequalities, Support::Partial,
+      "one action per bound of the duration: every plan valid, some plans not found", ""},
+    {F::VariableDuration, Support::Full, "", ""},
+    {F::DurationInEffects, Support::Full, "", ""},
+    {F::ContinuousEffects, Support::Partial,
+      "linear ones, as discrete changes at the most pessimistic instant: every plan valid, "
+      "some plans not found", ""},
+    {F::DerivedPredicates, Support::Full, "recursive ones included", ""},
+    {F::TimedInitialLiterals, Support::Full, "", ""},
+    {F::TimedInitialFluents, Support::Full, "", ""},
+    {F::Preferences, Support::None, "PDDL3, phase F4", "unsupported.preferences"},
+    {F::TrajectoryConstraints, Support::None, "PDDL3, phase F4",
+      "unsupported.trajectory_constraints"},
+    {F::Processes, Support::None, "PDDL+, phase F5", "unsupported.processes"},
+    {F::Events, Support::None, "PDDL+, phase F5", "unsupported.events"},
+    {F::GlobalConstraints, Support::None, "phase F5", "unsupported.global_constraints"},
+    {F::Metric, Support::Full, "", ""},
+    {F::MetricTotalTime, Support::Full, "alone or added to numeric fluents", ""},
+    {F::MetricFluents, Support::Full, "", ""},
+  };
+  return table;
+}
+
+namespace
+{
 
 void dump(
   const SearchOptions & o, const char * what, const std::string & file,
@@ -143,10 +173,11 @@ std::string plan_trace(const sas::Task & task, const std::vector<uint32_t> & act
 std::vector<Diagnostic> unsupported(const sem::FeatureSet & features, Engine /*engine*/)
 {
   std::vector<Diagnostic> out;
-  for (const auto & m : kMissing) {
-    if (features.contains(m.feature)) {
-      out.push_back(
-        Diagnostic::error(m.code, std::string("Kairos cannot plan yet with ") + m.what));
+  for (const auto & m : support_table()) {
+    if (m.level == Support::None && features.contains(m.feature)) {
+      out.push_back(Diagnostic::error(
+          m.code, "Kairos cannot plan yet with " + std::string(sem::to_string(m.feature)) +
+          " (" + m.note + ")"));
     }
   }
   return out;
@@ -192,6 +223,84 @@ std::optional<search::AnytimeOptions> preset(const std::string & name)
     return std::nullopt;
   }
   return ao;
+}
+
+// A metric to minimize of the form sum of c * fluent + k * total-time (k > 0, some fluent):
+// euros plus time, as PlanSys2's combat example weighs them
+struct MixedMetric
+{
+  std::map<sas::NumVarId, double> weight;
+  double time = 0.0;
+};
+
+std::optional<MixedMetric> mixed_metric(const sas::Task & task)
+{
+  if (task.metric.is_default || !task.metric.minimize) {
+    return std::nullopt;
+  }
+  MixedMetric m;
+  bool ok = true;
+  std::function<void(const ground::Expr &, double)> walk = [&](const ground::Expr & e, double c) {
+      switch (e.op) {
+        case ground::ExprOp::Constant: return;
+        case ground::ExprOp::Fluent: m.weight[e.fluent] += c; return;
+        case ground::ExprOp::TotalTime: m.time += c; return;
+        case ground::ExprOp::Add:
+          for (const auto & ch : e.children) {
+            walk(ch, c);
+          }
+          return;
+        case ground::ExprOp::Sub:
+          if (e.children.size() == 2) {
+            walk(e.children[0], c);
+            walk(e.children[1], -c);
+            return;
+          }
+          break;
+        case ground::ExprOp::Neg:
+          walk(e.children.at(0), -c);
+          return;
+        case ground::ExprOp::Mul:
+          if (e.children.size() == 2 && e.children[0].op == ground::ExprOp::Constant) {
+            walk(e.children[1], c * e.children[0].value);
+            return;
+          }
+          if (e.children.size() == 2 && e.children[1].op == ground::ExprOp::Constant) {
+            walk(e.children[0], c * e.children[1].value);
+            return;
+          }
+          break;
+        default:
+          break;
+      }
+      ok = false;
+    };
+  walk(task.metric.expr.tree, 1.0);
+  if (!ok || m.time <= 0.0 || m.weight.empty()) {
+    return std::nullopt;
+  }
+  return m;
+}
+
+// What an action adds to the weighted fluents (nullopt: not a constant increase or decrease)
+std::optional<double> weighted_delta(
+  const std::vector<sas::Effect> & effects, const std::map<sas::NumVarId, double> & weight)
+{
+  double delta = 0.0;
+  for (const auto & e : effects) {
+    auto w = weight.find(e.num);
+    if (e.kind != sas::Effect::Kind::Numeric || w == weight.end()) {
+      continue;
+    }
+    bool constant = e.value.linear && e.value.linear->terms.empty() && e.condition.empty() &&
+      !e.continuous;
+    if (!constant || (e.op != ast::AssignOp::Increase && e.op != ast::AssignOp::Decrease)) {
+      return std::nullopt;
+    }
+    double d = e.value.linear->constant;
+    delta += w->second * (e.op == ast::AssignOp::Increase ? d : -d);
+  }
+  return delta;
 }
 
 // Numeric conditions anywhere: what novelty helps with (measured on IPC numeric and classical
@@ -398,6 +507,7 @@ private:
     }
     res_.stats.atoms = grounded->atoms.size();
     res_.stats.actions = grounded->actions.size();
+    res_.stats.durative_actions = grounded->durative_actions.size();
     dump(o_, "ground", "ground.txt", [&]() {return ground::to_string(*grounded);}, log_);
     if (grounded->goal_unreachable) {
       // Which goal facts, and why: the preconditions that never hold, down to what no action
@@ -513,6 +623,30 @@ private:
     bool action_costs = heuristics::metric_costs_apply(of);
     auto costs = heuristics::action_costs(
       of, action_costs ? heuristics::CostModel::Metric : heuristics::CostModel::Unit);
+    if (!time_metric_ && temporal_task_) {
+      if (auto mixed = mixed_metric(*sas_)) {
+        // Euros plus time: what each action adds to the fluents, plus the weight of time by
+        // its duration (their sum bounds the makespan from above; the plans keep the metric)
+        std::vector<double> mc(costs.size(), 0.0);
+        bool usable = true;
+        for (uint32_t a = 0; a < costs.size() && usable; ++a) {
+          auto d = weighted_delta(of.actions[a].effects, mixed->weight);
+          double dur = 0.0;
+          if (comp && a >= comp->instant) {
+            dur = state::evaluate(comp->duration[a - comp->instant], initial_numbers_.data());
+          } else if (snap && snap->is_start(a)) {
+            dur = temporal::bounds(
+              sas_->durative_actions[snap->durative(a)], initial_numbers_.data()).lo;
+          }
+          usable = d && *d >= 0.0 && !std::isnan(dur);
+          mc[a] = usable ? *d + mixed->time * std::max(0.0, dur) : 0.0;
+        }
+        if (usable) {
+          prune = true;
+          return mc;
+        }
+      }
+    }
     if (time_metric_) {
       for (uint32_t a = 0; a < costs.size(); ++a) {
         double c = 0.001;  // instantaneous actions (and ends) take no time
@@ -597,6 +731,14 @@ private:
     search_start_ = Clock::now();
     bool portfolio = o_.search == "auto";
     auto m3_portfolio = [&](bool makespan_g) {
+        if (snapped_ && has_numeric_conditions(snapped_->task)) {
+          // Resources (battery, ammunition): novelty first, as in M2 (PlanSys2's combat s3:
+          // lazy LAMA needs 4000 expansions and 3 s, eager search with novelty 40 and 50 ms)
+          phases_.push_back({Kind::Snap, "lama-novelty", 0.3, true, makespan_g});
+          phases_.push_back({Kind::Snap, "lama", 0.4, true, makespan_g});
+          phases_.push_back({Kind::Snap, "eager-lama", 1.0, true, makespan_g});
+          return;
+        }
         phases_.push_back({Kind::Snap, "lama", 0.2, true, makespan_g});
         phases_.push_back({Kind::Snap, "eager-lama", 0.375, true, makespan_g});
         phases_.push_back({Kind::Snap, "lama-novelty", 1.0, true, makespan_g});
@@ -651,7 +793,9 @@ private:
       }
     }
     snap_task_ = snapped_ ? &*snapped_ : (improver_ ? &*improver_ : nullptr);
-    if (!time_metric_ && !heuristics::metric_costs_apply(search_task()) && !length_metric_) {
+    if (!time_metric_ && !heuristics::metric_costs_apply(search_task()) && !length_metric_ &&
+      !(temporal_task_ && mixed_metric(*sas_)))
+    {
       res_.diagnostics.push_back(Diagnostic::note(
           "orchestrator.metric", "the search minimizes the number of actions; the metric of "
           "the problem is reported for each plan but does not guide the search yet"));
@@ -732,6 +876,9 @@ private:
         }
       });
     search::SearchContext ctx(task_k, registry, space, costs, sink, &bk);
+    if (ph.kind == Kind::Snap) {
+      ctx.heuristic_task = &snap_task_->guide;
+    }
     if (filter) {
       ctx.accept = [&filter](state::StateId p, uint32_t a, state::StateId c) {
           return filter->accept(p, a, c);

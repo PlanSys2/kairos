@@ -81,6 +81,9 @@ public:
 
   std::vector<Var> scope;
   std::string context;  // e.g. "action 'move'", appended to messages
+  // Negations, disjunctions and quantifiers as written, for :requirements: features_ has what
+  // they mean once negations are pushed in ((not (exists ...)) is universal), for the engines
+  FeatureSet written;
 
   std::string str(Symbol s) const {return std::string(symbols_.name(s));}
 
@@ -472,15 +475,20 @@ private:
         if (positive && f.children.size() > 1) {
           features_.add(Feature::DisjunctivePreconditions);
         }
+        if (f.children.size() > 1) {
+          written.add(Feature::DisjunctivePreconditions);
+        }
         for (FormulaId ch : f.children) {
           formula(ch, untimed_child(c, f), positive);
         }
         return;
       case ast::FormulaKind::Not:
+        written.add(Feature::NegativePreconditions);
         formula(f.children.at(0), untimed_child(c, f), !positive);
         return;
       case ast::FormulaKind::Imply:
         features_.add(Feature::DisjunctivePreconditions);
+        written.add(Feature::DisjunctivePreconditions);
         formula(f.children.at(0), untimed_child(c, f), !positive);
         formula(f.children.at(1), untimed_child(c, f), positive);
         return;
@@ -489,6 +497,8 @@ private:
           bool existential = (f.kind == ast::FormulaKind::Exists) == positive;
           features_.add(
             existential ? Feature::ExistentialPreconditions : Feature::UniversalPreconditions);
+          written.add(f.kind == ast::FormulaKind::Exists ? Feature::ExistentialPreconditions :
+            Feature::UniversalPreconditions);
           Scoped s(*this, variables(f.params));
           formula(f.children.at(0), c, positive);
           return;
@@ -782,6 +792,20 @@ void merge_types(
     Diagnostic::warning(
       "semantic.object_with_several_types",
       "'" + name + "' declared with several types; it belongs to all of them", where));
+}
+
+// The features to check against :requirements: negations, disjunctions and quantifiers as
+// written
+FeatureSet as_written(const FeatureSet & used, const FeatureSet & written)
+{
+  FeatureSet polarity;
+  polarity.add(Feature::NegativePreconditions);
+  polarity.add(Feature::DisjunctivePreconditions);
+  polarity.add(Feature::ExistentialPreconditions);
+  polarity.add(Feature::UniversalPreconditions);
+  FeatureSet out = used.minus(polarity);
+  out.merge(written);
+  return out;
 }
 
 // Requirements that are missing for the features used; one warning per feature
@@ -1185,7 +1209,7 @@ Result<DomainModel> analyze_domain(const ast::Domain & d)
       "derived predicate '" + bad + "' depends negatively on itself", m.predicates.items[*p].loc);
   }
 
-  check_requirements(m.features, m.requirements, d.file,
+  check_requirements(as_written(m.features, c.written), m.requirements, d.file,
     d.requirements.empty() ? d.loc : d.requirements.front().loc, diags);
 
   if (has_errors(diags)) {
@@ -1379,7 +1403,7 @@ Result<ProblemModel> analyze_problem(
   for (const auto & r : p.requirements) {
     requirements.insert(str(r.name));
   }
-  check_requirements(m.features.minus(dm.features), requirements, p.file,
+  check_requirements(as_written(m.features.minus(dm.features), c.written), requirements, p.file,
     p.requirements.empty() ? p.loc : p.requirements.front().loc, diags);
 
   if (has_errors(diags)) {

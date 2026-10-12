@@ -120,8 +120,9 @@ const char * kMove =
 
 TEST(RegistryTest, StatesAreStoredOnce)
 {
+  // inc reads x: it tells states apart
   auto p = pipeline(domain_with(std::string(kMove) +
-      " (:action inc :parameters () :precondition () :effect (increase (x) 1))"),
+      " (:action inc :parameters () :precondition (< (x) 10) :effect (increase (x) 1))"),
       problem_with("(at r a) (link a b) (link b a) (= (x) 1)", "(at r b)"));
   ASSERT_EQ(p->sas.numeric_fluents.size(), 1u);
   StateRegistry reg(p->sas);
@@ -148,6 +149,70 @@ TEST(RegistryTest, StatesAreStoredOnce)
   EXPECT_EQ(reg.insert(v, n).first, undef);
   EXPECT_EQ(reg.size(), 4u);
   EXPECT_EQ(reg.numbers(s1)[0], 2.0);
+}
+
+TEST(RegistryTest, NumbersNothingReadsDoNotTellStatesApart)
+{
+  // x only adds up what was spent (as total-cost): two paths to the same place are one
+  // state; y is read by a condition, and still tells them apart
+  auto p = pipeline(domain_with(std::string(kMove) +
+      " (:action pay :parameters () :precondition () :effect (increase (x) 5))"
+      " (:action tick :parameters () :precondition (< (y) 3) :effect (increase (y) 1))"),
+      problem_with("(at r a) (link a b) (link b a) (= (x) 1) (= (y) 0)", "(at r b)"));
+  ASSERT_EQ(p->sas.numeric_fluents.size(), 2u);
+  size_t x = 0, y = 1;
+  if (p->sas.function_names[p->sas.numeric_fluents[0].function.index()] != "x") {
+    std::swap(x, y);
+  }
+  StateRegistry reg(p->sas);
+  StateId s0 = reg.initial();
+  std::vector<uint32_t> v;
+  reg.unpack(s0, v);
+  std::vector<double> n(reg.numbers(s0).begin(), reg.numbers(s0).end());
+  n[x] = 99.0;
+  EXPECT_EQ(reg.insert(v, n).first, s0);   // only x differs
+  EXPECT_EQ(reg.numbers(s0)[x], 1.0);      // and it keeps its initial value
+  n[y] = 1.0;
+  auto [s1, fresh] = reg.insert(v, n);
+  EXPECT_NE(s1, s0);
+  EXPECT_TRUE(fresh);
+  // The same through the state space: paying leads back to the state itself
+  StateSpace space(p->sas, reg);
+  std::vector<uint32_t> ops;
+  space.applicable(s0, ops);
+  for (uint32_t a : ops) {
+    if (sas::instance_name(p->sas, p->sas.actions[a]) == "(pay)") {
+      EXPECT_EQ(space.successor(s0, a), std::optional<StateId>(s0));
+    }
+  }
+}
+
+TEST(RegistryTest, UnreadNumbersUndefinedAtFirstStillCount)
+{
+  // x is read by nothing, but starts undefined: set gives it a value, and only then can pay
+  // increase it; keeping its initial value (undefined) made every pay invalid
+  auto p = pipeline(domain_with(std::string(kMove) +
+      " (:action set :parameters () :precondition () :effect (assign (x) 0))"
+      " (:action pay :parameters () :precondition () :effect (increase (x) 5))"),
+      problem_with("(at r a) (link a b) (link b a)", "(at r b)"));
+  StateRegistry reg(p->sas);
+  StateSpace space(p->sas, reg);
+  StateId s0 = reg.initial();
+  auto act = [&](const std::string & name) {
+      for (uint32_t a = 0; a < p->sas.actions.size(); ++a) {
+        if (sas::instance_name(p->sas, p->sas.actions[a]) == name) {
+          return a;
+        }
+      }
+      ADD_FAILURE() << name;
+      return 0u;
+    };
+  EXPECT_FALSE(space.successor(s0, act("(pay)")));  // undefined: an invalid step
+  auto s1 = space.successor(s0, act("(set)"));
+  ASSERT_TRUE(s1);
+  EXPECT_NE(*s1, s0);  // defined now: another state
+  auto s2 = space.successor(*s1, act("(pay)"));
+  ASSERT_TRUE(s2);
 }
 
 TEST(RegistryTest, DerivedVariablesAreRecomputedOnInsert)
@@ -238,7 +303,7 @@ Space space_for(const std::string & body, const std::string & init)
   ground::GroundOptions keep;
   keep.drop_useless_actions = false;
   s.p = pipeline(domain_with(body), problem_with(init), {}, keep);
-  s.reg = std::make_unique<StateRegistry>(s.p->sas);
+  s.reg = std::make_unique<StateRegistry>(s.p->sas, nullptr, false);  // every value
   s.space = std::make_unique<StateSpace>(s.p->sas, *s.reg);
   return s;
 }
@@ -325,7 +390,7 @@ TEST(EffectsTest, ConflictingEffectsMakeTheStepInvalid)
     " (:action only :parameters () :precondition () :effect (s)))",
     "(define (problem pr) (:domain d) (:objects r - robot a b - place) (:init (= (loc r) a))"
     " (:goal (p)))", {}, keep);
-  s.reg = std::make_unique<StateRegistry>(s.p->sas);
+  s.reg = std::make_unique<StateRegistry>(s.p->sas, nullptr, false);  // every value
   s.space = std::make_unique<StateSpace>(s.p->sas, *s.reg);
   StateId s0 = s.reg->initial();
   auto both = s.space->successor(s0, action(s, "(ps)"));
@@ -477,7 +542,7 @@ TEST(SuccessorGeneratorTest, DeepTreesDoNotOverflowTheStack)
 ::testing::AssertionResult walk(const kairos::testing::Pipeline & p, uint32_t seed, int steps)
 {
   const auto & t = p.sas;
-  StateRegistry reg(t);
+  StateRegistry reg(t, nullptr, false);  // the simulator keeps every number
   StateSpace space(t, reg);
   sas::testing::SasSimulator sim(t);
   auto expected = sim.initial();

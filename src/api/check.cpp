@@ -38,10 +38,34 @@ CheckReport finish(CheckReport report)
   return report;
 }
 
+FeatureSupport support_of(const orch::Support & s)
+{
+  FeatureSupport f;
+  f.feature = std::string(sem::to_string(s.feature));
+  for (auto r : sem::covering_requirements(s.feature)) {
+    f.requirements.emplace_back(r);
+  }
+  f.level = s.level == orch::Support::Full ? SupportLevel::Full :
+    (s.level == orch::Support::Partial ? SupportLevel::Partial : SupportLevel::None);
+  f.note = s.note;
+  return f;
+}
+
+// The support of the features a model uses
+void add_support(CheckReport & report, const sem::FeatureSet & features)
+{
+  for (const auto & s : orch::support_table()) {
+    if (features.contains(s.feature)) {
+      report.support.push_back(support_of(s));
+    }
+  }
+}
+
 // What Kairos cannot plan with yet: warnings here (the PDDL is still correct); returns whether
 // everything is supported
 bool add_unsupported(CheckReport & report, const sem::FeatureSet & features)
 {
+  add_support(report, features);
   auto missing = orch::unsupported(features);
   for (auto & d : missing) {
     d.severity = Severity::Warning;
@@ -51,6 +75,25 @@ bool add_unsupported(CheckReport & report, const sem::FeatureSet & features)
 }
 
 }  // namespace
+
+std::string_view to_string(SupportLevel level)
+{
+  switch (level) {
+    case SupportLevel::Full: return "full";
+    case SupportLevel::Partial: return "partial";
+    case SupportLevel::None: return "none";
+  }
+  return "none";
+}
+
+std::vector<FeatureSupport> pddl_support()
+{
+  std::vector<FeatureSupport> out;
+  for (const auto & s : orch::support_table()) {
+    out.push_back(support_of(s));
+  }
+  return out;
+}
 
 CheckReport check_domain(std::string_view domain_text, std::string_view filename)
 {
@@ -81,7 +124,9 @@ CheckReport check_problem(std::string_view problem_text, std::string_view filena
   if (parsed.ok()) {
     append(report.diagnostics, sem::check_problem_alone(*parsed));
   }
-  return finish(std::move(report));
+  report = finish(std::move(report));
+  report.plannable_known = false;  // what the domain uses decides it
+  return report;
 }
 
 CheckReport check_problem(

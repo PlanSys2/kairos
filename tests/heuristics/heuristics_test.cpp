@@ -303,6 +303,32 @@ TEST(HeuristicsTest, ChangingTheGoalOfTheRelaxedGraph)
   EXPECT_EQ(g.run(ctx, RelaxedGraph::Mode::Max), 3.0);
 }
 
+TEST(HeuristicsTest, DerivedAtomsBeingFalse)
+{
+  // (blocked z) <- some enemy is at z. Going into z needs it false: the enemy must leave
+  // (one action) and the move follows; it used to count as true, and h was 1
+  const char * domain =
+    "(define (domain d) (:requirements :derived-predicates :negative-preconditions)"
+    " (:predicates (enemy ?e) (at ?e ?z) (blocked ?z) (in ?z) (gone ?e))"
+    " (:derived (blocked ?z) (exists (?e) (and (enemy ?e) (at ?e ?z))))"
+    " (:action chase :parameters (?e ?z) :precondition (at ?e ?z)"
+    "  :effect (and (not (at ?e ?z)) (gone ?e)))"
+    " (:action enter :parameters (?z) :precondition (not (blocked ?z)) :effect (in ?z)))";
+  auto b = bench(domain, "(define (problem p) (:domain d) (:objects e1 e2 z1 z2)"
+      " (:init (enemy e1) (enemy e2) (at e1 z1) (at e2 z1)) (:goal (in z1)))");
+  StateId s0 = b->reg->initial();
+  EXPECT_EQ(b->value("hadd", s0), 3.0);  // both enemies leave, then enter
+  EXPECT_EQ(b->value("ff", s0), 3.0);
+  EXPECT_EQ(b->value("hmax", s0), 2.0);
+  // A zone without enemies: already false, entering is all
+  auto c = bench(domain, "(define (problem p) (:domain d) (:objects e1 z1 z2)"
+      " (:init (enemy e1) (at e1 z1)) (:goal (in z2)))");
+  EXPECT_EQ(c->value("ff", c->reg->initial()), 1.0);
+  // After the enemies leave, h drops to the move
+  StateId s1 = b->after(b->after(s0, "(chase e1 z1)"), "(chase e2 z1)");
+  EXPECT_EQ(b->value("ff", s1), 1.0);
+}
+
 TEST(HeuristicsTest, DeadEnds)
 {
   // drop loses the key for good: then open is unreachable even relaxed

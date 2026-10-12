@@ -18,6 +18,7 @@
 #ifndef KAIROS__CHECK_HPP_
 #define KAIROS__CHECK_HPP_
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,13 +29,39 @@
 namespace kairos
 {
 
+/// @brief How far Kairos plans with a PDDL feature.
+enum class SupportLevel : uint8_t
+{
+  Full,     // plans with it
+  Partial,  // plans with it with limits (the note says which)
+  None      // cannot plan with it yet
+};
+
+/// @brief "full", "partial" or "none".
+KAIROS_API std::string_view to_string(SupportLevel level);
+
+/// @brief One PDDL feature and how far Kairos plans with it.
+struct FeatureSupport
+{
+  std::string feature;                    // e.g. "durative-actions"
+  std::vector<std::string> requirements;  // the :requirements that declare it
+  SupportLevel level = SupportLevel::Full;
+  std::string note;                       // the limits, or when it will come
+};
+
+/// @brief Every PDDL feature Kairos knows, with its support (what `kairos --features` prints).
+KAIROS_API std::vector<FeatureSupport> pddl_support();
+
 /// @brief Outcome of a check.
 struct CheckReport
 {
   bool valid = false;                   // correct PDDL: no error diagnostics
   bool plannable = false;               // valid, and Kairos can plan with everything it uses
+  /// @brief Whether `plannable` is known: not for a problem checked without its domain
+  bool plannable_known = true;
   std::vector<Diagnostic> diagnostics;  // errors, warnings and notes, with positions
   std::vector<std::string> features;    // PDDL features actually used, e.g. "durative-actions"
+  std::vector<FeatureSupport> support;  // the support of each of those features
 };
 
 /// @brief Checks a domain given as text: syntax, declarations, types, arities, variables.

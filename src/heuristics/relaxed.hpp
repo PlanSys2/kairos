@@ -42,8 +42,10 @@ namespace kairos::heuristics
  * - a numeric condition not true in the state is reached through any action that moves e up
  *   by d > 0 in that state, repeated k times (k * d covers what is missing).
  *
- * Conditions on derived variables being false, non-linear comparisons and object comparisons
- * count as satisfied (optimistic, so hmax stays admissible).
+ * A derived atom being false is reached when every rule that would make it true has a literal
+ * that can be false (FD's negated axioms); with rules that read derived atoms or numbers it
+ * counts as satisfied, as do non-linear comparisons and object comparisons (optimistic, so
+ * hmax stays admissible).
  */
 class RelaxedGraph
 {
@@ -116,6 +118,7 @@ private:
 
   uint32_t add_node();
   uint32_t neg_node(sas::VarId var, uint32_t value);
+  uint32_t false_node(sas::VarId var);
   uint32_t num_node(const sas::LinearExpr & e, bool strict);
   void condition(const sas::Condition & c, std::vector<uint32_t> & out);
   void add_op(std::vector<uint32_t> pre, uint32_t effect, double base, uint32_t action);
@@ -134,6 +137,7 @@ private:
   uint32_t nodes_ = 0;
   std::vector<uint32_t> fact_offset_;          // per variable
   std::map<std::pair<sas::VarId, uint32_t>, uint32_t> neg_;
+  std::map<sas::VarId, uint32_t> false_of_;  // derived variable: node of it being false
   // Numeric nodes by condition (strict, constant, sorted terms): shared by every action that
   // asks the same
   std::map<std::tuple<bool, double, std::vector<std::pair<sas::NumVarId, double>>>, uint32_t>

@@ -96,6 +96,9 @@ struct SearchContext
   : task(t), registry(r), space(s), costs(c), sink(k), budget(b) {}
 
   const sas::Task & task;
+  /// @brief Optional: what the heuristics see instead of task (same actions and variables,
+  /// conditions they may know better: the over all conditions of M3's ends)
+  const sas::Task * heuristic_task = nullptr;
   state::StateRegistry & registry;
   state::StateSpace & space;
   const std::vector<double> & costs;  // per action of task.actions

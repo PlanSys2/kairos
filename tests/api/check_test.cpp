@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -96,10 +97,61 @@ TEST(CheckApiTest, ClassicalDomainIsPlannable)
   EXPECT_TRUE(rd.diagnostics.empty());
   CheckReport rp = check_problem(problem, domain, "problem.pddl");
   EXPECT_TRUE(rp.plannable);
-  // Without its domain the problem cannot be said plannable
-  EXPECT_FALSE(check_problem(problem).plannable);
+  // Without its domain the problem cannot be said plannable, and the report says so
+  CheckReport alone = check_problem(problem);
+  EXPECT_FALSE(alone.plannable);
+  EXPECT_FALSE(alone.plannable_known);
+  EXPECT_TRUE(rp.plannable_known);
   // Invalid input is never plannable
   EXPECT_FALSE(check_domain("(define (domain d)").plannable);
+}
+
+TEST(CheckApiTest, SupportOfEveryFeature)
+{
+  auto table = pddl_support();
+  ASSERT_FALSE(table.empty());
+  std::set<std::string> names;
+  for (const auto & f : table) {
+    EXPECT_TRUE(names.insert(f.feature).second) << "twice: " << f.feature;
+    // What is not full says why, or when it comes
+    EXPECT_EQ(f.level == SupportLevel::Full || !f.note.empty(), true) << f.feature;
+  }
+  for (const char * n : {"durative-actions", "derived-predicates", "timed-initial-literals",
+      "processes", "preferences", "continuous-effects"})
+  {
+    EXPECT_TRUE(names.count(n)) << n;
+  }
+  auto level = [&](const std::string & n) {
+      for (const auto & f : table) {
+        if (f.feature == n) {
+          return f.level;
+        }
+      }
+      return SupportLevel::Full;
+    };
+  EXPECT_EQ(level("durative-actions"), SupportLevel::Full);
+  EXPECT_EQ(level("continuous-effects"), SupportLevel::Partial);
+  EXPECT_EQ(level("processes"), SupportLevel::None);
+  EXPECT_EQ(to_string(SupportLevel::Partial), "partial");
+}
+
+TEST(CheckApiTest, TheReportGivesTheSupportOfWhatTheDomainUses)
+{
+  // A process: none, and that is what makes it not plannable
+  CheckReport r = check_domain(kProcess);
+  bool process = false;
+  for (const auto & f : r.support) {
+    process = process || (f.feature == "processes" && f.level == SupportLevel::None);
+    // Only features it uses
+    EXPECT_NE(std::find(r.features.begin(), r.features.end(), f.feature), r.features.end());
+  }
+  EXPECT_TRUE(process);
+  // Every feature that is none is unsupported: a warning in the report, the error of solve
+  CheckReport classical = check_domain(
+    "(define (domain d) (:requirements :strips) (:predicates (p)) (:action a :effect (p)))");
+  for (const auto & f : classical.support) {
+    EXPECT_NE(f.level, SupportLevel::None) << f.feature;
+  }
 }
 
 TEST(CheckApiTest, DomainWithSyntaxError)

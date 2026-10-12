@@ -49,7 +49,11 @@ inline constexpr StateId kNoState = UINT32_MAX;
 class StateRegistry
 {
 public:
-  explicit StateRegistry(const sas::Task & task, Budget * budget = nullptr);
+  /// @brief With merge_unread, a numeric variable nothing reads (a cost the metric adds up)
+  /// keeps its initial value in every state, so it does not tell states apart; false keeps
+  /// every value (to look at what effects compute)
+  explicit StateRegistry(
+    const sas::Task & task, Budget * budget = nullptr, bool merge_unread = true);
   ~StateRegistry();
   StateRegistry(const StateRegistry &) = delete;
   StateRegistry & operator=(const StateRegistry &) = delete;
@@ -113,6 +117,8 @@ private:
   StateId initial_ = kNoState;
   std::vector<uint64_t> scratch_;
   std::vector<double> scratch_numbers_;
+  std::vector<uint8_t> unread_;  // numeric variables nothing reads: not part of a state
+  bool any_unread_ = false;
 };
 
 }  // namespace kairos::state

@@ -250,10 +250,47 @@ TEST(SnapTest, TimedInitialLiteralsOpenAndCloseWindows)
   auto c = bench(kWindow,
       "(define (problem x) (:domain w) (:init (at 3 (open)) (at 6 (not (open))))"
       " (:goal (done)))");
-  ASSERT_TRUE(c->take("til 1"));
-  // Its end (4 after the start) would come after the window closes at 6, which breaks its over
-  // all condition: rejected when it starts
-  EXPECT_FALSE(c->take("start (work)"));
+  // No plan can finish work before the window closes: the deadlines see it at the first
+  // literal (work needs open from 3 on and ends at 7 at the earliest)
+  EXPECT_FALSE(c->take("til 1"));
+}
+
+const char * kDeliver =
+  "(define (domain d) (:requirements :durative-actions :timed-initial-literals)"
+  " (:predicates (at-a) (at-b) (deliverable) (delivered) (lit))"
+  " (:durative-action drive :parameters () :duration (= ?duration 10)"
+  "  :condition (at start (at-a)) :effect (and (at start (not (at-a))) (at end (at-b))))"
+  " (:durative-action deliver :parameters () :duration (= ?duration 1)"
+  "  :condition (and (over all (at-b)) (at end (deliverable))) :effect (at end (delivered)))"
+  " (:durative-action relight :parameters () :duration (= ?duration 1)"
+  "  :condition (at start (at-b)) :effect (at end (lit))))";
+
+TEST(SnapTest, DeadlinesRejectStatesThatCannotMakeItInTime)
+{
+  // deliverable until 15: drive (10) and deliver (1) make it from time 0
+  auto ok = bench(kDeliver, "(define (problem x) (:domain d) (:init (at-a) (deliverable)"
+      " (at 15 (not (deliverable)))) (:goal (delivered)))");
+  ASSERT_TRUE(ok->take("start (drive)"));
+  ASSERT_TRUE(ok->take("end (drive)"));
+  ASSERT_TRUE(ok->take("start (deliver)"));
+  ASSERT_TRUE(ok->take("end (deliver)"));
+  EXPECT_TRUE(ok->goal());
+  // Until 8 it cannot: the first step is already a dead end (11 at the earliest)
+  auto late = bench(kDeliver, "(define (problem x) (:domain d) (:init (at-a) (deliverable)"
+      " (at 8 (not (deliverable)))) (:goal (delivered)))");
+  EXPECT_FALSE(late->take("start (drive)"));
+  // Given back by a later literal: no deadline then
+  auto again = bench(kDeliver, "(define (problem x) (:domain d) (:init (at-a) (deliverable)"
+      " (at 8 (not (deliverable))) (at 20 (deliverable))) (:goal (delivered)))");
+  EXPECT_TRUE(again->take("start (drive)"));
+  // A fact some action makes true again has no deadline either (lit, by relight)
+  auto lit = bench(kDeliver, "(define (problem x) (:domain d) (:init (at-a) (lit)"
+      " (at 2 (not (lit)))) (:goal (lit)))");
+  EXPECT_TRUE(lit->take("start (drive)"));
+  // Without literals that take values away, nothing to check
+  auto none = bench(kDeliver, "(define (problem x) (:domain d) (:init (at-a) (deliverable))"
+      " (:goal (delivered)))");
+  EXPECT_TRUE(none->take("start (drive)"));
 }
 
 TEST(SnapTest, WhatM3CannotPlanYet)

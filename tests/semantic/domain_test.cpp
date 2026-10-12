@@ -589,6 +589,41 @@ TEST(DomainAnalysisTest, UndeclaredRequirementsAreWarnings)
   EXPECT_EQ(a.diagnostics[0].location->column, 35u);
 }
 
+// The undeclared requirements of a domain, as their feature names
+std::vector<std::string> undeclared(const std::string & requirements, const std::string & pre)
+{
+  Analysis a = analyze("(define (domain d) (:requirements :typing " + requirements + ")"
+      " (:types t) (:predicates (p ?x - t) (q ?x - t))"
+      " (:action a :parameters (?x - t) :precondition " + pre + "))");
+  EXPECT_TRUE(a.ok);
+  std::vector<std::string> out;
+  for (const auto & d : a.diagnostics) {
+    if (d.code == "semantic.undeclared_requirement") {
+      out.push_back(d.message.substr(5, d.message.find(' ', 5) - 5));
+    }
+  }
+  return out;
+}
+
+TEST(DomainAnalysisTest, RequirementsGoByWhatIsWritten)
+{
+  using V = std::vector<std::string>;
+  // (not (exists ...)) means "for all ... not", but only negation and exists are written
+  // (PlanSys2's combat domain got warnings of universal and disjunctive preconditions)
+  EXPECT_EQ(undeclared(":negative-preconditions :existential-preconditions",
+    "(not (exists (?y - t) (and (p ?y) (q ?y))))"), V{});
+  EXPECT_EQ(undeclared(":negative-preconditions", "(not (and (p ?x) (q ?x)))"), V{});
+  EXPECT_EQ(undeclared(":negative-preconditions :universal-preconditions",
+    "(not (forall (?y - t) (p ?y)))"), V{});
+  // Written without being declared: still warnings
+  EXPECT_EQ(undeclared(":negative-preconditions", "(not (exists (?y - t) (p ?y)))"),
+    V{"existential-preconditions"});
+  EXPECT_EQ(undeclared("", "(forall (?y - t) (p ?y))"), V{"universal-preconditions"});
+  EXPECT_EQ(undeclared("", "(or (p ?x) (q ?x))"), V{"disjunctive-preconditions"});
+  EXPECT_EQ(undeclared("", "(imply (p ?x) (q ?x))"), V{"disjunctive-preconditions"});
+  EXPECT_EQ(undeclared(":quantified-preconditions", "(exists (?y - t) (p ?y))"), V{});
+}
+
 TEST(DomainAnalysisTest, AdlCoversItsParts)
 {
   Analysis a = analyze("(define (domain d) (:requirements :adl) (:types t) (:predicates (p ?x - t))"

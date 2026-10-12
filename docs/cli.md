@@ -29,6 +29,7 @@ kairos [solve] DOMAIN PROBLEM [options]     plan; the plan goes to stdout
 kairos validate DOMAIN PROBLEM PLAN [--epsilon E]
 kairos check DOMAIN [PROBLEM]               check a domain, or a problem against it
 kairos check --problem PROBLEM              check a problem alone
+kairos --features [--format json]           which PDDL features Kairos plans with
 kairos --version | --help
 kairos --completion bash|zsh|fish           shell completion script
 ```
@@ -459,7 +460,7 @@ $ kairos domain.pddl problem.pddl -v > /dev/null      # elevator
 [   0.270s] [orchestrator] solved (exhausted) in 269.4 ms
 kairos: solved (exhausted), cost 9
 kairos: parse 0.1 ms, normalize 0.1 ms, ground 0.2 ms, sas 0.2 ms, search 268.7 ms, total 269.4 ms, first plan 1.3 ms
-kairos: 31 atoms, 0 actions, 5 variables (5 mutex groups), 132357 states, 14699 expanded, 15476 evaluated, 2 plans, 61.2 bytes per state, 10 MB peak
+kairos: 31 atoms, 76 actions (76 durative), 5 variables (5 mutex groups), 132357 states, 14699 expanded, 15476 evaluated, 2 plans, 61.2 bytes per state, 10 MB peak
 ```
 
 (Some `[search]` lines were removed.) In the statistics, `first plan -1.0 ms` means no plan was
@@ -630,9 +631,13 @@ Each plan gets a cost, printed in the plan and used to decide whether a plan is 
 - the value of the problem's `:metric`, when there is one;
 - otherwise, the makespan for temporal plans and the number of actions for sequential ones.
 
-Only plans better than the previous one are printed. When the metric cannot be expressed as
-action costs, the search minimizes the number of actions and says so with a note
-(`[orchestrator.metric]`); plans are still compared by the metric.
+Only plans better than the previous one are printed. The search minimizes action costs taken
+from the metric: what each action adds to the fluents the metric weighs (`total-cost`, euros
+spent), its duration for `total-time`, and for a sum of both in a temporal task (`(+ (spent)
+(* 100 (total-time)))`), the fluents plus the weight of time by the action's duration (their
+sum bounds the makespan from above). When the metric cannot be expressed that way, the search
+minimizes the number of actions and says so with a note (`[orchestrator.metric]`); plans are
+still compared by the metric.
 
 #### Stop reasons
 
@@ -708,19 +713,30 @@ Checks PDDL without planning: syntax, declarations, types, arities, variables. E
 and often suggest a fix. A problem checked alone cannot have its types and arities checked, and
 names not in `:objects` are warnings (they may be domain constants). Nothing goes to stdout.
 
-The output on stderr: the diagnostics, then a verdict, then the PDDL features the files use:
+The output on stderr: the diagnostics, then a verdict, then each PDDL feature the files use with
+how far Kairos plans with it (as in [`--features`](#--features)):
 
 | Verdict | Meaning |
 |---------|---------|
 | `valid, plannable` | no errors, and Kairos can plan with everything used |
-| `valid, not plannable yet` | correct PDDL that uses something Kairos cannot plan with yet (always the case for a problem checked alone) |
+| `valid, not plannable yet` | correct PDDL that uses something Kairos cannot plan with yet (its features say `none`) |
+| `valid (whether Kairos can plan it depends on the domain)` | a problem checked alone |
 | `invalid` | errors |
 
 ```console
-$ kairos check domain.pddl problem.pddl                # elevator
+$ kairos check elevator_domain.pddl elevator_problem.pddl
 valid, plannable
-features: typing numeric-fluents durative-actions metric metric-total-time
+  typing: full
+  numeric-fluents: full
+  durative-actions: full (required concurrency included, in engine M3)
+  metric: full
+  metric-total-time: full (alone or added to numeric fluents)
 ```
+
+The features are those of the PDDL as Kairos reads it, negations pushed in: `(not (exists ...))`
+counts as `universal-preconditions` there. The warnings about `:requirements`, instead, go by
+what is written: `(not (exists ...))` needs `:negative-preconditions` and
+`:existential-preconditions`, nothing more.
 
 ```console
 $ kairos check broken_domain.pddl
@@ -739,6 +755,41 @@ invalid
 | 2 | invalid, unreadable file, or wrong arguments (none, or more than two positional) |
 
 `--problem` takes precedence: with it, positional arguments are ignored.
+
+## `--features`
+
+```text
+kairos --features [--format text|json]
+```
+
+Every PDDL feature Kairos knows and how far it plans with it: `full`; `partial`, with the
+limits; or `none`, with the phase that will bring it. The requirement is the main one that
+declares the feature (`--format json` lists all of them). It prints to stdout and exits with 0;
+`--features` must be the first argument. The same table, through the library, is
+`kairos::pddl_support()` (`kairos/check.hpp`), and it is what makes `check` say `not plannable
+yet` and `solve` refuse a task.
+
+```console
+$ kairos --features
+kairos 0.4.0: PDDL features (full, partial, none)
+  typing                     full     :typing
+  negative-preconditions     full     :negative-preconditions
+  disjunctive-preconditions  full     :disjunctive-preconditions
+  ...
+  object-fluents             partial  :object-fluents             one that changes cannot be the argument of an atom yet (phase F4)
+  ...
+  continuous-effects         partial  :continuous-effects         linear ones, as discrete changes at the most pessimistic instant: every plan valid, some plans not found
+  ...
+  processes                  none     :time                       PDDL+, phase F5
+  ...
+```
+
+```console
+$ kairos --features --format json
+{"version": "0.4.0", "features": [{"feature": "typing", "requirements": [":typing", ":adl"], "support": "full", "note": ""}, ...]}
+```
+
+Which features other planners plan with: [pddl-support.md](pddl-support.md).
 
 ## `--version`, `--help`
 

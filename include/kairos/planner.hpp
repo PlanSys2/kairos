@@ -92,6 +92,7 @@ struct Statistics
   std::optional<double> first_plan_ms;
   size_t atoms = 0;
   size_t actions = 0;
+  size_t durative_actions = 0;  // ground durative actions (actions counts the instant ones)
   size_t variables = 0;
   size_t mutex_groups = 0;
   size_t expanded = 0;

@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <functional>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -56,9 +57,67 @@ uint64_t canonical(double x)
   return b;
 }
 
+// Numeric variables nothing reads (conditions, durations, effect values, axioms, the goal),
+// such as a cost the metric adds up: they do not tell states apart. Kept, they made states
+// that differ only in what was spent look new (PlanSys2's combat: millions after the first plan)
+std::vector<uint8_t> unread_numbers(const sas::Task & t)
+{
+  std::vector<uint8_t> read(t.numeric_fluents.size(), 0);
+  std::function<void(const ground::Expr &)> expr = [&](const ground::Expr & e) {
+      if (e.op == ground::ExprOp::Fluent && e.fluent < read.size()) {
+        read[e.fluent] = 1;
+      }
+      for (const auto & c : e.children) {
+        expr(c);
+      }
+    };
+  auto cond = [&](const sas::Condition & c) {
+      for (const auto & n : c.numeric) {
+        expr(n.lhs.tree);
+        expr(n.rhs.tree);
+      }
+    };
+  auto effects = [&](const std::vector<sas::Effect> & es) {
+      for (const auto & e : es) {
+        cond(e.condition);
+        cond(e.start_condition);
+        if (e.kind == sas::Effect::Kind::Numeric) {
+          expr(e.value.tree);
+        }
+      }
+    };
+  for (const auto * list : {&t.actions, &t.processes, &t.events}) {
+    for (const auto & a : *list) {
+      cond(a.pre);
+      effects(a.effects);
+    }
+  }
+  for (const auto & a : t.durative_actions) {
+    cond(a.at_start);
+    cond(a.over_all);
+    cond(a.at_end);
+    for (const auto & d : a.duration) {
+      expr(d.value.tree);
+    }
+    effects(a.effects);
+  }
+  for (const auto & ax : t.axioms) {
+    cond(ax.body);
+  }
+  for (const auto & ev : t.timed_events) {
+    effects(ev.effects);
+  }
+  cond(t.goal);
+  std::vector<uint8_t> unread(read.size());
+  for (size_t v = 0; v < read.size(); ++v) {
+    unread[v] = !read[v];
+  }
+  return unread;
+}
+
 }  // namespace
 
-StateRegistry::StateRegistry(const sas::Task & task, Budget * budget)
+StateRegistry::StateRegistry(const sas::Task & task, Budget * budget, bool merge_unread)
 : task_(task), budget_(budget), layout_(widths(task)), axioms_(task),
   words_(std::max<size_t>(layout_.words(), 1)), num_vars_(task.numeric_fluents.size()),
   scratch_(words_), scratch_numbers_(num_vars_)
@@ -66,6 +125,12 @@ StateRegistry::StateRegistry(const sas::Task & task, Budget * budget)
   if (task.initial_numeric.size() != num_vars_) {
     throw std::invalid_argument("StateRegistry: initial numbers do not match the variables");
   }
+  unread_ = unread_numbers(task);
+  for (size_t v = 0; v < num_vars_; ++v) {
+    // One undefined at first may be assigned later, and then changed: being defined matters
+    unread_[v] = unread_[v] && merge_unread && task.initial_numeric[v].has_value();
+  }
+  any_unread_ = std::any_of(unread_.begin(), unread_.end(), [](uint8_t u) {return u != 0;});
 }
 
 StateRegistry::~StateRegistry()
@@ -150,6 +215,16 @@ std::pair<StateId, bool> StateRegistry::insert(
 {
   if (values.size() != task_.variables.size() || numbers.size() != num_vars_) {
     throw std::invalid_argument("StateRegistry::insert: wrong state size");
+  }
+  if (any_unread_) {
+    // What nothing reads keeps its initial value: such states are the same state
+    scratch_numbers_.assign(numbers.begin(), numbers.end());
+    for (size_t v = 0; v < num_vars_; ++v) {
+      if (unread_[v]) {
+        scratch_numbers_[v] = *task_.initial_numeric[v];
+      }
+    }
+    numbers = scratch_numbers_;
   }
   if (!axioms_.empty()) {
     axioms_.evaluate(values.data(), numbers.data());

@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <map>
+#include <optional>
 #include <set>
 #include <utility>
 #include <vector>
@@ -175,6 +176,13 @@ public:
       };
     put(last_write_, readers_, acc.reads, acc.inv_reads, acc.writes);
     put(last_num_write_, num_readers_, acc.num_reads, acc.inv_num_reads, acc.num_writes);
+  }
+
+  /// @brief The last happening that wrote the variable, if any.
+  std::optional<Node> last_write(sas::VarId v) const
+  {
+    auto it = last_write_.find(v);
+    return it == last_write_.end() ? std::nullopt : std::optional<Node>(it->second);
   }
 
 private:

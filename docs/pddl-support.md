@@ -6,7 +6,8 @@ solvable domain and problem per feature, each planner with 10 s, and every plan 
 
 Checked on 2026-10-12: Kairos (current `main`), and OPTIC, TFD, POPF, LPG-td, ENHSP-2020,
 Metric-FF and LAMA (Fast Downward) from planutils 0.10.25. This page is updated as Kairos gains
-features.
+features; `kairos --features` prints Kairos's own table, with the limits of what it supports in
+part ([cli.md](cli.md#--features)).
 
 | Feature | Kairos | OPTIC | TFD | POPF | LPG-td | ENHSP | Metric-FF | LAMA |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|

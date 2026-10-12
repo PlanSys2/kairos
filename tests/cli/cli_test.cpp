@@ -20,8 +20,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <sstream>
 #include <regex>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -477,6 +477,48 @@ TEST_F(CliTest, HelpAndVersion)
   EXPECT_EQ(v.out, "kairos " + std::string(kairos::version()) + "\n");
 }
 
+TEST_F(CliTest, FeaturesTableAndJson)
+{
+  Outcome t = run("--features");
+  EXPECT_EQ(t.code, 0);
+  EXPECT_TRUE(contains(t.out, "kairos " + std::string(kairos::version())));
+  EXPECT_TRUE(contains(t.out, "durative-actions"));
+  EXPECT_TRUE(contains(t.out, "processes"));
+  EXPECT_TRUE(contains(t.out, " none "));
+  EXPECT_TRUE(contains(t.out, " partial "));
+  for (size_t at = 0; (at = t.out.find(" \n", at)) != std::string::npos; ++at) {
+    ADD_FAILURE() << "a line ends with blanks";
+  }
+  Outcome j = run("--features --format json");
+  EXPECT_EQ(j.code, 0);
+  EXPECT_EQ(j.out.rfind("{\"version\": ", 0), 0u) << j.out;
+  EXPECT_TRUE(contains(j.out, "{\"feature\": \"processes\", \"requirements\": [\":time\"], "
+    "\"support\": \"none\""));
+  // One entry per feature in both
+  size_t rows = 0;
+  for (size_t at = 0; (at = j.out.find("\"feature\": ", at)) != std::string::npos; ++at) {
+    ++rows;
+  }
+  size_t lines = static_cast<size_t>(std::count(t.out.begin(), t.out.end(), '\n')) - 1;
+  EXPECT_EQ(rows, lines);
+  EXPECT_EQ(run("--features --format xml").code, 2);
+  EXPECT_EQ(run("--features extra").code, 2);
+}
+
+TEST_F(CliTest, CheckSaysTheSupportOfEachFeature)
+{
+  write("t.pddl", "(define (domain t) (:requirements :durative-actions)"
+    " (:predicates (p) (q)) (:durative-action a :parameters () :duration (= ?duration 1)"
+    " :condition (at start (p)) :effect (at end (q))))");
+  write("tp.pddl", "(define (problem tp) (:domain t) (:init (p)) (:goal (q)))");
+  Outcome r = run("check '" + path("t.pddl") + "' '" + path("tp.pddl") + "'");
+  EXPECT_EQ(r.code, 0);
+  EXPECT_TRUE(contains(r.err, "valid, plannable"));
+  EXPECT_TRUE(contains(r.err, "  durative-actions: full")) << r.err;
+  Outcome alone = run("check --problem '" + path("tp.pddl") + "'");
+  EXPECT_TRUE(contains(alone.err, "depends on the domain")) << alone.err;
+}
+
 // --- shell completion ---------------------------------------------------------------------------
 
 class CompletionTest : public CliTest
@@ -666,7 +708,7 @@ TEST_F(CliTest, CheckVariants)
   Outcome d = run("check '" + path("domain.pddl") + "'");
   EXPECT_EQ(d.code, 0);
   EXPECT_TRUE(contains(d.err, "valid, plannable"));
-  EXPECT_TRUE(contains(d.err, "features:"));
+  EXPECT_TRUE(contains(d.err, ": full"));  // each feature it uses, with its support
   EXPECT_TRUE(d.out.empty());
 
   Outcome p = run("check " + solve_args());
@@ -675,7 +717,7 @@ TEST_F(CliTest, CheckVariants)
 
   Outcome alone = run("check --problem '" + path("problem.pddl") + "'");
   EXPECT_EQ(alone.code, 0);
-  EXPECT_TRUE(contains(alone.err, "valid, not plannable yet"));
+  EXPECT_TRUE(contains(alone.err, "valid (whether Kairos can plan it depends on the domain)"));
 
   write("t.pddl", kTimed);
   Outcome t = run("check '" + path("t.pddl") + "'");

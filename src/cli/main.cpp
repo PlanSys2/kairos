@@ -26,6 +26,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -58,6 +59,7 @@ const char * kUsage =
   "  kairos validate DOMAIN PROBLEM PLAN [--epsilon E]\n"
   "  kairos check DOMAIN [PROBLEM]            check a domain, or a problem against it\n"
   "  kairos check --problem PROBLEM           check a problem alone\n"
+  "  kairos --features [--format json]        which PDDL features Kairos plans with\n"
   "  kairos --version | --help\n"
   "  kairos --completion bash|zsh|fish        shell completion, e.g. in ~/.bashrc:\n"
   "                                           eval \"$(kairos --completion bash)\"\n"
@@ -143,7 +145,7 @@ kairos::cli::CompletionSpec completion_spec()
 {
   kairos::cli::CompletionSpec spec;
   spec.commands = {"solve", "validate", "check"};
-  spec.options[""] = {"--help", "--version", "--completion"};
+  spec.options[""] = {"--help", "--version", "--completion", "--features"};
   auto & solve = spec.options["solve"];
   for (const auto & o : kWithValue) {
     if (o != "--problem") {
@@ -240,6 +242,58 @@ std::optional<double> number(const Args & a, const std::string & name, std::stri
   return std::nullopt;
 }
 
+// A JSON string (the notes and names have no control characters)
+std::string json_string(std::string_view text)
+{
+  std::string out = "\"";
+  for (char c : text) {
+    if (c == '"' || c == '\\') {
+      out += '\\';
+    }
+    out += c;
+  }
+  return out + "\"";
+}
+
+// Which PDDL features Kairos plans with: a table, or JSON
+int features_command(const std::vector<std::string> & args)
+{
+  bool json = false;
+  if (args.size() == 3 && args[1] == "--format" && (args[2] == "json" || args[2] == "text")) {
+    json = args[2] == "json";
+  } else if (args.size() != 1) {
+    std::cerr << "kairos: --features takes only --format text|json\n";
+    return kInvalidInput;
+  }
+  auto table = kairos::pddl_support();
+  if (json) {
+    std::cout << "{\"version\": " << json_string(kairos::version()) << ", \"features\": [";
+    for (size_t i = 0; i < table.size(); ++i) {
+      const auto & f = table[i];
+      std::cout << (i ? ", " : "") << "{\"feature\": " << json_string(f.feature) <<
+        ", \"requirements\": [";
+      for (size_t k = 0; k < f.requirements.size(); ++k) {
+        std::cout << (k ? ", " : "") << json_string(f.requirements[k]);
+      }
+      std::cout << "], \"support\": " << json_string(std::string(kairos::to_string(f.level))) <<
+        ", \"note\": " << json_string(f.note) << "}";
+    }
+    std::cout << "]}\n";
+    return kSolved;
+  }
+  std::cout << "kairos " << kairos::version() << ": PDDL features (full, partial, none)\n";
+  for (const auto & f : table) {
+    std::string req = f.requirements.empty() ? "" : f.requirements.front();
+    char line[512];
+    std::snprintf(line, sizeof(line), "  %-26s %-8s %-27s %s", f.feature.c_str(),
+      std::string(kairos::to_string(f.level)).c_str(), req.c_str(), f.note.c_str());
+    std::string out = line;
+    out.erase(out.find_last_not_of(' ') + 1);
+    std::cout << out << "\n";
+  }
+  return kSolved;
+}
+
 int check_command(const Args & a)
 {
   std::map<std::string, std::string> sources;
@@ -276,14 +330,17 @@ int check_command(const Args & a)
   }
   print(report.diagnostics, sources);
   std::cerr << (report.valid ? "valid" : "invalid");
-  if (report.valid) {
+  if (report.valid && !report.plannable_known) {
+    std::cerr << " (whether Kairos can plan it depends on the domain)";
+  } else if (report.valid) {
     std::cerr << (report.plannable ? ", plannable" : ", not plannable yet");
   }
   std::cerr << "\n";
-  if (!report.features.empty()) {
-    std::cerr << "features:";
-    for (const auto & f : report.features) {
-      std::cerr << " " << f;
+  // The features it uses (as Kairos reads them, negations pushed in) and their support
+  for (const auto & f : report.support) {
+    std::cerr << "  " << f.feature << ": " << kairos::to_string(f.level);
+    if (!f.note.empty()) {
+      std::cerr << " (" << f.note << ")";
     }
     std::cerr << "\n";
   }
@@ -540,11 +597,13 @@ int solve_command(const Args & a)
       stderr,
       "kairos: parse %.1f ms, normalize %.1f ms, ground %.1f ms, sas %.1f ms, search %.1f ms, "
       "total %.1f ms, first plan %.1f ms\n"
-      "kairos: %zu atoms, %zu actions, %zu variables (%zu mutex groups), %zu states, "
+      "kairos: %zu atoms, %zu actions (%zu durative), %zu variables (%zu mutex groups), "
+      "%zu states, "
       "%zu expanded, %zu evaluated, %zu plans, %.1f bytes per state, %zu MB peak\n",
       s.parse_ms, s.normalize_ms, s.ground_ms, s.sas_ms, s.search_ms, s.total_ms,
       s.first_plan_ms.value_or(-1.0), s.atoms,
-      s.actions, s.variables, s.mutex_groups, s.states, s.expanded, s.evaluated, s.plans,
+      s.actions + s.durative_actions, s.durative_actions, s.variables, s.mutex_groups, s.states,
+      s.expanded, s.evaluated, s.plans,
       s.bytes_per_state, s.peak_memory_bytes >> 20);
   }
   if (format == PlanFormat::Popf) {
@@ -580,6 +639,9 @@ int main(int argc, char ** argv)
     }
     std::cout << *script;
     return kSolved;
+  }
+  if (args[0] == "--features") {
+    return features_command(args);
   }
   if (args[0] == "--version") {
     std::cout << "kairos " << kairos::version() << "\n";
