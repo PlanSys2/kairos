@@ -14,6 +14,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -370,6 +371,98 @@ TEST(PlannerApiTest, ContinuousEffectsAndDurationInequalities)
   ASSERT_EQ(r.status, Status::Solved);
   EXPECT_TRUE(validate(p, *r.plan).valid());
   EXPECT_TRUE(r.plan->temporal);
+}
+
+// The note that explains an unreachable goal
+std::string why(const std::string & domain, const std::string & problem_text)
+{
+  SolveResult r = Planner().solve(problem(domain, problem_text), quick());
+  EXPECT_EQ(r.status, Status::Unsolvable);
+  for (const auto & d : r.diagnostics) {
+    if (d.code == "orchestrator.unreachable_goal") {
+      return d.message;
+    }
+  }
+  ADD_FAILURE() << "no explanation";
+  return "";
+}
+
+const char * kTalk =
+  "(define (domain talk) (:requirements :typing) (:types robot person room message)"
+  " (:predicates (robot_at ?r - robot ?o - room) (person_at ?p - person ?o - room)"
+  "  (near ?r - robot ?p - person) (told ?r - robot ?m - message ?p - person) (busy ?r - robot))"
+  " (:action move :parameters (?r - robot ?a ?b - room)"
+  "  :precondition (robot_at ?r ?a) :effect (and (not (robot_at ?r ?a)) (robot_at ?r ?b)))"
+  " (:action approach :parameters (?r - robot ?o - room ?p - person)"
+  "  :precondition (and (robot_at ?r ?o) (person_at ?p ?o)) :effect (near ?r ?p))"
+  " (:action talk :parameters (?r - robot ?p - person ?m - message)"
+  "  :precondition (and (near ?r ?p) (not (busy ?r))) :effect (told ?r ?m ?p)))";
+
+TEST(PlannerApiTest, ExplainsAnUnreachableGoal)
+{
+  // Jack is in no room: told needs near, near needs person_at, which nothing adds
+  std::string w = why(kTalk,
+      "(define (problem p) (:domain talk) (:objects leia - robot jack - person"
+      " kitchen bedroom - room m1 - message) (:init (robot_at leia kitchen))"
+      " (:goal (told leia m1 jack)))");
+  EXPECT_NE(w.find("(told leia m1 jack) can never be reached"), std::string::npos) << w;
+  EXPECT_NE(w.find("talk adds it, but needs (near leia jack)"), std::string::npos) << w;
+  EXPECT_NE(w.find("approach adds it, but needs (person_at jack ?o)"), std::string::npos) << w;
+  EXPECT_NE(w.find("no action adds it, and the initial state does not have it"),
+    std::string::npos) << w;
+}
+
+TEST(PlannerApiTest, ExplainsOnlyTheUnreachableGoalFacts)
+{
+  // (robot_at leia bedroom) is reachable; the other two are not, for different reasons
+  std::string w = why(kTalk,
+      "(define (problem p) (:domain talk) (:objects leia - robot jack ann - person"
+      " kitchen bedroom - room m1 - message) (:init (robot_at leia kitchen))"
+      " (:goal (and (robot_at leia bedroom) (told leia m1 jack) (person_at ann kitchen))))");
+  EXPECT_EQ(w.find("(robot_at leia bedroom)"), std::string::npos) << w;
+  EXPECT_NE(w.find("(told leia m1 jack) can never be reached"), std::string::npos) << w;
+  EXPECT_NE(w.find("(person_at ann kitchen) can never be reached:\n"
+    "  no action adds it"), std::string::npos) << w;
+}
+
+TEST(PlannerApiTest, ExplainsThroughDerivedPredicates)
+{
+  const char * domain =
+    "(define (domain d) (:requirements :derived-predicates) (:predicates (a) (b) (c) (done))"
+    " (:derived (b) (a))"
+    " (:action finish :parameters () :precondition (b) :effect (done)))";
+  std::string w = why(domain, "(define (problem p) (:domain d) (:init (c)) (:goal (done)))");
+  EXPECT_NE(w.find("finish adds it, but needs (b)"), std::string::npos) << w;
+  EXPECT_NE(w.find("b adds it, but needs (a)"), std::string::npos) << w;
+}
+
+TEST(PlannerApiTest, ExplainsAnActionThatNeverApplies)
+{
+  // The adder's positive preconditions hold: what blocks it is another kind of condition
+  const char * domain =
+    "(define (domain d) (:requirements :negative-preconditions) (:predicates (p) (q) (done))"
+    " (:action a :parameters () :precondition (and (p) (not (p))) :effect (done)))";
+  std::string w = why(domain, "(define (problem x) (:domain d) (:init (p)) (:goal (done)))");
+  EXPECT_FALSE(w.empty());
+}
+
+TEST(PlannerApiTest, ExplanationsStayShort)
+{
+  // A chain of 10 facts: only the first levels are explained
+  std::string domain = "(define (domain chain) (:predicates";
+  for (int i = 0; i <= 10; ++i) {
+    domain += " (f" + std::to_string(i) + ")";
+  }
+  domain += ")";
+  for (int i = 1; i <= 10; ++i) {
+    domain += " (:action a" + std::to_string(i) + " :parameters () :precondition (f" +
+      std::to_string(i - 1) + ") :effect (f" + std::to_string(i) + "))";
+  }
+  domain += ")";
+  std::string w = why(domain, "(define (problem p) (:domain chain) (:init) (:goal (f10)))");
+  EXPECT_NE(w.find("a10 adds it, but needs (f9)"), std::string::npos) << w;
+  EXPECT_EQ(w.find("a1 adds it"), std::string::npos) << w;
+  EXPECT_LT(std::count(w.begin(), w.end(), '\n'), 10) << w;
 }
 
 TEST(PlannerApiTest, UnsupportedFeaturesAreReported)

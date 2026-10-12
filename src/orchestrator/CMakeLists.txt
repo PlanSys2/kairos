@@ -14,6 +14,7 @@
 
 kairos_add_module(kairos_orchestrator
   SOURCES
+    explain.cpp
     orchestrator.cpp
   DEPENDS
     kairos_search

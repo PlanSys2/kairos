@@ -25,7 +25,8 @@ robust, and easy to embed. It is developed within the [PlanSys2](https://github.
 organization and will become a planner for PlanSys2, but it does not depend on ROS.
 
 **How it compares** (problems solved in 30 s and 3 GB, every plan validated; details and method
-in [docs/benchmark.md](docs/benchmark.md)):
+in [docs/benchmark.md](docs/benchmark.md); which PDDL features each planner handles in
+[docs/pddl-support.md](docs/pddl-support.md)):
 
 | Suite | Kairos | Best of the others |
 |---|---:|---|

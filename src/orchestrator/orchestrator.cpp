@@ -35,6 +35,7 @@
 #include "ground/grounder.hpp"
 #include "heuristics/heuristic.hpp"
 #include "normalize/normalizer.hpp"
+#include "orchestrator/explain.hpp"
 #include "pddl/printer.hpp"
 #include "sas/translate.hpp"
 #include "search/search.hpp"
@@ -393,8 +394,13 @@ private:
     res_.stats.actions = grounded->actions.size();
     dump(o_, "ground", "ground.txt", [&]() {return ground::to_string(*grounded);}, log_);
     if (grounded->goal_unreachable) {
-      res_.diagnostics.push_back(Diagnostic::note(
-          "orchestrator.unreachable_goal", "the goal needs atoms that no action can reach"));
+      // Which goal facts, and why: the preconditions that never hold, down to what no action
+      // adds and the initial state does not have
+      std::string why = "the goal needs atoms that no action can reach";
+      for (const auto & line : explain_unreachable_goal(task, *grounded)) {
+        why += "\n" + line;
+      }
+      res_.diagnostics.push_back(Diagnostic::note("orchestrator.unreachable_goal", why));
       return finish(Status::Unsolvable, StopReason::Exhausted);
     }
 
