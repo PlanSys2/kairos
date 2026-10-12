@@ -857,7 +857,8 @@ AnytimeResult anytime(SearchContext & ctx, const AnytimeOptions & options)
   if ((zero_costs || (options.unit_first && uneven)) &&
     first.heuristic_costs == EngineOptions::HeuristicCosts::Real)
   {
-    first.heuristic_costs = EngineOptions::HeuristicCosts::One;
+    first.heuristic_costs = options.plus_one_first && !zero_costs ?
+      EngineOptions::HeuristicCosts::PlusOne : EngineOptions::HeuristicCosts::One;
   }
   Outcome o = run_engine(ctx, first);
   if (o == Outcome::Failed && options.first.kind == EngineOptions::Kind::EnforcedHillClimbing &&

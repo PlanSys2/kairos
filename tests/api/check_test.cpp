@@ -58,27 +58,28 @@ TEST(CheckApiTest, ValidDomain)
   EXPECT_TRUE(has(r.features, "typing"));
 }
 
-const char * kContinuous =
-  "(define (domain flow) (:requirements :durative-actions :fluents :continuous-effects)"
-  " (:predicates (done)) (:functions (level))"
-  " (:durative-action fill :parameters () :duration (= ?duration 5) :condition ()"
-  "  :effect (and (increase (level) (* #t 2)) (at end (done)))))\n";
+// PDDL+ (a process): not plannable until phase F5
+const char * kProcess =
+  "(define (domain flow) (:requirements :fluents :time) (:predicates (on) (done))"
+  " (:functions (level))"
+  " (:process fill :parameters () :precondition (on) :effect (increase (level) (* #t 2)))"
+  " (:action stop :parameters () :precondition (>= (level) 10) :effect (done)))\n";
 
-const char * kContinuousProblem =
-  "(define (problem x) (:domain flow) (:init (= (level) 0)) (:goal (done)))\n";
+const char * kProcessProblem =
+  "(define (problem x) (:domain flow) (:init (on) (= (level) 0)) (:goal (done)))\n";
 
 TEST(CheckApiTest, NotPlannableYet)
 {
   // Correct PDDL Kairos cannot plan with yet: warnings, not errors
-  CheckReport r = check_domain(kContinuous);
+  CheckReport r = check_domain(kProcess);
   EXPECT_TRUE(r.valid);
   EXPECT_FALSE(r.plannable);
   ASSERT_FALSE(r.diagnostics.empty());
   for (const auto & d : r.diagnostics) {
     EXPECT_EQ(d.severity, Severity::Warning) << d.message;
   }
-  EXPECT_EQ(r.diagnostics[0].code, "unsupported.continuous_effects");
-  CheckReport p = check_problem(kContinuousProblem, kContinuous, "problem.pddl");
+  EXPECT_EQ(r.diagnostics[0].code, "unsupported.processes");
+  CheckReport p = check_problem(kProcessProblem, kProcess, "problem.pddl");
   EXPECT_TRUE(p.valid);
   EXPECT_FALSE(p.plannable);
 }

@@ -15,6 +15,7 @@
 kairos_add_module(kairos_temporal
   SOURCES
     compress.cpp
+    durations.cpp
     profile.cpp
     snap.cpp
     stn.cpp

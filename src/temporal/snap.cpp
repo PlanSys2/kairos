@@ -162,10 +162,33 @@ SnapTask snap(const sas::Task & task)
     bool unchanging = std::none_of(
       reads.num_reads.begin(), reads.num_reads.end(),
       [&](sas::NumVarId n) {return written.count(n) > 0;});
-    if (da.uses_duration && (!fixed || !unchanging) && s.unsupported.empty()) {
-      s.unsupported = name + " uses ?duration with a duration that is not fixed (phase F3)";
+    if (da.uses_duration && !fixed && s.unsupported.empty()) {
+      s.unsupported = name + " uses ?duration with a duration that is not fixed";
     }
     ground::Expr duration = fixed ? da.duration[0].value.tree : ground::Expr{};
+    // A duration that depends on the state, read at end: kept at start in a numeric variable of
+    // its own (other actions may change what it reads meanwhile)
+    ground::Expr end_duration = duration;
+    std::optional<sas::Effect> keep;
+    if (da.uses_duration && fixed && !unchanging) {
+      s.task.function_names.push_back("kairos-duration " + name);
+      ground::FluentInfo info;
+      info.function = ground::FunctionId(static_cast<uint32_t>(s.task.function_names.size() - 1));
+      info.args = da.args;
+      s.task.numeric_fluents.push_back(info);
+      s.task.initial_numeric.push_back(std::nullopt);
+      auto var = static_cast<sas::NumVarId>(s.task.initial_numeric.size() - 1);
+      sas::Effect e;
+      e.kind = sas::Effect::Kind::Numeric;
+      e.timing = sas::Timing::Instant;
+      e.num = var;
+      e.op = ast::AssignOp::Assign;
+      e.value.tree = duration;
+      keep = std::move(e);
+      end_duration = ground::Expr{};
+      end_duration.op = sas::ExprOp::Fluent;
+      end_duration.fluent = var;
+    }
 
     sas::Action start;
     start.schema = starts + da.schema;
@@ -183,7 +206,7 @@ SnapTask snap(const sas::Task & task)
     end.pre = da.at_end;
     end.pre.facts.push_back(sas::Fact{run, 0});
     std::sort(end.pre.facts.begin(), end.pre.facts.end());
-    substitute(end.pre, duration);
+    substitute(end.pre, end_duration);
     end.changes = da.end;
     end.changes.push_back(sas::Fact{run, 1});
 
@@ -198,8 +221,11 @@ SnapTask snap(const sas::Task & task)
       bool at_end = e.timing == sas::Timing::End;
       e.timing = sas::Timing::Instant;
       e.start_condition = {};
-      substitute(e, duration);
+      substitute(e, at_end ? end_duration : duration);
       (at_end ? end : start).effects.push_back(std::move(e));
+    }
+    if (keep) {
+      start.effects.push_back(std::move(*keep));
     }
     s.task.actions.push_back(std::move(start));
     s.task.actions.push_back(std::move(end));

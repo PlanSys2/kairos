@@ -39,6 +39,7 @@
 #include "sas/translate.hpp"
 #include "search/search.hpp"
 #include "temporal/compress.hpp"
+#include "temporal/durations.hpp"
 #include "temporal/profile.hpp"
 #include "temporal/snap.hpp"
 #include "state/eval.hpp"
@@ -68,8 +69,6 @@ struct Missing
 };
 
 const Missing kMissing[] = {
-  {sem::Feature::ContinuousEffects, "unsupported.continuous_effects",
-    "continuous effects (phase F3)"},
   {sem::Feature::Processes, "unsupported.processes", "processes (PDDL+, phase F5)"},
   {sem::Feature::Events, "unsupported.events", "events (PDDL+, phase F5)"},
   {sem::Feature::Preferences, "unsupported.preferences", "preferences (PDDL3, phase F4)"},
@@ -336,7 +335,20 @@ SolveResult run(
       auto [s, r] = budget_status();
       return finish(s, r);
     }
-    const sas::Task & sas_task = *translated;
+    // Durations the engines can plan with: one action per bound of a duration inequality used
+    // by its effects, continuous effects as discrete ones (sound, not complete)
+    auto fixed = temporal::fix_durations(*translated);
+    if (!fixed.unsupported.empty()) {
+      res.diagnostics.push_back(Diagnostic::error(
+          "unsupported.durations", "durations Kairos cannot plan with yet: " + fixed.unsupported));
+      return finish(Status::Unsupported, StopReason::Exhausted);
+    }
+    if (fixed.changed) {
+      log.info(
+        LogChannel::Orchestrator, "durations: {} durative actions after fixing durations and "
+        "continuous effects", fixed.task.durative_actions.size());
+    }
+    const sas::Task & sas_task = fixed.changed ? fixed.task : *translated;
     res.stats.variables = sas_task.variables.size();
     res.stats.mutex_groups = sst.group_variables;
     dump(options, "sas", "sas.txt", [&]() {return sas::to_string(sas_task);}, log);
@@ -667,6 +679,9 @@ SolveResult run(
       // where ends cost 0.001 and starts their duration, an unevenness that guides
       // (turn-and-open lost an instance), nor on action costs of classical tasks (parking 7 -> 3)
       ao.unit_first = ph.kind == Kind::Compressed;
+      // With numeric conditions cost + 1 instead: unit costs slowed the large cooking example
+      // (150 ms -> 0.7 s), real costs lost temporal numeric instances (transport, rovers)
+      ao.plus_one_first = has_numeric_conditions(task_k);
       auto result = search::anytime(ctx, ao);
       stats.expanded += ctx.stats.expanded;
       stats.generated += ctx.stats.generated;

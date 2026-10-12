@@ -58,14 +58,15 @@ const char * kTimed =
 
 const char * kTimedProblem = "(define (problem x) (:domain timed) (:init (p)) (:goal (q)))\n";
 
-const char * kContinuous =
-  "(define (domain flow) (:requirements :durative-actions :fluents :continuous-effects)"
-  " (:predicates (done)) (:functions (level))"
-  " (:durative-action fill :parameters () :duration (= ?duration 5) :condition ()"
-  "  :effect (and (increase (level) (* #t 2)) (at end (done)))))\n";
+// PDDL+ (a process): not plannable until phase F5
+const char * kProcess =
+  "(define (domain flow) (:requirements :fluents :time) (:predicates (on) (done))"
+  " (:functions (level))"
+  " (:process fill :parameters () :precondition (on) :effect (increase (level) (* #t 2)))"
+  " (:action stop :parameters () :precondition (>= (level) 10) :effect (done)))\n";
 
-const char * kContinuousProblem =
-  "(define (problem x) (:domain flow) (:init (= (level) 0)) (:goal (done)))\n";
+const char * kProcessProblem =
+  "(define (problem x) (:domain flow) (:init (on) (= (level) 0)) (:goal (done)))\n";
 
 
 const char * kBroken = "(define (domain robots)\n (:predicates (at ?r)\n";
@@ -392,8 +393,8 @@ TEST_F(CliTest, MemoryLimitExitsTwelve)
 
 TEST_F(CliTest, UnsupportedExitsThirteen)
 {
-  write("c.pddl", kContinuous);
-  write("cp.pddl", kContinuousProblem);
+  write("c.pddl", kProcess);
+  write("cp.pddl", kProcessProblem);
   Outcome r = run("'" + path("c.pddl") + "' '" + path("cp.pddl") + "'");
   EXPECT_EQ(r.code, 13);
   EXPECT_TRUE(contains(r.err, "unsupported"));
@@ -654,7 +655,7 @@ TEST_F(CliTest, CheckVariants)
   Outcome t = run("check '" + path("t.pddl") + "'");
   EXPECT_EQ(t.code, 0);
   EXPECT_TRUE(contains(t.err, "valid, plannable"));  // durative actions: engine M2
-  write("c.pddl", kContinuous);
+  write("c.pddl", kProcess);
   Outcome c = run("check '" + path("c.pddl") + "'");
   EXPECT_EQ(c.code, 0);
   EXPECT_TRUE(contains(c.err, "warning"));

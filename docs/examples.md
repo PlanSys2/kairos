@@ -13,6 +13,7 @@ the first one, `-v` to see progress and the time of the first plan, and validate
 - [Cooking](#cooking)
 - [Cooking with costs](#cooking-with-costs)
 - [Factory](#factory)
+- [Battery patrol](#battery-patrol)
 - [Elevators](#elevators)
 - [Road trip](#road-trip)
 - [SUAVE](#suave)
@@ -95,6 +96,34 @@ kairos factory.pddl factory_problem_1.pddl
 
 `factory2.pddl`, `factory3.pddl` and `factory4.pddl` are earlier variants, see
 [Domains without a problem](#domains-without-a-problem).
+
+## Battery patrol
+
+[battery_domain.pddl](examples/pddls/battery_domain.pddl). Robots visit waypoints with a
+battery that drains while they move and charges while they recharge.
+
+- Types: `robot`, `waypoint`. Durative actions: `move` (distance / speed) and `recharge`.
+- **Continuous effects**: `(decrease (battery ?r) (* #t (discharge_rate ?r)))` while moving,
+  `(increase (battery ?r) (* #t (charge_rate ?r)))` while recharging; `move` needs
+  `(over all (>= (battery ?r) 0))`.
+- **Duration inequality**: a recharge lasts from 1 s up to a full battery,
+  `(<= ?duration (/ (- (capacity ?r) (battery ?r)) (charge_rate ?r)))`.
+- How Kairos plans it (sound, not complete): each recharge is tried at its bounds (the minimum
+  and until full), and each continuous change becomes its total at the safest instant for
+  the conditions that read the battery (a drain at the start of the move, a charge at the end
+  of the recharge). Durations in between are not tried: the simple problem recharges four times
+  1 s rather than once 4 s. Every plan is checked with the real continuous semantics.
+
+| Problem | Size |
+|---------|------|
+| [battery_problem_simple](examples/pddls/battery_problem_simple.pddl) | 1 robot, 4 waypoints in a line, 50 of battery for 90 m: it must recharge first |
+| [battery_problem_medium](examples/pddls/battery_problem_medium.pddl) | 2 robots, a ring of 8 waypoints, two chargers |
+| [battery_problem_long](examples/pddls/battery_problem_long.pddl) | 3 robots, a 4x4 grid, chargers in three corners |
+
+```bash
+kairos battery_domain.pddl battery_problem_simple.pddl
+kairos battery_domain.pddl battery_problem_long.pddl
+```
 
 ## Elevators
 
@@ -214,6 +243,9 @@ within the time.
 | cooking_cost_problem_medium | 7 ms | cost 15 (the minimum) | cost 24 |
 | cooking_cost_problem_long | 28 ms | cost 34 (the minimum) | no plan |
 | factory_problem_1 | 6 ms | 21 actions, makespan 54 | makespan 54 |
+| battery_problem_simple | 1 ms | 7 actions, makespan 94 | makespan 94 (one 4 s recharge) |
+| battery_problem_medium | 4 ms | makespan 199 | no plan |
+| battery_problem_long | 6 ms | makespan 195 | no plan |
 | elevator_problem | 1 ms | 12 actions, makespan 9 | makespan 9 |
 | road_trip_problem | 2 ms | 8 actions, makespan 529.8 | invalid as printed (*) |
 | suave_problem | 23 ms | 7 actions | no plan (derived predicates) |

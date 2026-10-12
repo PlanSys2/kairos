@@ -97,14 +97,15 @@ const char * kDurative =
   " (:durative-action a :parameters () :duration (= ?duration 1)\n"
   "  :condition (at start (p)) :effect (at end (q))))\n";
 
-const char * kContinuous =
-  "(define (domain flow) (:requirements :durative-actions :fluents :continuous-effects)"
-  " (:predicates (done)) (:functions (level))"
-  " (:durative-action fill :parameters () :duration (= ?duration 5) :condition ()"
-  "  :effect (and (increase (level) (* #t 2)) (at end (done)))))\n";
+// PDDL+ (a process): not plannable until phase F5
+const char * kProcess =
+  "(define (domain flow) (:requirements :fluents :time) (:predicates (on) (done))"
+  " (:functions (level))"
+  " (:process fill :parameters () :precondition (on) :effect (increase (level) (* #t 2)))"
+  " (:action stop :parameters () :precondition (>= (level) 10) :effect (done)))\n";
 
-const char * kContinuousProblem =
-  "(define (problem x) (:domain flow) (:init (= (level) 0)) (:goal (done)))\n";
+const char * kProcessProblem =
+  "(define (problem x) (:domain flow) (:init (on) (= (level) 0)) (:goal (done)))\n";
 
 const char * kDurativeProblem =
   "(define (problem x) (:domain timed) (:init (p)) (:goal (q)))";
@@ -247,9 +248,9 @@ TEST(PlannerApiTest, ChecksProblemsAgainstAParsedDomain)
   auto timed = parse_domain(kDurative);
   ASSERT_TRUE(timed.ok());
   EXPECT_TRUE(check_problem(kDurativeProblem, *timed).plannable);
-  auto flow = parse_domain(kContinuous);
+  auto flow = parse_domain(kProcess);
   ASSERT_TRUE(flow.ok());
-  CheckReport t = check_problem(kContinuousProblem, *flow);
+  CheckReport t = check_problem(kProcessProblem, *flow);
   EXPECT_TRUE(t.valid);
   EXPECT_FALSE(t.plannable);
   EXPECT_TRUE(has_code(t.diagnostics, "unsupported."));
@@ -351,9 +352,29 @@ TEST(PlannerApiTest, SearchProvesUnsolvability)
   EXPECT_GT(r.stats.expanded, 1u);
 }
 
+TEST(PlannerApiTest, ContinuousEffectsAndDurationInequalities)
+{
+  // Filling at 2 per second, for as long as wanted up to 10 s: at least 10 needed
+  const char * domain =
+    "(define (domain tank) (:requirements :durative-actions :fluents :continuous-effects"
+    " :duration-inequalities) (:predicates (idle)) (:functions (level))"
+    " (:durative-action fill :parameters () :duration (and (>= ?duration 1) (<= ?duration 10))"
+    "  :condition (at start (idle))"
+    "  :effect (and (at start (not (idle))) (at end (idle)) (increase (level) (* #t 2)))))";
+  Problem p = problem(domain,
+      "(define (problem x) (:domain tank) (:init (idle) (= (level) 0)) (:goal (>= (level) 15)))");
+  EXPECT_TRUE(check_problem(
+      "(define (problem x) (:domain tank) (:init (idle) (= (level) 0)) (:goal (>= (level) 15)))",
+      p.domain()).plannable);
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+  EXPECT_TRUE(r.plan->temporal);
+}
+
 TEST(PlannerApiTest, UnsupportedFeaturesAreReported)
 {
-  Problem p = problem(kContinuous, kContinuousProblem);
+  Problem p = problem(kProcess, kProcessProblem);
   SolveResult r = Planner().solve(p, quick());
   EXPECT_EQ(r.status, Status::Unsupported);
   EXPECT_TRUE(has_code(r.diagnostics, "unsupported."));

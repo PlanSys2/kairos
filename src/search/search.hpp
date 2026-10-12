@@ -153,6 +153,8 @@ struct AnytimeOptions
   bool adapt_zero_costs = true;
   /// @brief Unit costs for the heuristics of the first plan whenever costs differ (LAMA)
   bool unit_first = true;
+  /// @brief With unit_first: cost + 1 instead of unit costs (keeps some of the costs)
+  bool plus_one_first = false;
 };
 
 enum class AnytimeResult : uint8_t

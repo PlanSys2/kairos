@@ -245,6 +245,46 @@ std::optional<sas::Condition> after_start(
   return out;
 }
 
+// A fluent read after the start effects: v replaced by what they leave (v + x, v - x or x),
+// so that a condition checked before the action sees the state after its start
+void after_numeric(ground::Expr & e, const std::map<sas::NumVarId, const sas::Effect *> & starts)
+{
+  if (e.op == ground::ExprOp::Fluent) {
+    auto it = starts.find(static_cast<sas::NumVarId>(e.fluent));
+    if (it == starts.end()) {
+      return;
+    }
+    const sas::Effect & s = *it->second;
+    ground::Expr v = e;
+    switch (s.op) {
+      case ast::AssignOp::Increase: e = Expr{}; e.op = ground::ExprOp::Add; break;
+      case ast::AssignOp::Decrease: e = Expr{}; e.op = ground::ExprOp::Sub; break;
+      case ast::AssignOp::ScaleUp: e = Expr{}; e.op = ground::ExprOp::Mul; break;
+      case ast::AssignOp::ScaleDown: e = Expr{}; e.op = ground::ExprOp::Div; break;
+      case ast::AssignOp::Assign: e = s.value.tree; return;
+    }
+    e.children = {v, s.value.tree};
+    return;
+  }
+  for (auto & c : e.children) {
+    after_numeric(c, starts);
+  }
+}
+
+void after_numeric(sas::Condition & c, const std::map<sas::NumVarId, const sas::Effect *> & starts)
+{
+  if (starts.empty()) {
+    return;
+  }
+  for (auto & n : c.numeric) {
+    after_numeric(n.lhs.tree, starts);
+    after_numeric(n.rhs.tree, starts);
+    n.lhs.linear.reset();
+    n.rhs.linear.reset();
+    n.difference.reset();
+  }
+}
+
 void sort_condition(sas::Condition & c)
 {
   std::sort(c.facts.begin(), c.facts.end());
@@ -313,6 +353,22 @@ Compressed compress(const sas::Task & task)
     a.pre = da.at_start;
     auto over = after_start(da.over_all, start);
     auto end = after_start(da.at_end, start);
+    // Numeric over all and at end conditions see the unconditional numeric start effects
+    // (a battery drained at start must still be >= 0)
+    std::map<sas::NumVarId, const sas::Effect *> numeric_starts;
+    for (const auto & e : da.effects) {
+      if (e.timing == sas::Timing::Start && e.kind == sas::Effect::Kind::Numeric &&
+        e.condition.empty() && !e.continuous)
+      {
+        numeric_starts[e.num] = &e;
+      }
+    }
+    if (over) {
+      after_numeric(*over, numeric_starts);
+    }
+    if (end) {
+      after_numeric(*end, numeric_starts);
+    }
     bool possible = over && end && merge(a.pre, *over) && merge(a.pre, *end);
     for (auto e : effects) {
       if ((e.timing == sas::Timing::Start || e.timing == sas::Timing::End) && unconditional(e)) {

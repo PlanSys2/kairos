@@ -1,0 +1,35 @@
+; One robot, four waypoints in a line (30 m apart), the charger at wp0.
+; With 50 of battery it cannot reach wp3 (90 m): it has to recharge first.
+(define (problem battery_problem_simple)
+  (:domain battery_patrol)
+  (:objects
+    r1 - robot
+    wp0 wp1 wp2 wp3 - waypoint)
+  (:init
+    (robot_at r1 wp0)
+    (robot_free r1)
+    (= (battery r1) 50)
+    (= (capacity r1) 100)
+    (= (discharge_rate r1) 1)
+    (= (charge_rate r1) 10)
+    (= (speed r1) 1)
+    (charger_at wp0)
+    (connected wp0 wp1)
+    (= (distance wp0 wp1) 30)
+    (connected wp1 wp0)
+    (= (distance wp1 wp0) 30)
+    (connected wp1 wp2)
+    (= (distance wp1 wp2) 30)
+    (connected wp2 wp1)
+    (= (distance wp2 wp1) 30)
+    (connected wp2 wp3)
+    (= (distance wp2 wp3) 30)
+    (connected wp3 wp2)
+    (= (distance wp3 wp2) 30)
+  )
+  (:goal (and
+    (visited wp1)
+    (visited wp2)
+    (visited wp3)
+  ))
+)

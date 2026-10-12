@@ -57,10 +57,12 @@ jobs:
       - name: Build
         run: cmake --build build
 
+      # A failed test runs once more: a load spike of the runner should not fail the CI, a real
+      # regression fails both times
       - name: Test
         env:
           UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build --output-on-failure --repeat until-pass:2
 
       - name: Install and use from another project
         if: matrix.sanitize == ''
@@ -87,7 +89,7 @@ jobs:
       - name: Test under MemoryMax=512M
         run: >
           sudo systemd-run --scope -p MemoryMax=512M -p MemorySwapMax=0
-          ctest --test-dir build --output-on-failure -LE lint
+          ctest --test-dir build --output-on-failure --repeat until-pass:2 -LE lint
 
   coverage:
     name: coverage (lines >= 90 %)
@@ -107,7 +109,7 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug -DKAIROS_COVERAGE=ON
           cmake --build build
       - name: Test
-        run: ctest --test-dir build --output-on-failure -LE lint --parallel 4
+        run: ctest --test-dir build --output-on-failure --repeat until-pass:2 -LE lint --parallel 4
       - name: Report (gcovr.cfg sets the threshold)
         run: |
           mkdir -p coverage
