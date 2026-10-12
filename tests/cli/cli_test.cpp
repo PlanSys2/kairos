@@ -414,7 +414,10 @@ TEST_F(CliTest, GroundingStaysWithinTheMemoryLimit)
   EXPECT_EQ(r.code, 12);
   std::smatch m;
   ASSERT_TRUE(std::regex_search(r.err, m, std::regex("(\\d+) MB peak"))) << r.err;
+#if !defined(__SANITIZE_ADDRESS__)
+  // (AddressSanitizer's shadow memory and quarantine add more than the margin: 185 MB)
   EXPECT_LT(std::stoi(m[1]), 64 + 48) << r.err;  // the limit counts growth, not the baseline
+#endif
 }
 
 TEST_F(CliTest, UnsupportedExitsThirteen)
