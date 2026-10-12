@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -404,11 +405,76 @@ Compressed compress(const sas::Task & task)
   return c;
 }
 
+namespace
+{
+
+// Numeric variables that only constant increases and decreases change: their changes commute
+std::vector<uint8_t> resources(const sas::Task & t)
+{
+  std::vector<uint8_t> out(t.numeric_fluents.size(), 1);
+  auto check = [&](const std::vector<sas::Effect> & effects) {
+      for (const auto & e : effects) {
+        if (e.kind != sas::Effect::Kind::Numeric || e.num >= out.size()) {
+          continue;
+        }
+        bool constant = e.value.linear && e.value.linear->terms.empty() && !e.continuous;
+        if (!constant || (e.op != ast::AssignOp::Increase && e.op != ast::AssignOp::Decrease)) {
+          out[e.num] = 0;
+        }
+      }
+    };
+  bool any_change = false;
+  for (const auto * list : {&t.actions, &t.processes, &t.events}) {
+    for (const auto & a : *list) {
+      check(a.effects);
+    }
+  }
+  for (const auto & a : t.durative_actions) {
+    check(a.effects);
+  }
+  for (const auto & ev : t.timed_events) {
+    check(ev.effects);
+  }
+  for (const auto & a : t.durative_actions) {
+    for (const auto & e : a.effects) {
+      any_change = any_change || (e.kind == sas::Effect::Kind::Numeric && e.num < out.size() &&
+        out[e.num]);
+    }
+  }
+  if (!any_change) {
+    out.assign(out.size(), 0);
+  }
+  return out;
+}
+
+// The access without the resources (sorted vectors stay sorted)
+Access without(const Access & acc, const std::vector<uint8_t> & res, bool & touched)
+{
+  Access out = acc;
+  for (auto * vec : {&out.num_reads, &out.num_writes, &out.inv_num_reads}) {
+    auto before = vec->size();
+    vec->erase(std::remove_if(vec->begin(), vec->end(), [&](sas::NumVarId v) {
+        return v < res.size() && res[v];
+      }), vec->end());
+    touched = touched || vec->size() != before;
+  }
+  return out;
+}
+
+}  // namespace
+
 std::optional<Plan> schedule(
   const sas::Task & original, const Compressed & compressed, state::StateSpace & space,
-  const std::vector<uint32_t> & actions, double epsilon)
+  const std::vector<uint32_t> & actions, double epsilon,
+  const std::function<bool(const Plan &)> & prefix_valid)
 {
   auto bases = derived_bases(original);
+  // (each placement validates the plan so far: quadratic, so not for very long plans)
+  constexpr size_t kMaxSteps = 500;
+  std::vector<uint8_t> res = prefix_valid && actions.size() <= kMaxSteps ?
+    resources(original) : std::vector<uint8_t>{};
+  std::map<sas::NumVarId, std::vector<Stn::Node>> res_starts;  // the starts that change each one
+  std::map<sas::NumVarId, std::vector<Stn::Node>> res_all;     // and every happening that does
   Stn stn;
   struct Step
   {
@@ -433,6 +499,35 @@ std::optional<Plan> schedule(
         }
       }
       return true;
+    };
+  // The plan of the first n steps, at their earliest times
+  auto plan_of = [&](size_t n) {
+      Plan plan;
+      plan.temporal = true;
+      for (uint32_t k = 0; k < n; ++k) {
+        uint32_t a = actions[k];
+        PlanStep step;
+        step.time = stn.earliest(steps[k].start);
+        step.duration = steps[k].duration;
+        if (a >= compressed.instant) {
+          const auto & da = original.durative_actions[a - compressed.instant];
+          step.name = original.durative_action_names.at(da.schema);
+          for (auto o : da.args) {
+            step.args.push_back(original.object_names.at(o.index()));
+          }
+        } else {
+          const auto & ia = original.actions[a];
+          step.name = original.action_names.at(ia.schema);
+          for (auto o : ia.args) {
+            step.args.push_back(original.object_names.at(o.index()));
+          }
+        }
+        plan.steps.push_back(std::move(step));
+      }
+      std::stable_sort(
+        plan.steps.begin(), plan.steps.end(),
+        [](const PlanStep & x, const PlanStep & y) {return x.time < y.time;});
+      return plan;
     };
   state::StateId s = space.registry().initial();
   for (uint32_t k = 0; k < actions.size(); ++k) {
@@ -483,6 +578,85 @@ std::optional<Plan> schedule(
       return std::nullopt;
     }
     s = *next;
+    // Without the orderings of the resources, if the plan so far stays valid: first anywhere,
+    // then epsilon after the starts of the steps that use the same resources (not after their
+    // ends: two happenings at the same instant that change one resource interfere)
+    if (!res.empty()) {
+      bool touched = false;
+      Access free_start = without(at_start, res, touched);
+      Access free_end = without(at_end, res, touched);
+      std::vector<sas::NumVarId> mine;
+      for (const auto * acc : {&at_start, &at_end}) {
+        for (auto v : acc->num_writes) {
+          if (v < res.size() && res[v]) {
+            mine.push_back(v);
+          }
+        }
+      }
+      bool placed = false;
+      for (int attempt = 0; touched && attempt < 2 && !placed; ++attempt) {
+        auto mark = stn.mark();
+        size_t marked = step_of.size();
+        Step st{stn.add_node(), 0, d};
+        step_of.push_back(k);
+        bool ok = true;
+        if (durative) {
+          st.end = stn.add_node();
+          step_of.push_back(k);
+          ok = stn.exactly(st.start, st.end, d);
+        } else {
+          st.end = st.start;
+        }
+        auto constrain = [&](Stn::Node node, const Access & acc) {
+            for (auto [b, sep] : order.before(acc, epsilon)) {
+              if (step_of[b] != k && !stn.at_least(b, node, sep)) {
+                return false;
+              }
+            }
+            return true;
+          };
+        ok = ok && constrain(st.start, free_start) && (!durative || constrain(st.end, free_end));
+        for (size_t i = 0; ok && attempt == 1 && i < mine.size(); ++i) {
+          for (Stn::Node p : res_starts[mine[i]]) {
+            ok = ok && stn.at_least(p, st.start, epsilon);
+          }
+        }
+        if (ok) {
+          steps.push_back(st);
+          if (prefix_valid(plan_of(steps.size()))) {
+            order.record(st.start, at_start);
+            if (durative) {
+              order.record(st.end, at_end);
+            }
+            for (auto v : mine) {
+              res_starts[v].push_back(st.start);
+              res_all[v].push_back(st.start);
+              res_all[v].push_back(st.end);
+            }
+            placed = true;
+            break;
+          }
+          steps.pop_back();
+        }
+        stn.undo(mark);
+        step_of.resize(marked);
+      }
+      if (placed) {
+        continue;
+      }
+    }
+    // As usual, and after every happening so far that changes its resources (steps placed
+    // earlier than the order of the plan may come after the last one in that order)
+    std::vector<sas::NumVarId> mine_all;
+    if (!res.empty()) {
+      for (const auto * acc : {&at_start, &at_end}) {
+        for (auto v : acc->num_writes) {
+          if (v < res.size() && res[v]) {
+            mine_all.push_back(v);
+          }
+        }
+      }
+    }
     Step st{stn.add_node(), 0, d};
     step_of.push_back(k);
     if (durative) {
@@ -497,34 +671,21 @@ std::optional<Plan> schedule(
     if (!happen(st.start, k, at_start) || (durative && !happen(st.end, k, at_end))) {
       return std::nullopt;
     }
-    steps.push_back(st);
-  }
-  Plan plan;
-  plan.temporal = true;
-  for (uint32_t k = 0; k < actions.size(); ++k) {
-    uint32_t a = actions[k];
-    PlanStep step;
-    step.time = stn.earliest(steps[k].start);
-    step.duration = steps[k].duration;
-    if (a >= compressed.instant) {
-      const auto & da = original.durative_actions[a - compressed.instant];
-      step.name = original.durative_action_names.at(da.schema);
-      for (auto o : da.args) {
-        step.args.push_back(original.object_names.at(o.index()));
-      }
-    } else {
-      const auto & ia = original.actions[a];
-      step.name = original.action_names.at(ia.schema);
-      for (auto o : ia.args) {
-        step.args.push_back(original.object_names.at(o.index()));
+    for (auto v : mine_all) {
+      for (Stn::Node p : res_all[v]) {
+        if (step_of[p] != k && !stn.at_least(p, st.start, epsilon)) {
+          return std::nullopt;
+        }
       }
     }
-    plan.steps.push_back(std::move(step));
+    for (auto v : mine_all) {
+      res_starts[v].push_back(st.start);
+      res_all[v].push_back(st.start);
+      res_all[v].push_back(st.end);
+    }
+    steps.push_back(st);
   }
-  std::stable_sort(
-    plan.steps.begin(), plan.steps.end(),
-    [](const PlanStep & x, const PlanStep & y) {return x.time < y.time;});
-  return plan;
+  return plan_of(steps.size());
 }
 
 }  // namespace kairos::temporal

@@ -59,6 +59,9 @@ struct ValidationReport
   double makespan = 0.0;
   std::optional<double> metric;         // value of the problem :metric, if any and valid
   std::map<std::string, uint32_t> violated_preferences;  // name -> times violated
+  /// @brief When invalid: the plan step (index into plan.steps) whose happening failed, if
+  /// the failure is at one (not a timed initial literal, the goal or the input)
+  std::optional<size_t> failed_step;
 
   bool valid() const {return status == ValidationStatus::Valid;}
 };

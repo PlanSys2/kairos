@@ -20,6 +20,7 @@
 #define KAIROS__TEMPORAL__COMPRESS_HPP_
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <vector>
 
@@ -59,10 +60,17 @@ Compressed compress(const sas::Task & task);
  * of that partial order gives the least makespan for it. `actions` must be a plan of the
  * compressed task (as the search gives them: preconditions are not checked again); nullopt if
  * a step cannot be replayed or scheduled.
+ *
+ * With `prefix_valid` (whether the steps placed so far form a valid plan, goal aside): resources
+ * (numeric variables only increased or decreased by constants, as capacity borrowed at start
+ * and given back at end) do not order happenings by themselves. Each step that touches one is
+ * placed without those orderings when the plan so far stays valid, and with them otherwise:
+ * steps overlap as far as the capacities allow (umts: a makespan of 922 became ~530).
  */
 std::optional<Plan> schedule(
   const sas::Task & original, const Compressed & compressed, state::StateSpace & space,
-  const std::vector<uint32_t> & actions, double epsilon);
+  const std::vector<uint32_t> & actions, double epsilon,
+  const std::function<bool(const Plan &)> & prefix_valid = {});
 
 }  // namespace kairos::temporal
 

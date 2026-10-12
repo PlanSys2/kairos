@@ -668,24 +668,32 @@ private:
 
   // A plan of a phase: validated against the original task; only better ones (by the metric,
   // or the makespan or length) are kept and handed over
-  void offer(
-    std::optional<Plan> plan, const std::vector<uint32_t> & actions, const sas::Task & from)
+  // Tentative: an invalid plan is not an error (false: the caller has another one). True
+  // when the plan was valid, kept or not
+  bool offer(
+    std::optional<Plan> plan, const std::vector<uint32_t> & actions, const sas::Task & from,
+    bool tentative = false)
   {
     if (!plan) {
-      ++invalid_;
-      log_.error(LogChannel::Orchestrator, "internal error: a plan could not be scheduled");
-      return;
+      if (!tentative) {
+        ++invalid_;
+        log_.error(LogChannel::Orchestrator, "internal error: a plan could not be scheduled");
+      }
+      return false;
     }
     ValidateOptions vo;
     vo.epsilon = o_.epsilon;
     auto report = val::validate(in_.domain, in_.domain_model, in_.problem, in_.problem_model,
       *plan, vo);
     if (!report.valid()) {
+      if (tentative) {
+        return false;
+      }
       ++invalid_;
       log_.error(
         LogChannel::Orchestrator, "internal error: a plan failed validation: {}",
         report.diagnostics.empty() ? std::string("?") : to_string(report.diagnostics[0]));
-      return;
+      return false;
     }
     // Without a metric: the makespan of temporal plans, the length of sequential ones
     plan->cost = report.metric ? *report.metric :
@@ -696,7 +704,7 @@ private:
     if (res_.plan && res_.plan->cost &&
       (minimize ? *plan->cost >= *res_.plan->cost : *plan->cost <= *res_.plan->cost))
     {
-      return;  // cheaper for the search, not better by the metric
+      return true;  // cheaper for the search, not better by the metric
     }
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0_);
     auto index = static_cast<uint32_t>(res_.stats.plans++);
@@ -723,6 +731,7 @@ private:
       first_only_ = true;
       internal_.request_stop();
     }
+    return true;
   }
 
   // The phases, from the task, the engine and the options (see Phase)
@@ -867,8 +876,21 @@ private:
     }
     search::PlanSink sink([&](const search::PlanSink::Entry & e) {
         if (ph.kind == Kind::Compressed) {
-          offer(temporal::schedule(*sas_, *compressed_, space, e.actions, o_.epsilon),
-            e.actions, task_k);
+          // Overlap on resources as far as the plan so far stays valid (goal aside); the plain
+          // schedule if the plan is not valid in the end (offer validates it: once)
+          auto prefix_valid = [this](const Plan & p) {
+            ValidateOptions vo;
+            vo.epsilon = o_.epsilon;
+            vo.check_goal = false;
+            return val::validate(in_.domain, in_.domain_model, in_.problem,
+                in_.problem_model, p, vo).valid();
+          };
+          if (!offer(temporal::schedule(*sas_, *compressed_, space, e.actions, o_.epsilon,
+            prefix_valid), e.actions, task_k, true))
+          {
+            offer(temporal::schedule(*sas_, *compressed_, space, e.actions, o_.epsilon),
+              e.actions, task_k);
+          }
         } else if (filter) {
           offer(filter->plan(e.actions), e.actions, task_k);
         } else {

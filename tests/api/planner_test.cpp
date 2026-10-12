@@ -1241,6 +1241,34 @@ const char * kCombat =
   "  :effect (and (at start (not (available ?r))) (at end (owned ?z)) (at end (available ?r))"
   "   (at end (increase (spent) 100)))))";
 
+TEST(PlannerApiTest, StepsOverlapAsFarAsTheResourcesAllow)
+{
+  // Each job borrows one unit of a capacity of 2 while it runs (umts's pattern): two at once,
+  // then the third, makespan 20; ordered by the resource alone they were one after another (30)
+  const char * domain =
+    "(define (domain r) (:requirements :typing :durative-actions :fluents) (:types job)"
+    " (:predicates (todo ?j - job) (done ?j - job)) (:functions (used) (cap))"
+    " (:durative-action work :parameters (?j - job) :duration (= ?duration 10)"
+    "  :condition (and (at start (todo ?j)) (at start (<= (+ (used) 1) (cap))))"
+    "  :effect (and (at start (not (todo ?j))) (at start (increase (used) 1))"
+    "   (at end (decrease (used) 1)) (at end (done ?j)))))";
+  auto with_cap = [&](int cap) {
+      return problem(domain, "(define (problem p) (:domain r) (:objects a b c - job)"
+               " (:init (todo a) (todo b) (todo c) (= (used) 0) (= (cap) " +
+               std::to_string(cap) + ")) (:goal (and (done a) (done b) (done c))))");
+    };
+  SolveOptions o = quick();
+  o.anytime = false;
+  o.threads = 1;
+  for (auto [cap, makespan] : {std::pair{1, 30.0}, std::pair{2, 20.0}, std::pair{3, 10.0}}) {
+    Problem p = with_cap(cap);
+    SolveResult r = Planner().solve(p, o);
+    ASSERT_EQ(r.status, Status::Solved) << cap;
+    EXPECT_TRUE(validate(p, *r.plan).valid()) << cap;
+    EXPECT_NEAR(r.plan->makespan(), makespan, 0.01) << cap;
+  }
+}
+
 TEST(PlannerApiTest, MetricOfEurosPlusTime)
 {
   // spent + 10 * total-time: flying costs 100 euros and 1 s (110), walking 0 euros and 2 s

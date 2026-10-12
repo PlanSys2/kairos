@@ -1568,6 +1568,7 @@ public:
 private:
   [[noreturn]] void fail(const std::string & code, const std::string & message, uint32_t line)
   {
+    report_.failed_step = current_;
     report_.diagnostics.push_back(
       Diagnostic::error(code, message,
       SourceLocation{w_.options.plan_filename, line, 0}));
@@ -1598,6 +1599,7 @@ private:
   World & w_;
   const Plan & plan_;
   ValidationReport & report_;
+  std::optional<size_t> current_;  // the step whose happening is being checked
   std::vector<StepInfo> steps_;
   std::vector<size_t> running_;  // durative steps started and not ended
   State state_;
@@ -1620,6 +1622,7 @@ void Validator::resolve_steps()
   for (size_t i = 0; i < plan_.steps.size(); ++i) {
     const PlanStep & ps = plan_.steps[i];
     StepInfo & s = steps_[i];
+    current_ = i;
     s.step = &ps;
     s.index = i + 1;
     auto a = actions.find(ps.name);
@@ -1875,6 +1878,7 @@ void Validator::run()
   }
   record_ = w_.domain.constraints.valid() || w_.problem.constraints.valid();
   resolve_steps();
+  current_.reset();
   initial_state();
   record_trajectory();
   check_global_constraints(state_, "in the initial state");
@@ -1957,6 +1961,7 @@ void Validator::run()
         continue;
       }
       StepInfo & s = steps_[ev.index];
+      current_ = ev.index;
       Bindings b = s.bindings;
       try {
         if (!s.durative) {
@@ -2013,6 +2018,8 @@ void Validator::run()
         return what + step_name(steps_[ev.index]);
       };
     auto line_of = [&](const EventInfo & ev) {
+        // (the step a failure is reported at, when it is one)
+        current_ = ev.kind == EventInfo::Kind::Til ? std::nullopt : std::optional<size_t>(ev.index);
         return ev.kind == EventInfo::Kind::Til ? 0u : steps_[ev.index].step->line;
       };
     for (size_t x = 0; x < group.size(); ++x) {
@@ -2275,6 +2282,7 @@ bool Validator::constraint(FormulaId id, Evaluator & ev, Bindings & b)
 
 void Validator::finish()
 {
+  current_.reset();  // the goal and the metric are no step's
   report_.makespan = makespan_;
   const auto & p = w_.problem;
   if (p.goal.valid() && w_.options.check_goal) {
