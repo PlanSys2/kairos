@@ -71,7 +71,9 @@ const char * kUsage =
   "  --format ipc|popf|json  plan format (default ipc; popf on stdout: only the best plan)\n"
   "  --output FILE           write plans to FILE (anytime: FILE.1, FILE.2, ...)\n"
   "  --memory MB             memory limit (default: half of what is available)\n"
-  "  --threads N  --epsilon E  --seed N\n"
+  "  --threads N             phases of the search at once (default: the cores, up to 4;\n"
+  "                          1 for reproducible runs)\n"
+  "  --epsilon E  --seed N\n"
   "  --target-cost C         stop at a plan this good\n"
   "  --no-improvement S      stop when no better plan comes in S seconds\n"
   "  -v                      progress and statistics on stderr\n"
@@ -350,8 +352,11 @@ int solve_command(const Args & a)
   if (auto m = number(a, "--memory", error)) {
     o.memory_limit_mb = static_cast<size_t>(*m);
   }
+  // The phases of the search at once: up to 4 threads, never more than the cores (the library
+  // keeps 1 unless asked; Kairos uses no more threads than phases)
+  o.threads = std::clamp(std::thread::hardware_concurrency(), 1u, 4u);
   if (auto t = number(a, "--threads", error)) {
-    o.threads = static_cast<unsigned>(*t);
+    o.threads = std::max(1u, static_cast<unsigned>(*t));
   }
   if (auto e = number(a, "--epsilon", error)) {
     o.epsilon = *e;

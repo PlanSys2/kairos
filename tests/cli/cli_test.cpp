@@ -708,6 +708,17 @@ TEST_F(CliTest, PrintedTemporalPlansStayValid)
   EXPECT_TRUE(contains(f.out, "[5.000]")) << f.out;
 }
 
+TEST_F(CliTest, Threads)
+{
+  // Default (the cores, up to 4), one, several; 0 is taken as 1
+  for (const char * t : {"", " --threads 0", " --threads 1", " --threads 2"}) {
+    Outcome r = run(solve_args() + " --no-anytime" + t);
+    EXPECT_EQ(r.code, 0) << t << ": " << r.err;
+    EXPECT_TRUE(contains(r.out, "(move r1 corridor hall)")) << t;
+  }
+  EXPECT_TRUE(contains(run("--help").out, "--threads N"));
+}
+
 TEST_F(CliTest, PlansSuaveInMilliseconds)
 {
   // The PlanSys2 example with derived predicates, end to end in the executable

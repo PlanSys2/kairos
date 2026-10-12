@@ -163,7 +163,7 @@ stdout instead. Without a plan, stdout is empty.
 | [`--format`](#--format-ipcpopfjson) | `ipc` `popf` `json` (`ipc`) | plan format |
 | [`--output`](#--output-file) | file (stdout) | write plans to files |
 | [`--memory`](#--memory-mb) | MB (half of what is available) | memory limit |
-| [`--threads`](#--threads-n) | count (1) | reserved: one thread is used |
+| [`--threads`](#--threads-n) | count (cores, up to 4) | phases of the search at once |
 | [`--epsilon`](#--epsilon-e) | seconds (0.001) | separation between interfering happenings |
 | [`--seed`](#--seed-n) | integer (0) | reserved: no effect yet |
 | [`--target-cost`](#--target-cost-c) | number (none) | stop at a plan this good |
@@ -382,11 +382,26 @@ With `-v` the limit in use is logged: `[memory] memory limit 22469 MB`.
 
 #### `--threads N`
 
-Accepted for the future. Today Kairos always searches with one thread; with `N > 1` it says so:
+How many phases of the search run at once. By default, the cores of the machine, up to 4;
+Kairos never uses more threads than phases, so a classical task (one phase) uses one.
+
+- With one thread the phases run one after another, sharing the time: M2 until its first plan,
+  then the M3 portfolio (`lama` 20 %, `eager-lama` 37.5 %, `lama-novelty` the rest); numeric
+  tasks `lama` then `lama-novelty`. Runs are reproducible.
+- With several, the phases start together and each has the whole time: the first plan comes
+  from whichever finds one first, and the one that improves it best has all the time. A phase
+  that proves there is no plan, or that its plan is optimal, stops the others. Which phase
+  finds a plan first depends on the machine and its load, so runs may differ.
+- The memory limit (`--memory`) is shared by all the threads.
+
+Measured on the IPC temporal suite (225 problems, 30 s): 172 solved with one thread, 180 with
+three, with better plans (see [benchmark.md](benchmark.md)).
 
 ```console
-$ kairos domain.pddl problem.pddl --threads 4 > /dev/null
-note: parallel search is not available yet: using one thread [orchestrator.threads]
+$ kairos factory.pddl factory_problem_1.pddl --threads 1 --timeout 20 | grep makespan | tail -1
+; makespan = 70.010
+$ kairos factory.pddl factory_problem_1.pddl --threads 3 --timeout 20 | grep makespan | tail -1
+; makespan = 54.008
 ```
 
 #### `--epsilon E`

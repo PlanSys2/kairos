@@ -728,6 +728,108 @@ TEST(PlannerApiTest, DumpsIntermediateStructures)
   fs::remove_all(only);
 }
 
+// --- Several threads (phases at once) ---------------------------------------------------------
+
+Problem example(const std::string & domain, const std::string & problem_file)
+{
+  auto d = load_domain(fs::path(KAIROS_EXAMPLES_DIR) / domain);
+  EXPECT_TRUE(d.ok());
+  auto p = load_problem(fs::path(KAIROS_EXAMPLES_DIR) / problem_file, *d);
+  EXPECT_TRUE(p.ok());
+  return *p;
+}
+
+TEST(PlannerApiTest, PhasesInParallel)
+{
+  // The factory: M2 first, then the M3 portfolio; with three threads they all run at once
+  Problem p = example("factory.pddl", "factory_problem_1.pddl");
+  SearchOptions o;
+  o.timeout = 60s;
+  o.threads = 3;
+  o.target_cost = 70.1;
+  std::mutex mutex;
+  std::vector<uint32_t> indices;
+  std::vector<double> costs;
+  SolveResult r = Planner().start(p, o, [&](const PlanUpdate & u) {
+        std::lock_guard<std::mutex> lock(mutex);
+        indices.push_back(u.index);
+        costs.push_back(*u.plan.cost);
+      }).wait();
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_EQ(r.stop_reason, StopReason::TargetReached);
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+  // Delivered in order, numbered without gaps, each better than the one before
+  ASSERT_FALSE(indices.empty());
+  for (size_t i = 0; i < indices.size(); ++i) {
+    EXPECT_EQ(indices[i], i);
+    if (i > 0) {
+      EXPECT_LT(costs[i], costs[i - 1]);
+    }
+  }
+  EXPECT_EQ(r.stats.plans, indices.size());
+}
+
+TEST(PlannerApiTest, AProofInOneThreadStopsTheOthers)
+{
+  // Numeric, so two phases (lazy LAMA, then LAMA with novelty): 0, 2, 4, 6 never makes 3
+  const char * domain =
+    "(define (domain c) (:requirements :fluents) (:predicates (go)) (:functions (x))"
+    " (:action inc :parameters () :precondition (and (go) (< (x) 6))"
+    "  :effect (increase (x) 2)))";
+  Problem p = problem(domain,
+      "(define (problem q) (:domain c) (:init (go) (= (x) 0)) (:goal (= (x) 3)))");
+  SolveOptions o = quick();
+  for (unsigned threads : {1u, 2u, 16u}) {
+    o.threads = threads;
+    auto start = std::chrono::steady_clock::now();
+    SolveResult r = Planner().solve(p, o);
+    EXPECT_EQ(r.status, Status::Unsolvable) << threads;
+    EXPECT_LT(std::chrono::steady_clock::now() - start, 5s) << threads;
+  }
+}
+
+TEST(PlannerApiTest, StoppingSeveralThreads)
+{
+  // Pigeons that never fit: every phase searches until stopped
+  Problem p = problem(kHoles, holes_problem(12, 11));
+  SearchOptions o;
+  o.timeout = 60s;
+  o.threads = 4;
+  o.search = "auto";
+  Search s = Planner().start(p, o);
+  std::this_thread::sleep_for(200ms);
+  auto start = std::chrono::steady_clock::now();
+  s.stop();
+  SolveResult r = s.wait();
+  EXPECT_LT(std::chrono::steady_clock::now() - start, 2s);
+  EXPECT_EQ(r.status, Status::Cancelled);
+}
+
+TEST(PlannerApiTest, LogFromSeveralThreads)
+{
+  // The callback is called by one thread at a time
+  Problem p = example("factory.pddl", "factory_problem_1.pddl");
+  SolveOptions o;
+  o.timeout = 3s;
+  o.threads = 4;
+  std::atomic<int> inside{0};
+  std::atomic<bool> overlap{false};
+  std::atomic<int> messages{0};
+  o.log.level = LogLevel::Info;
+  o.log.callback = [&](LogLevel, LogChannel, std::string_view) {
+      if (inside.fetch_add(1) > 0) {
+        overlap = true;
+      }
+      std::this_thread::sleep_for(std::chrono::microseconds(50));
+      ++messages;
+      inside.fetch_sub(1);
+    };
+  SolveResult r = Planner().solve(p, o);
+  EXPECT_EQ(r.status, Status::Solved);
+  EXPECT_GT(messages.load(), 5);
+  EXPECT_FALSE(overlap);
+}
+
 TEST(PlannerApiTest, OneProblemFromSeveralThreads)
 {
   Problem p = problem(kRoutes, kRoutesProblem);

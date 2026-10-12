@@ -30,7 +30,7 @@ in [docs/benchmark.md](docs/benchmark.md)):
 | Suite | Kairos | Best of the others |
 |---|---:|---|
 | Robotics examples (11) | **11** | OPTIC 8 |
-| Temporal, IPC 2002-2014 (225) | **172** | LPG-td 125, TFD 110, OPTIC 107, POPF 104 |
+| Temporal, IPC 2002-2014 (225) | **172** (**180** with 3 threads) | LPG-td 125, TFD 110, OPTIC 107, POPF 104 |
 | Required concurrency, temporal numeric (55) | **32** | POPF 24, TFD 24, OPTIC 17 |
 | Numeric, IPC 2002/2023/2026 (420) | **252** | ENHSP 103, Metric-FF 57 |
 | Classical, IPC 1998-2023 (220) | 120 | LAMA (Fast Downward) **151** |

@@ -267,7 +267,7 @@ public:
   Run(
     const Input & in, const SearchOptions & options, std::stop_token stop,
     const PlanCallback & on_plan)
-  : in_(in), o_(options), on_plan_(on_plan), t0_(Clock::now()), log_(options.log),
+  : in_(in), o_(options), on_plan_(on_plan), t0_(Clock::now()), log_(log_options(options)),
     forward_(std::move(stop), ForwardStop{&internal_})
   {
   }
@@ -294,6 +294,26 @@ public:
   }
 
 private:
+  // With several threads, the caller's log callback is called by one at a time
+  static LogOptions log_options(const SearchOptions & o)
+  {
+    LogOptions lo = o.log;
+    if (o.threads > 1 && lo.callback) {
+      auto mutex = std::make_shared<std::mutex>();
+      lo.callback = [mutex, cb = lo.callback](LogLevel l, LogChannel c, std::string_view m) {
+          std::lock_guard<std::mutex> lock(*mutex);
+          cb(l, c, m);
+        };
+    }
+    return lo;
+  }
+
+  bool has_plan()
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return res_.plan.has_value();
+  }
+
   SolveResult finish(Status status, StopReason reason)
   {
     res_.status = status;
@@ -330,10 +350,6 @@ private:
       res_.diagnostics.push_back(Diagnostic::error(
           "orchestrator.unknown_search", "unknown search configuration '" + o_.search + "'"));
       return finish(Status::InvalidInput, StopReason::Exhausted);
-    }
-    if (o_.threads > 1) {
-      res_.diagnostics.push_back(Diagnostic::note(
-          "orchestrator.threads", "parallel search is not available yet: using one thread"));
     }
     // Budget: the caller's stop token, the timeout and the memory limit
     size_t memory = o_.memory_limit_mb ? o_.memory_limit_mb * (size_t{1} << 20) :
@@ -529,22 +545,20 @@ private:
     plan->cost = report.metric ? *report.metric :
       (plan->temporal ? plan->makespan() : static_cast<double>(plan->steps.size()));
     bool minimize = !in_.problem.metric || sas_->metric.minimize;
-    uint32_t index;
-    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0_);
+    // Kept and handed over under the lock: with several threads, in order and numbered
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (res_.plan && res_.plan->cost &&
+      (minimize ? *plan->cost >= *res_.plan->cost : *plan->cost <= *res_.plan->cost))
     {
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (res_.plan && res_.plan->cost &&
-        (minimize ? *plan->cost >= *res_.plan->cost : *plan->cost <= *res_.plan->cost))
-      {
-        return;  // cheaper for the search, not better by the metric
-      }
-      index = static_cast<uint32_t>(res_.stats.plans++);
-      res_.plan = *plan;
-      best_actions_ = actions;
-      best_task_ = &from;
-      if (!res_.stats.first_plan_ms) {
-        res_.stats.first_plan_ms = ms_since(t0_);
-      }
+      return;  // cheaper for the search, not better by the metric
+    }
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0_);
+    auto index = static_cast<uint32_t>(res_.stats.plans++);
+    res_.plan = *plan;
+    best_actions_ = actions;
+    best_task_ = &from;
+    if (!res_.stats.first_plan_ms) {
+      res_.stats.first_plan_ms = ms_since(t0_);
     }
     last_plan_ = elapsed.count();
     log_.info(
@@ -719,6 +733,7 @@ private:
     // (150 ms -> 0.7 s), real costs lost temporal numeric instances (transport, rovers)
     ao.plus_one_first = has_numeric_conditions(task_k);
     auto result = search::anytime(ctx, ao);
+    std::lock_guard<std::mutex> lock(mutex_);
     stats_.expanded += ctx.stats.expanded;
     stats_.generated += ctx.stats.generated;
     stats_.evaluated += ctx.stats.evaluated;
@@ -732,11 +747,71 @@ private:
     return result;
   }
 
+  // With several threads: the phases at once, each with the whole budget (a pool of
+  // options.threads threads takes them in order). A proof or an optimum stops the others.
+  // Not deterministic: which phase finds a plan first depends on the machine.
+  void run_phases_parallel()
+  {
+    std::vector<search::AnytimeResult> results(phases_.size(), search::AnytimeResult::Failed);
+    std::atomic<size_t> next{0};
+    std::atomic<bool> optimal{false};
+    auto worker = [&]() {
+        for (size_t k; (k = next++) < phases_.size(); ) {
+          const Phase & ph = phases_[k];
+          if (budget_->check() != BudgetState::Ok || target_reached_ || no_improvement_) {
+            return;
+          }
+          if (ph.only_without_plan && has_plan()) {
+            continue;
+          }
+          auto result = run_phase(ph, true);
+          results[k] = result;
+          if (result == search::AnytimeResult::Exhausted && !has_plan()) {
+            bool proof = ph.kind == Kind::Plain ||
+              (ph.kind == Kind::Compressed && m2_complete_);
+            (proof ? proof_ : m3_exhausted_) = true;
+            internal_.request_stop();
+          }
+          if (result == search::AnytimeResult::ProvenOptimal && ph.kind == Kind::Plain) {
+            optimal = true;
+            internal_.request_stop();
+          }
+        }
+      };
+    {
+      std::vector<std::jthread> pool;
+      for (unsigned i = 0; i < std::min<size_t>(o_.threads, phases_.size()); ++i) {
+        pool.emplace_back(worker);
+      }
+    }
+    // As the sequential loop would see it: an optimum, else a phase that exhausted its space,
+    // else a stop, else how the last phase ended
+    outcome_ = results.empty() ? search::AnytimeResult::Failed : results.back();
+    auto any = [&](search::AnytimeResult r) {
+        return std::find(results.begin(), results.end(), r) != results.end();
+      };
+    if (optimal) {
+      outcome_ = search::AnytimeResult::ProvenOptimal;
+    } else if (any(search::AnytimeResult::Exhausted)) {
+      outcome_ = search::AnytimeResult::Exhausted;
+    } else if (any(search::AnytimeResult::Stopped)) {
+      outcome_ = search::AnytimeResult::Stopped;
+    }
+  }
+
   // The phases in order, until the budget, a target, no improvement or a proof
   void run_phases()
   {
     best_task_ = &search_task();
     start_watchdog();
+    if (o_.threads > 1 && phases_.size() > 1) {
+      run_phases_parallel();
+      if (watchdog_.joinable()) {
+        watchdog_.request_stop();
+        watchdog_.join();
+      }
+      return;
+    }
     for (size_t k = 0; k < phases_.size(); ++k) {
       const Phase & ph = phases_[k];
       if (budget_->check() != BudgetState::Ok || target_reached_ || no_improvement_) {
@@ -864,8 +939,8 @@ private:
   search::SearchStats stats_;
   size_t states_ = 0;
   double bytes_per_state_ = 0.0;
-  bool proof_ = false;        // a complete phase exhausted its space without a plan
-  bool m3_exhausted_ = false;
+  std::atomic<bool> proof_{false};  // a complete phase exhausted its space without a plan
+  std::atomic<bool> m3_exhausted_{false};
 };
 
 }  // namespace

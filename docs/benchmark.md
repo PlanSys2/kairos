@@ -13,7 +13,7 @@ Problems solved in 30 s with 3 GB per problem; every plan checked by Kairos's va
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Robotics examples (11) | **11** | 8 | 5 | 6 | 2 | | | |
 | B2: required concurrency, temporal numeric (55) | **32** | 17 | 24 | 24 | 0 | | | |
-| B1: temporal, IPC 2002-2014 (225) | **172** | 107 | 110 | 104 | 125 | | | |
+| B1: temporal, IPC 2002-2014 (225) | **172** (**180** with 3 threads) | 107 | 110 | 104 | 125 | | | |
 | B3: numeric, IPC 2002/2023/2026 (420) | **252** | | | | | 103 | 57 | |
 | Classical, IPC 1998-2023 (220) | 120 | | | | | | | **151** |
 
@@ -37,7 +37,8 @@ planner does not handle that kind of problem, or was not run on it.
   exceed them), one CPU per planner.
 - **Kairos**: the release build of the command (`kairos DOMAIN PROBLEM --timeout 30 --memory
   3072`), anytime: its result is the best plan found within the time. Its first-plan time is
-  its agile time.
+  its agile time. One thread (`--threads 1`) unless a row says otherwise: the command uses up
+  to 4 by default (its search phases at once), while the other planners use one core each.
 - **Other planners**: planutils 0.10.25 (https://github.com/AI-Planning/planutils) in a
   container: OPTIC, TFD (Temporal Fast Downward), POPF, LPG-td (`-quality`), ENHSP-2020
   (`-planner sat-hmrphj`), Metric-FF and LAMA (Fast Downward). Their time is measured inside the
@@ -179,3 +180,5 @@ Domains where another planner solves more than Kairos:
 | 2026-10-11 | `023fe98` | 161 | 32 | 252 | 120 | First comparison with the planners of planutils |
 | 2026-10-12 | `cf886fc` | 172 | 32 | 252 | 120 | Novelty memory cap, unit costs for the first plan of M2, FF when LAMA has no plan |
 | 2026-10-12 | step 18 | 172 | 32 | 252 | 120 | Duration inequalities and continuous effects (battery patrol examples: 3 more robotics problems, all solved); cost + 1 for the first plan of temporal numeric tasks |
+| 2026-10-12 | step 19, 1 thread | 172 | 32 | 252 | 120 | Phases of the search in parallel; with one thread nothing changes |
+| 2026-10-12 | step 19, 3 threads | **180** | 32 | | | The phases at once, each with the whole time: 8 more temporal problems, better plans (quality 166 -> 180), first plans in B2 much sooner (agile 19 -> 31) |
