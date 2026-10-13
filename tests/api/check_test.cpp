@@ -132,6 +132,8 @@ TEST(CheckApiTest, SupportOfEveryFeature)
   EXPECT_EQ(level("durative-actions"), SupportLevel::Full);
   EXPECT_EQ(level("continuous-effects"), SupportLevel::Partial);
   EXPECT_EQ(level("processes"), SupportLevel::None);
+  EXPECT_EQ(level("preferences"), SupportLevel::Partial);
+  EXPECT_EQ(level("trajectory-constraints"), SupportLevel::Partial);
   EXPECT_EQ(to_string(SupportLevel::Partial), "partial");
 }
 

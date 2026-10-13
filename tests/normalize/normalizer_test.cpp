@@ -417,14 +417,143 @@ TEST(NormalizeTest, InitialStateAndTimedEvents)
   EXPECT_TRUE(t.timed_events[2].fluent.has_value());
 }
 
-TEST(NormalizeTest, PreferencesAreSetAside)
+TEST(NormalizeTest, PreferencesAreCompiled)
 {
   auto n = normalize_text(domain_with(
-      "(:action act :parameters (?x - item) :precondition (and (p ?x) (preference pp (q ?x))))"),
-    "(define (problem p) (:domain d) (:objects a - item) (:goal (and (z) (preference g1 (p a)))))");
-  EXPECT_TRUE(n->task.has_soft_goals);
-  EXPECT_EQ(cond(n->task, n->task.actions[0].precondition, n->task.actions[0].variables),
-    "(p ?x)");
+      "(:action act :parameters (?x - item) :precondition (and (p ?x) (preference pp (q ?x)))"
+      " :effect (z))"),
+    "(define (problem p) (:domain d) (:objects a b - item)"
+    " (:goal (and (z) (preference g1 (p a)) (forall (?y - item) (preference g2 (q ?y)))))"
+    " (:metric minimize (+ (* 2 (is-violated pp)) (* 3 (is-violated g1)) (is-violated g2))))");
+  const Task & t = n->task;
+  EXPECT_FALSE(t.has_soft_goals);
+  std::vector<std::string> names;
+  for (const auto & a : t.actions) {
+    names.push_back(a.name);
+  }
+  EXPECT_EQ(names, (std::vector<std::string>{"act", "act", "kairos-pref-end",
+      "kairos-pref-collect-0", "kairos-pref-forgo-0", "kairos-pref-collect-1",
+      "kairos-pref-forgo-1"}));
+  // The precondition preference: satisfied, or violated and counted; none after the end
+  EXPECT_EQ(cond(t, t.actions[0].precondition, t.actions[0].variables),
+    "(and (p ?x) (q ?x) (not (kairos-pref-ended)))");
+  EXPECT_EQ(cond(t, t.actions[1].precondition, t.actions[1].variables),
+    "(and (p ?x) (not (q ?x)) (not (kairos-pref-ended)))");
+  EXPECT_EQ(t.actions[0].effects.size(), 1u);
+  ASSERT_EQ(t.actions[1].effects.size(), 2u);
+  const Effect & count = t.actions[1].effects[1];
+  EXPECT_EQ(count.kind, Effect::Kind::Numeric);
+  EXPECT_EQ(count.op, kairos::ast::AssignOp::Increase);
+  EXPECT_EQ(t.function_names[count.function.index()], "kairos-violated-pp");
+  // The end after the hard goal; collect if it holds, forgo and count
+  EXPECT_EQ(cond(t, t.actions[2].precondition, t.actions[2].variables),
+    "(and (z) (not (kairos-pref-ended)))");
+  EXPECT_EQ(cond(t, t.actions[3].precondition, t.actions[3].variables),
+    "(and (kairos-pref-ended) (not (kairos-pref-done-0)) (p a))");
+  EXPECT_EQ(t.actions[5].parameters, 1u);
+  EXPECT_EQ(cond(t, t.actions[6].precondition, t.actions[6].variables),
+    "(and (kairos-pref-ended) (not (kairos-pref-done-1 ?y)))");
+  EXPECT_EQ(t.actions[6].effects.size(), 2u);
+  // Goal: the end and every instance done (one per object of the forall)
+  EXPECT_EQ(cond(t, t.goal, {}),
+    "(and (kairos-pref-ended) (kairos-pref-done-0) (kairos-pref-done-1 a)"
+    " (kairos-pref-done-1 b))");
+  // The metric reads the counts, which start at 0
+  EXPECT_EQ(t.metric.expr.op, ExprOp::Add);
+  size_t counts = 0;
+  for (const auto & f : t.init_fluents) {
+    if (t.function_names[f.function.index()].starts_with("kairos-violated-")) {
+      ++counts;
+      EXPECT_EQ(f.number, 0.0);
+    }
+  }
+  EXPECT_EQ(counts, 3u);
+}
+
+TEST(NormalizeTest, PreferencesNotCompiledAreSoft)
+{
+  // Inside a disjunction or unnamed: they count for nothing, as before
+  auto nested = normalize_text(domain_with(
+      "(:action act :parameters (?x - item) :precondition (or (p ?x) (preference pp (q ?x))))"),
+    "(define (problem p) (:domain d) (:objects a - item) (:goal (and (z) (preference (p a)))))");
+  EXPECT_TRUE(nested->task.has_soft_goals);
+  EXPECT_EQ(nested->task.actions.size(), 2u);  // the disjunction, no copies
+  EXPECT_EQ(cond(nested->task, nested->task.goal, {}), "(z)");
+  // More than four in one precondition: one copy, not 32
+  auto many = normalize_text(domain_with(
+      "(:action act :parameters (?x - item) :precondition (and (preference a1 (p ?x))"
+      " (preference a2 (q ?x)) (preference a3 (p ?x)) (preference a4 (q ?x))"
+      " (preference a5 (p ?x))))"), kProblem);
+  EXPECT_TRUE(many->task.has_soft_goals);
+  EXPECT_EQ(many->task.actions.size(), 1u);
+  // Four: every choice
+  auto four = normalize_text(domain_with(
+      "(:action act :parameters (?x - item) :precondition (and (preference a1 (p ?x))"
+      " (preference a2 (q ?x)) (preference a3 (z)) (preference a4 (= (g) 1))))"), kProblem);
+  EXPECT_FALSE(four->task.has_soft_goals);
+  EXPECT_EQ(four->task.actions.size(), 16u);
+  // A forall goal that is not only preferences: the hard goal keeps it
+  auto mixed = normalize_text(domain_with(""),
+      "(define (problem p) (:domain d) (:objects a - item)"
+      " (:goal (forall (?y - item) (and (p ?y) (preference g (q ?y))))))");
+  EXPECT_TRUE(mixed->task.has_soft_goals);
+  EXPECT_EQ(mixed->task.actions.size(), 0u);
+}
+
+TEST(NormalizeTest, PreferenceInstancesThatStaticFactsSatisfyAreLeftOut)
+{
+  // r never changes: (imply (r ?x ?y) (p ?x)) holds for good unless r holds, here only for
+  // (a, b); one instance of nine, the only one with a goal and actions
+  std::string domain = domain_with(
+    "(:action act :parameters (?x - item) :precondition (q ?x) :effect (p ?x))");
+  auto n = normalize_text(domain,
+      "(define (problem p) (:domain d) (:objects a b c - item) (:init (r a b) (q a))"
+      " (:goal (and (z) (forall (?x ?y - item) (preference g (imply (r ?x ?y) (p ?x))))))"
+      " (:metric minimize (is-violated g)))");
+  const Task & t = n->task;
+  EXPECT_EQ(cond(t, t.goal, {}), "(and (kairos-pref-ended) (kairos-pref-done-0 a b))");
+  size_t relevant = 0;
+  for (const auto & [pred, args] : t.init_facts) {
+    relevant += t.predicate_names[pred.index()] == "kairos-pref-relevant-0";
+  }
+  EXPECT_EQ(relevant, 1u);
+  // With no r at all every instance holds: no goal, no actions, and 0 in the metric
+  auto none = normalize_text(domain,
+      "(define (problem p) (:domain d) (:objects a b c - item) (:init (q a))"
+      " (:goal (and (z) (forall (?x ?y - item) (preference g (imply (r ?x ?y) (p ?x))))))"
+      " (:metric minimize (is-violated g)))");
+  EXPECT_EQ(cond(none->task, none->task.goal, {}), "(kairos-pref-ended)");
+  EXPECT_EQ(none->task.actions.size(), 2u);  // act, kairos-pref-end
+  EXPECT_EQ(none->task.metric.expr.op, ExprOp::Fluent);
+  // Equality decides too: (not (= ?x ?y)) instances where x = y hold
+  auto eq = normalize_text(domain,
+      "(define (problem p) (:domain d) (:objects a b - item)"
+      " (:goal (and (z) (forall (?x ?y - item) (preference g (or (= ?x ?y) (p ?x)))))))");
+  EXPECT_EQ(cond(eq->task, eq->task.goal, {}),
+    "(and (kairos-pref-ended) (kairos-pref-done-0 a b) (kairos-pref-done-0 b a))");
+}
+
+TEST(NormalizeTest, DurativePreferencesCountWhenTheyAreRead)
+{
+  auto n = normalize_text(
+    "(define (domain d) (:requirements :typing :durative-actions :preferences :fluents)"
+    " (:predicates (p) (q) (z))"
+    " (:durative-action act :parameters () :duration (= ?duration 2)"
+    "  :condition (and (at start (preference s (p))) (over all (preference o (q))))"
+    "  :effect (at end (z))))",
+    "(define (problem p) (:domain d) (:goal (and (z) (preference g (p))))"
+    " (:metric minimize (+ (is-violated s) (is-violated o) (is-violated g))))");
+  const Task & t = n->task;
+  ASSERT_EQ(t.durative_actions.size(), 4u);
+  // Both violated: counted at start and at the end
+  const DurativeAction & both = t.durative_actions[3];
+  ASSERT_EQ(both.effects.size(), 3u);
+  EXPECT_EQ(both.effects[1].timing, Timing::Start);
+  EXPECT_EQ(both.effects[2].timing, Timing::End);
+  EXPECT_EQ(cond(t, both.over_all, both.variables), "(not (q))");
+  // Neither starts nor ends after the preferences end
+  EXPECT_EQ(cond(t, both.at_start, both.variables), "(and (not (p)) (not (kairos-pref-ended)))");
+  EXPECT_EQ(cond(t, both.at_end, both.variables), "(not (kairos-pref-ended))");
 }
 
 // --- Equivalence with the original domain, judged by the validator -----------------------

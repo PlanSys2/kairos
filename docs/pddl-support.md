@@ -4,7 +4,7 @@ Which PDDL features each planner actually plans with, checked by running it: one
 solvable domain and problem per feature, each planner with 10 s, and every plan validated by
 `kairos validate`. A cell is ✅ only if the planner returned a valid plan.
 
-Checked on 2026-10-12: Kairos (current `main`), and OPTIC, TFD, POPF, LPG-td, ENHSP-2020,
+Checked on 2026-10-12 (Kairos's PDDL3 rows on 2026-10-13): Kairos (current `main`), and OPTIC, TFD, POPF, LPG-td, ENHSP-2020,
 Metric-FF and LAMA (Fast Downward) from planutils 0.10.25. This page is updated as Kairos gains
 features; `kairos --features` prints Kairos's own table, with the limits of what it supports in
 part ([cli.md](cli.md#--features)).
@@ -29,8 +29,8 @@ part ([cli.md](cli.md#--features)).
 | Duration inequalities with `?duration` in effects | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Continuous effects (`#t`) | ✅ | ❌ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
 | Timed initial literals | ✅ | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ | ❌ |
-| Preferences (PDDL3) | ❌ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ |
-| Trajectory constraints (PDDL3) | ❌ | ✅ | ❌ | ⚠️ invalid plan | ❌ | ❌ | ❌ | ❌ |
+| Preferences (PDDL3) | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ | ❌ |
+| Trajectory constraints (PDDL3) | ✅ | ✅ | ❌ | ⚠️ invalid plan | ❌ | ❌ | ❌ | ❌ |
 | Object fluents (PDDL 3.1) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Processes (PDDL+) | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
 
@@ -38,8 +38,12 @@ part ([cli.md](cli.md#--features)).
 
 ## What Kairos does not plan with yet
 
-- **Preferences and trajectory constraints** (PDDL3): phase F4. `kairos check` reports them as
-  valid but not plannable.
+- **`always-within` in temporal plans** (PDDL3): solve answers `unsupported`. Every other
+  constraint is planned, hard or as a preference, in sequential and temporal plans
+  (`always-within` too in sequential ones). Preferences are compiled (Keyder and Geffner,
+  2009) when they are in the goal (also under `forall`), at the top of a precondition (up to
+  four per action) or over a constraint; one nested elsewhere (inside an `or`, say) counts for
+  nothing in the search, though the reported metric is always exact.
 - **Processes and events** (PDDL+): phase F5.
 - **Duration inequalities and continuous effects** are planned without a linear program: each
   duration is tried at its bounds, and a continuous change is applied at the safest instant

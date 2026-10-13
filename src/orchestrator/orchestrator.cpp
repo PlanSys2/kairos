@@ -94,9 +94,12 @@ const std::vector<Support> & support_table()
     {F::DerivedPredicates, Support::Full, "recursive ones included", ""},
     {F::TimedInitialLiterals, Support::Full, "", ""},
     {F::TimedInitialFluents, Support::Full, "", ""},
-    {F::Preferences, Support::None, "PDDL3, phase F4", "unsupported.preferences"},
-    {F::TrajectoryConstraints, Support::None, "PDDL3, phase F4",
-      "unsupported.trajectory_constraints"},
+    {F::Preferences, Support::Partial,
+      "in goals (also under forall) and at the top of preconditions; elsewhere soft, ignored",
+      ""},
+    {F::TrajectoryConstraints, Support::Partial,
+      "all, hard or as preferences, but always-within in temporal plans; in temporal plans "
+      "the timed ones are read at the happenings: every plan valid, some not found", ""},
     {F::Processes, Support::None, "PDDL+, phase F5", "unsupported.processes"},
     {F::Events, Support::None, "PDDL+, phase F5", "unsupported.events"},
     {F::GlobalConstraints, Support::None, "phase F5", "unsupported.global_constraints"},
@@ -491,6 +494,12 @@ private:
         in_.problem_model);
     res_.stats.normalize_ms = ms_since(t);
     dump(o_, "lifted", "lifted.txt", [&]() {return lifted::to_string(task);}, log_);
+    if (task.has_timed_constraints) {
+      res_.diagnostics.push_back(Diagnostic::error(
+          "unsupported.timed_constraints", "Kairos cannot plan yet with always-within in "
+          "temporal plans (trajectory constraints)"));
+      return finish(Status::Unsupported, StopReason::Exhausted);
+    }
 
     t = Clock::now();
     ground::GroundOptions go;
@@ -666,6 +675,25 @@ private:
     return costs;
   }
 
+  // The steps of compiled preferences and constraints (normalize: kairos-pref-*) are not the
+  // domain's
+  void strip_preference_steps(Plan & plan) const
+  {
+    const auto & f = in_.problem_model.features;
+    if (!f.contains(sem::Feature::Preferences) &&
+      !f.contains(sem::Feature::TrajectoryConstraints))
+    {
+      return;
+    }
+    std::erase_if(
+      plan.steps, [](const PlanStep & st) {return st.name.starts_with("kairos-pref-");});
+    if (!plan.temporal) {
+      for (size_t i = 0; i < plan.steps.size(); ++i) {
+        plan.steps[i].time = static_cast<double>(i);
+      }
+    }
+  }
+
   // A plan of a phase: validated against the original task; only better ones (by the metric,
   // or the makespan or length) are kept and handed over
   // Tentative: an invalid plan is not an error (false: the caller has another one). True
@@ -681,6 +709,7 @@ private:
       }
       return false;
     }
+    strip_preference_steps(*plan);
     ValidateOptions vo;
     vo.epsilon = o_.epsilon;
     auto report = val::validate(in_.domain, in_.domain_model, in_.problem, in_.problem_model,
@@ -698,7 +727,7 @@ private:
     // Without a metric: the makespan of temporal plans, the length of sequential ones
     plan->cost = report.metric ? *report.metric :
       (plan->temporal ? plan->makespan() : static_cast<double>(plan->steps.size()));
-    bool minimize = !in_.problem.metric || sas_->metric.minimize;
+    bool minimize = !in_.problem.metric || in_.problem.metric->minimize;  // as written
     // Kept and handed over under the lock: with several threads, in order and numbered
     std::lock_guard<std::mutex> lock(mutex_);
     if (res_.plan && res_.plan->cost &&

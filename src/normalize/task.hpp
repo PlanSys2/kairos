@@ -253,8 +253,9 @@ struct Task
   Metric metric;
 
   sem::FeatureSet features;
-  bool has_soft_goals = false;        // preferences were set aside (handled from F4)
+  bool has_soft_goals = false;        // preferences not compiled: set aside
   bool has_trajectory_constraints = false;
+  bool has_timed_constraints = false;  // within, always-within...: not compiled yet
 
   PredicateId add_predicate(
     const std::string & name, bool is_derived, std::vector<TypeSpec> params = {});

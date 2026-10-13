@@ -601,6 +601,15 @@ TemporalFilter::TemporalFilter(
 : original_(original), snap_(snap), space_(space), epsilon_(epsilon)
 {
   access_ = accesses(original, snap);
+  if (!snap.til_time.empty()) {
+    // The counter of the literals is no interference: their times order them, and two at the
+    // same instant (both at 5) must not be epsilon apart
+    sas::VarId counter = snap.task.actions[snap.tils].changes.front().var;
+    for (size_t k = snap.tils; k < snap.task.actions.size(); ++k) {
+      std::erase(access_[k].reads, counter);
+      std::erase(access_[k].writes, counter);
+    }
+  }
   if (snap.tils < snap.task.actions.size()) {
     deadlines_ = std::make_unique<Deadlines>(original, snap, epsilon);
     if (!deadlines_->active()) {
@@ -646,12 +655,6 @@ TemporalFilter::TemporalFilter(
     for (auto n : acc.num_writes) {
       til_num_writes_[n].push_back(j);
     }
-  }
-  if (!snap.til_time.empty()) {
-    // The counter orders the literals among themselves, not the other happenings
-    sas::VarId counter = snap.task.actions[snap.tils].changes.front().var;
-    til_writes_.erase(counter);
-    til_reads_.erase(counter);
   }
 }
 
@@ -860,9 +863,9 @@ bool TemporalFilter::accept(state::StateId parent, uint32_t action, state::State
   // Try the happening on the parent's STN, then undo it: each child is tried alone
   Stn::Node node;
   bool ok = add(*builder_, action, d, node, false);
+  double makespan = 0.0;
   if (ok) {
     // The makespan of the plan with it (pending ends included): for a search minimizing it
-    double makespan = 0.0;
     for (Stn::Node n = 1; n < builder_->stn.nodes(); ++n) {
       makespan = std::max(makespan, builder_->stn.earliest(n));
     }
@@ -875,12 +878,20 @@ bool TemporalFilter::accept(state::StateId parent, uint32_t action, state::State
   if (!ok) {
     return false;
   }
-  if (node_of(child) == -2) {
+  // A state keeps the first plan that reached it, or a later one that ends sooner: what it
+  // leads to not yet expanded starts earlier (with deadlines, the first one could miss them)
+  int32_t known = node_of(child);
+  if (known == -2 ||
+    (known >= 0 && makespan < nodes_[static_cast<size_t>(known)].makespan - 1e-9))
+  {
     if (node_of_.size() <= child) {
       node_of_.resize(std::max<size_t>(child + 1, node_of_.size() * 2), -2);
     }
-    nodes_.push_back(Node{node_of(parent), action, d});
+    nodes_.push_back(Node{node_of(parent), action, d, makespan});
     node_of_[child] = static_cast<int32_t>(nodes_.size() - 1);
+    if (known != -2 && child == cached_) {
+      builder_.reset();  // its STN was the old plan's
+    }
   }
   return true;
 }

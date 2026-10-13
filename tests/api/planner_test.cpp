@@ -23,6 +23,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <thread>
 #include <vector>
 
@@ -695,11 +696,16 @@ TEST(PlannerApiTest, StopTokenCancels)
   EXPECT_LT(std::chrono::steady_clock::now() - t0, 3s);
 }
 
-// AddressSanitizer's shadow memory inflates the RSS the budget watches: a larger limit there
-#if defined(__SANITIZE_ADDRESS__)
+// The sanitizers' shadow memory inflates the RSS the budget watches: a larger limit there
+// (ThreadSanitizer's the most: with 8 MB it stopped before the first expansion)
+#if defined(__SANITIZE_THREAD__)
+constexpr size_t kSearchMemoryMb = 128;
+#elif defined(__SANITIZE_ADDRESS__)
 constexpr size_t kSearchMemoryMb = 64;
 #elif defined(__has_feature)
-#if __has_feature(address_sanitizer)
+#if __has_feature(thread_sanitizer)
+constexpr size_t kSearchMemoryMb = 128;
+#elif __has_feature(address_sanitizer)
 constexpr size_t kSearchMemoryMb = 64;
 #else
 constexpr size_t kSearchMemoryMb = 8;
@@ -1295,6 +1301,419 @@ TEST(PlannerApiTest, MetricOfEurosPlusTime)
   for (const auto & d : r.diagnostics) {
     EXPECT_NE(d.code, "orchestrator.metric") << "the metric guides the search now";
   }
+}
+
+// --- Preferences (PDDL3) ---------------------------------------------------------------------
+
+const char * kPrefDomain =
+  "(define (domain pr) (:requirements :typing :preferences :fluents :action-costs)"
+  " (:types item) (:predicates (got ?i - item) (fuel) (done))"
+  " (:functions (total-cost))"
+  " (:action get :parameters (?i - item) :precondition (and)"
+  "  :effect (and (got ?i) (increase (total-cost) 2)))"
+  " (:action refuel :parameters () :effect (and (fuel) (increase (total-cost) 1)))"
+  " (:action finish :parameters () :precondition (preference full (fuel))"
+  "  :effect (done)))";
+
+// Steps of the domain only, and none of the compiled ones
+void expect_domain_steps(const Plan & plan)
+{
+  for (const auto & s : plan.steps) {
+    EXPECT_FALSE(s.name.starts_with("kairos-")) << s.action();
+  }
+}
+
+TEST(PlannerApiTest, GoalPreferencesWorthTheirCost)
+{
+  // Getting an item costs 2: a is worth it (5), b is not (1). Best: get a, forgo b, cost 3
+  Problem p = problem(kPrefDomain,
+      "(define (problem p) (:domain pr) (:objects a b - item) (:init (fuel))"
+      " (:goal (and (done) (preference pa (got a)) (preference pb (got b))))"
+      " (:metric minimize (+ (total-cost) (* 5 (is-violated pa)) (is-violated pb))))");
+  for (unsigned threads : {1u, 3u}) {
+    SolveOptions o = quick();
+    o.threads = threads;
+    SolveResult r = Planner().solve(p, o);
+    ASSERT_EQ(r.status, Status::Solved) << threads;
+    ASSERT_TRUE(r.plan->cost);
+    EXPECT_NEAR(*r.plan->cost, 3.0, 1e-6) << threads;
+    EXPECT_EQ(r.plan->steps.size(), 2u);  // get a, finish
+    expect_domain_steps(*r.plan);
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+  }
+}
+
+TEST(PlannerApiTest, ForallPreferencesCountEachInstance)
+{
+  // Three items, each violation weighs 3 and getting one costs 2: all of them, cost 6.
+  // Weighing 1: none of them, cost 3 (three violations)
+  for (auto [weight, cost, steps] : {std::tuple{3, 6.0, 4u}, std::tuple{1, 3.0, 1u}}) {
+    Problem p = problem(kPrefDomain,
+        "(define (problem p) (:domain pr) (:objects a b c - item) (:init (fuel))"
+        " (:goal (and (done) (forall (?i - item) (preference all (got ?i)))))"
+        " (:metric minimize (+ (total-cost) (* " + std::to_string(weight) +
+        " (is-violated all)))))");
+    SolveResult r = Planner().solve(p, quick());
+    ASSERT_EQ(r.status, Status::Solved) << weight;
+    ASSERT_TRUE(r.plan->cost);
+    EXPECT_NEAR(*r.plan->cost, cost, 1e-6) << weight;
+    EXPECT_EQ(r.plan->steps.size(), steps) << weight;
+    expect_domain_steps(*r.plan);
+  }
+}
+
+TEST(PlannerApiTest, PreconditionPreferencesCountEachUse)
+{
+  // finish without fuel violates "full" once: worth refueling (1) only when it weighs more
+  for (auto [weight, cost] : {std::pair{4, 1.0}, std::pair{0, 0.0}}) {
+    Problem p = problem(kPrefDomain,
+        "(define (problem p) (:domain pr) (:objects a - item)"
+        " (:goal (done)) (:metric minimize (+ (total-cost) (* " + std::to_string(weight) +
+        " (is-violated full)))))");
+    SolveResult r = Planner().solve(p, quick());
+    ASSERT_EQ(r.status, Status::Solved) << weight;
+    ASSERT_TRUE(r.plan->cost);
+    EXPECT_NEAR(*r.plan->cost, cost, 1e-6) << weight;
+    expect_domain_steps(*r.plan);
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+  }
+}
+
+TEST(PlannerApiTest, PreferencesThatCannotHoldAndHardGoalsThatCannot)
+{
+  // A preference nothing achieves: forgone. A hard goal nothing achieves: still unsolvable
+  Problem soft = problem(kPrefDomain,
+      "(define (problem p) (:domain pr) (:objects a - item) (:init (fuel))"
+      " (:goal (and (done) (preference never (and (got a) (not (got a))))))"
+      " (:metric minimize (* 7 (is-violated never))))");
+  SolveResult r = Planner().solve(soft, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_NEAR(*r.plan->cost, 7.0, 1e-6);
+  EXPECT_EQ(r.plan->steps.size(), 1u);
+  Problem hard = problem(
+      "(define (domain h) (:requirements :preferences) (:predicates (x) (y))"
+      " (:action ax :parameters () :effect (x)))",
+      "(define (problem p) (:domain h) (:goal (and (y) (preference px (x))))"
+      " (:metric minimize (is-violated px)))");
+  EXPECT_EQ(Planner().solve(hard, quick()).status, Status::Unsolvable);
+  // Without a metric the preferences weigh nothing: the shortest plan
+  Problem none = problem(kPrefDomain,
+      "(define (problem p) (:domain pr) (:objects a - item) (:init (fuel))"
+      " (:goal (and (done) (preference pa (got a)))))");
+  r = Planner().solve(none, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_EQ(r.plan->steps.size(), 1u);
+}
+
+TEST(PlannerApiTest, PreferencesToMaximize)
+{
+  // Pipesworld style: maximize what the satisfied preferences are worth
+  Problem p = problem(kPrefDomain,
+      "(define (problem p) (:domain pr) (:objects a b - item) (:init (fuel))"
+      " (:goal (and (done) (preference pa (got a)) (preference pb (got b))))"
+      " (:metric maximize (+ (* 9 (- 1 (is-violated pa))) (* 4 (- 1 (is-violated pb))))))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_TRUE(r.plan->cost);
+  EXPECT_NEAR(*r.plan->cost, 13.0, 1e-6);
+  expect_domain_steps(*r.plan);
+}
+
+TEST(PlannerApiTest, TemporalPreferences)
+{
+  // Pathways style: a goal preference weighed against the makespan. Making b takes 5 s (a,
+  // 2 s, at the same time): worth it when its violation weighs 10, not when it weighs 1
+  for (auto [weight, cost] : {std::pair{10, 5.0}, std::pair{1, 3.0}}) {
+    Problem p = problem(
+        "(define (domain t) (:requirements :durative-actions :preferences)"
+        " (:predicates (a) (b))"
+        " (:durative-action make-a :parameters () :duration (= ?duration 2)"
+        "  :condition (and) :effect (at end (a)))"
+        " (:durative-action make-b :parameters () :duration (= ?duration 5)"
+        "  :condition (and) :effect (at end (b))))",
+        "(define (problem p) (:domain t) (:goal (and (a) (preference pb (b))))"
+        " (:metric minimize (+ (total-time) (* " + std::to_string(weight) +
+        " (is-violated pb)))))");
+    SolveResult r = Planner().solve(p, quick());
+    ASSERT_EQ(r.status, Status::Solved) << weight;
+    ASSERT_TRUE(r.plan->cost);
+    EXPECT_NEAR(*r.plan->cost, cost, 0.05) << weight;
+    expect_domain_steps(*r.plan);
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+  }
+}
+
+// --- Trajectory constraints (PDDL3) ---------------------------------------------------------
+
+// A line a - b - c - d; c is dangerous to cross, d has a scanner; the package goes from a to b
+const char * kRoute =
+  "(define (domain route) (:requirements :strips :typing :negative-preconditions :constraints"
+  " :preferences :action-costs)"
+  " (:types room) (:predicates (at ?x - room) (link ?a ?b - room) (holding) (pkg-at ?x - room)"
+  "  (inspected) (delivered) (hurt) (danger ?x - room) (scanner ?x - room) (lit))"
+  " (:functions (total-cost))"
+  " (:action move :parameters (?a ?b - room) :precondition (and (at ?a) (link ?a ?b))"
+  "  :effect (and (not (at ?a)) (at ?b) (increase (total-cost) 1)))"
+  " (:action cross :parameters (?a ?b - room) :precondition (and (at ?a) (link ?a ?b) (danger ?b))"
+  "  :effect (and (not (at ?a)) (at ?b) (hurt)))"
+  " (:action pick :parameters (?x - room) :precondition (and (at ?x) (pkg-at ?x))"
+  "  :effect (and (holding) (not (pkg-at ?x))))"
+  " (:action inspect :parameters (?x - room) :precondition (and (at ?x) (holding) (scanner ?x))"
+  "  :effect (inspected))"
+  " (:action drop :parameters (?x - room) :precondition (and (at ?x) (holding))"
+  "  :effect (and (not (holding)) (pkg-at ?x) (delivered)))"
+  " (:action switch :parameters () :effect (and (lit) (increase (total-cost) 1)))"
+  " (:action unswitch :parameters () :effect (and (not (lit)) (increase (total-cost) 1))))";
+
+std::string route_problem(const std::string & goal, const std::string & rest)
+{
+  return "(define (problem p) (:domain route) (:objects a b c d - room)"
+         " (:init (at a) (pkg-at a) (link a b) (link b a) (link b c) (link c b) (link c d)"
+         "  (link d c) (danger c) (scanner d))"
+         " (:goal " + goal + ") " + rest + ")";
+}
+
+// Solves and returns the plan as "(a) (b) ..."
+std::string route_plan(const std::string & goal, const std::string & rest, double * cost = nullptr)
+{
+  Problem p = problem(kRoute, route_problem(goal, rest));
+  SolveResult r = Planner().solve(p, quick());
+  if (r.status != Status::Solved) {
+    return "status " + std::to_string(static_cast<int>(r.status));
+  }
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+  expect_domain_steps(*r.plan);
+  if (cost) {
+    *cost = r.plan->cost ? *r.plan->cost : -1.0;
+  }
+  std::string out;
+  for (const auto & s : r.plan->steps) {
+    out += (out.empty() ? "" : " ") + s.action();
+  }
+  return out;
+}
+
+TEST(PlannerApiTest, AlwaysAndSometimeBefore)
+{
+  // The user's example: never hurt, and inspected before delivered (b, via d and back)
+  std::string plan = route_plan("(delivered)",
+      "(:constraints (and (always (not (hurt))) (sometime-before (delivered) (inspected))))");
+  EXPECT_NE(plan.find("(inspect d)"), std::string::npos) << plan;
+  EXPECT_LT(plan.find("(inspect d)"), plan.find("(drop"));
+  EXPECT_EQ(plan.find("cross"), std::string::npos) << plan;
+  // Always false from the start: nothing to do about it
+  EXPECT_EQ(route_plan("(delivered)", "(:constraints (always (inspected)))"),
+    "status " + std::to_string(static_cast<int>(Status::Unsolvable)));
+}
+
+TEST(PlannerApiTest, SometimeAndAtEnd)
+{
+  // Lit at some point, but not at the end: switched on and off again
+  double cost = 0;
+  std::string plan = route_plan("(pkg-at a)",
+      "(:constraints (and (sometime (lit)) (at end (not (lit)))))"
+      " (:metric minimize (total-cost))", &cost);
+  EXPECT_EQ(plan, "(switch) (unswitch)");
+  EXPECT_NEAR(cost, 2.0, 1e-6);
+  // Already true at the start counts
+  plan = route_plan("(pkg-at a)", "(:constraints (sometime (at a)))");
+  EXPECT_EQ(plan, "");
+}
+
+TEST(PlannerApiTest, AtMostOnceAndSometimeAfter)
+{
+  // At b only once: from a to b, back to a, and b again is not allowed; then the package
+  // must be dropped at a after going to b
+  std::string plan = route_plan("(and (at a) (delivered))",
+      "(:constraints (and (at-most-once (at c)) (sometime-after (at b) (holding))))");
+  EXPECT_EQ(plan.find("(move b c)"), std::string::npos) << plan;  // not needed
+  EXPECT_NE(plan.find("(drop a)"), std::string::npos) << plan;
+  // To visit d and come back c is crossed twice: once only is impossible
+  EXPECT_EQ(route_plan("(and (at a) (inspected))", "(:constraints (at-most-once (at c)))"),
+    "status " + std::to_string(static_cast<int>(Status::Unsolvable)));
+  // After b, holding then or later: ending at b without the package never satisfies it
+  EXPECT_EQ(route_plan("(and (at b) (not (holding)))",
+    "(:constraints (sometime-after (at b) (holding)))"),
+    "status " + std::to_string(static_cast<int>(Status::Unsolvable)));
+}
+
+TEST(PlannerApiTest, PreferencesOverConstraints)
+{
+  // Crossing c costs nothing but hurts: worth it only when hurting weighs nothing
+  for (auto [weight, expected] : {std::pair{0, 2.0}, std::pair{50, 3.0}}) {
+    double cost = 0;
+    std::string plan = route_plan("(at d)",
+        "(:constraints (preference safe (always (not (hurt)))))"
+        " (:metric minimize (+ (total-cost) (* " + std::to_string(weight) +
+        " (is-violated safe))))", &cost);
+    EXPECT_NEAR(cost, expected, 1e-6) << weight << ": " << plan;
+    EXPECT_EQ(plan.find("cross") == std::string::npos, weight == 50) << plan;
+  }
+  // Inspecting first (d and back, crossing: 3) against delivering at once (1 + the weight)
+  for (auto [weight, cost] : {std::pair{10, 3.0}, std::pair{1, 2.0}}) {
+    double c = 0;
+    std::string plan = route_plan("(and (delivered) (at b))",
+        "(:constraints (preference first (sometime-before (delivered) (inspected))))"
+        " (:metric minimize (+ (total-cost) (* " + std::to_string(weight) +
+        " (is-violated first))))", &c);
+    EXPECT_NEAR(c, cost, 1e-6) << weight << ": " << plan;
+  }
+  // Forall over rooms: each room not visited counts once. All of them: a b, cross to c, d,
+  // cross back to c, b, a
+  double c = 0;
+  route_plan("(at a)",
+      "(:constraints (forall (?x - room) (preference visit (sometime (at ?x)))))"
+      " (:metric minimize (+ (total-cost) (* 10 (is-violated visit))))", &c);
+  EXPECT_NEAR(c, 4.0, 1e-6);
+  // Weighing less than a move: none visited but a (3 violations)
+  route_plan("(at a)",
+      "(:constraints (forall (?x - room) (preference visit (sometime (at ?x)))))"
+      " (:metric minimize (+ (* 4 (total-cost)) (is-violated visit)))", &c);
+  EXPECT_NEAR(c, 3.0, 1e-6);
+}
+
+TEST(PlannerApiTest, ConstraintsOnDurativeActions)
+{
+  // The quick way hurts: with "always not hurt" the slow one, also as a preference that
+  // weighs more than the 4 s it saves
+  std::string domain =
+    "(define (domain t) (:requirements :durative-actions :constraints :preferences"
+    " :negative-preconditions)"
+    " (:predicates (there) (hurt))"
+    " (:durative-action quick :parameters () :duration (= ?duration 1)"
+    "  :condition (and) :effect (and (at end (there)) (at end (hurt))))"
+    " (:durative-action slow :parameters () :duration (= ?duration 5)"
+    "  :condition (and) :effect (at end (there))))";
+  for (std::string rest : {std::string("(:constraints (always (not (hurt))))"),
+      std::string("(:constraints (preference safe (always (not (hurt)))))"
+      " (:metric minimize (+ (total-time) (* 10 (is-violated safe))))")})
+  {
+    Problem p = problem(domain, "(define (problem p) (:domain t) (:goal (there)) " + rest + ")");
+    SolveResult r = Planner().solve(p, quick());
+    ASSERT_EQ(r.status, Status::Solved) << rest;
+    ASSERT_EQ(r.plan->steps.size(), 1u) << rest;
+    EXPECT_EQ(r.plan->steps[0].name, "slow") << rest;
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+  }
+}
+
+TEST(PlannerApiTest, TimedConstraintsInSequentialPlans)
+{
+  // State k is at time k (the validator's convention)
+  std::string unsolvable = "status " + std::to_string(static_cast<int>(Status::Unsolvable));
+  // At c by time 2: through b, and back to a
+  std::string plan = route_plan("(at a)", "(:constraints (within 2 (at c)))");
+  EXPECT_NE(plan.find("c)"), std::string::npos) << plan;
+  EXPECT_EQ(route_plan("(at a)", "(:constraints (within 1 (at c)))"), unsolvable);
+  // At d in every state after time 3: d is three steps away, so the plan ends there
+  plan = route_plan("(at d)", "(:constraints (hold-after 3 (at d)))");
+  EXPECT_FALSE(plan.empty());
+  EXPECT_EQ(route_plan("(at d)", "(:constraints (hold-after 1 (at d)))"), unsolvable);
+  // Holding at times 1 and 2: picked first, dropped not before the third step
+  plan = route_plan("(delivered)", "(:constraints (hold-during 1 3 (holding)))");
+  EXPECT_EQ(plan.rfind("(pick a)", 0), 0u) << plan;
+  EXPECT_EQ(std::count(plan.begin(), plan.end(), '('), 3) << plan;
+  EXPECT_EQ(route_plan("(delivered)", "(:constraints (hold-during 0 1 (holding)))"), unsolvable);
+}
+
+TEST(PlannerApiTest, AlwaysWithinInSequentialPlans)
+{
+  // Delivered within t steps of holding: the drop at most t steps after the pick
+  for (int delay : {1, 2, 3}) {
+    Problem p = problem(kRoute, route_problem("(and (delivered) (at d))",
+        "(:constraints (always-within " + std::to_string(delay) + " (holding) (delivered)))"));
+    SolveResult r = Planner().solve(p, quick());
+    ASSERT_EQ(r.status, Status::Solved) << delay;
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+    expect_domain_steps(*r.plan);
+    size_t pick = 0, drop = 0;
+    for (size_t i = 0; i < r.plan->steps.size(); ++i) {
+      pick = r.plan->steps[i].name == "pick" ? i : pick;
+      drop = r.plan->steps[i].name == "drop" ? i : drop;
+    }
+    EXPECT_LE(drop - pick, static_cast<size_t>(delay)) << delay;
+  }
+  // Inspected (at d, holding) holds the package 4 steps: delivered first (it stays true),
+  // then picked again
+  std::string plan = route_plan("(and (inspected) (delivered))",
+      "(:constraints (always-within 2 (holding) (delivered)))");
+  EXPECT_LT(plan.find("(drop"), plan.find("(inspect")) << plan;
+  // As preferences, both met the same way
+  double cost = -1;
+  route_plan("(delivered)",
+      "(:constraints (and (preference fast (always-within 2 (holding) (delivered)))"
+      " (preference check (sometime (inspected)))))"
+      " (:metric minimize (+ (* 3 (is-violated fast)) (* 5 (is-violated check))))", &cost);
+  EXPECT_NEAR(cost, 0.0, 1e-6);
+  // Inspected within a step of holding is impossible (d is far): holding at all violates it,
+  // weighed against not holding
+  route_plan("(at a)",
+      "(:constraints (and (preference fast (always-within 1 (holding) (inspected)))"
+      " (preference carry (sometime (holding)))))"
+      " (:metric minimize (+ (* 3 (is-violated fast)) (* 5 (is-violated carry))))", &cost);
+  EXPECT_NEAR(cost, 3.0, 1e-6);
+}
+
+TEST(PlannerApiTest, WithinInTemporalPlans)
+{
+  // The cheap way takes 6 s: by time 4 only the expensive one gets there
+  std::string domain =
+    "(define (domain t) (:requirements :durative-actions :constraints :fluents)"
+    " (:predicates (there)) (:functions (spent))"
+    " (:durative-action fast :parameters () :duration (= ?duration 2)"
+    "  :condition (and) :effect (and (at end (there)) (at end (increase (spent) 10))))"
+    " (:durative-action slow :parameters () :duration (= ?duration 6)"
+    "  :condition (and) :effect (at end (there))))";
+  for (auto [rest, name] : {std::pair{"(:constraints (within 4 (there)))", "fast"},
+      std::pair{"", "slow"}})
+  {
+    Problem p = problem(domain, std::string("(define (problem p) (:domain t) (:init (= (spent) 0))"
+        " (:goal (there)) ") + rest + " (:metric minimize (spent)))");
+    SolveResult r = Planner().solve(p, quick());
+    ASSERT_EQ(r.status, Status::Solved) << rest;
+    ASSERT_EQ(r.plan->steps.size(), 1u) << rest;
+    EXPECT_EQ(r.plan->steps[0].name, name) << rest;
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+  }
+}
+
+TEST(PlannerApiTest, TimedLiteralsAtTheSameInstant)
+{
+  // Two literals at 5: their counter made them epsilon apart, an inconsistent STN, and M3
+  // answered unsolvable
+  std::string domain =
+    "(define (domain tl) (:requirements :durative-actions :timed-initial-literals)"
+    " (:predicates (a) (b) (x) (y))"
+    " (:durative-action ga :parameters () :duration (= ?duration 1)"
+    "  :condition (at start (a)) :effect (at end (x)))"
+    " (:durative-action gb :parameters () :duration (= ?duration 1)"
+    "  :condition (at start (b)) :effect (at end (y))))";
+  for (int second : {5, 6}) {
+    Problem p = problem(domain, "(define (problem p) (:domain tl) (:init (at 5 (a)) (at " +
+        std::to_string(second) + " (b))) (:goal (and (x) (y))))");
+    for (unsigned threads : {1u, 3u}) {
+      SolveOptions o = quick();
+      o.threads = threads;
+      SolveResult r = Planner().solve(p, o);
+      ASSERT_EQ(r.status, Status::Solved) << second << " " << threads;
+      EXPECT_TRUE(validate(p, *r.plan).valid());
+      EXPECT_NEAR(r.plan->makespan(), second + 1.0, 0.01) << second;
+    }
+  }
+}
+
+TEST(PlannerApiTest, AlwaysWithinInTemporalPlansIsNotPlannedYet)
+{
+  Problem p = problem(
+    "(define (domain t) (:requirements :durative-actions :constraints)"
+    " (:predicates (a) (b))"
+    " (:durative-action go :parameters () :duration (= ?duration 2)"
+    "  :condition (and) :effect (and (at end (a)) (at end (b)))))",
+    "(define (problem p) (:domain t) (:goal (a)) (:constraints (always-within 3 (a) (b))))");
+  SolveResult r = Planner().solve(p, quick());
+  EXPECT_EQ(r.status, Status::Unsupported);
+  ASSERT_FALSE(r.diagnostics.empty());
+  EXPECT_EQ(r.diagnostics[0].code, "unsupported.timed_constraints");
 }
 
 TEST(PlannerApiTest, RequiredConcurrencyThenActionsThatNeedItsResult)

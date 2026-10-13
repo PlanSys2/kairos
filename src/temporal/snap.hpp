@@ -115,6 +115,7 @@ private:
     int32_t parent;
     uint32_t action;
     DurationBounds duration;  // starts: from the state where they start
+    double makespan = 0.0;    // of the plan up to here, pending ends included
   };
   struct Builder;
   class Deadlines;

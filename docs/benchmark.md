@@ -17,6 +17,7 @@ Problems solved in 30 s with 3 GB per problem; every plan checked by Kairos's va
 | B3: numeric, IPC 2002/2023/2026 (420) | **291** | | | | | 103 | 57 | |
 | Classical, IPC 1998-2023 (220) | 141 | | | | | | | **151** |
 | B6: PlanSys2 problems scaled up (144; 60 s, 2 GB) | **95** | 57 | 58 | 57 | | | | |
+| PDDL3: IPC 2006 preferences and constraints (125) | **84** | 45 | | 16 | | | | |
 
 The other planners were measured on 2026-10-11 with Kairos 0.3.0 at `023fe98`; the Kairos
 column is the current version (B1: 161 at `023fe98`, 172 at `cf886fc`, 177 at step 20). The robotics row is
@@ -31,6 +32,10 @@ planner does not handle that kind of problem, or was not run on it.
 - **PlanSys2 problems at scale** (B6): Kairos solves 95 of 144, the others at most 58 (TAMER
   21 and Aries 9 of unified-planning); at the large sizes (L, XL) Kairos 26, the best of the
   others 8 (OPTIC, POPF).
+- **Preferences and trajectory constraints** (PDDL3, IPC 2006; OPTIC and POPF measured on
+  2026-10-13): Kairos 84 of 125, OPTIC 45, POPF 16. Kairos compiles them away (Keyder and
+  Geffner); its misses are large storage and pipesworld instances and `always-within` in
+  temporal plans, not supported yet.
 - **Classical planning**: Fast Downward's LAMA solves more (barman, sokoban, parking, hiking,
   rubiks-cube); Kairos is not yet at its level there.
 
@@ -66,6 +71,7 @@ planner does not handle that kind of problem, or was not run on it.
 | B3 | 420 | Numeric domains of the IPC 2002, 2023 and 2026, 10 instances per domain |
 | Classical | 220 | Classical domains of the IPC 1998 to 2023, 10 instances per domain |
 | B6 | 144 | PlanSys2 domains with problems scaled from 10 to 20 000 objects (below) |
+| PDDL3 | 125 | IPC 2006 domains with preferences (simple, qualitative, complex) and trajectory constraints, 5 instances each (`coverage.py` suite `prefs`) |
 
 The instances come from public collections (potassco pddl-instances, the IPC 2023 and 2026
 datasets, time2processes), fetched at pinned commits by `tools/fetch_corpus.sh`.
@@ -285,3 +291,4 @@ The generator, the reference plans and the runners are in the workspace's `bench
 | 2026-10-12 | step 20 (0.4.0), 3 threads | **183** | 32 | | | |
 | 2026-10-12 | step 23, 1 thread | 177 | **33** | **289** | **140** | Found with PlanSys2's combat example: numeric variables nothing reads (`total-cost`, euros spent) no longer tell states apart (barman 0 -> 10, sokoban 3 -> 9, forestfire 2 -> 10, settlers-snp 1 -> 8); derived atoms being false in the heuristics; over all conditions seen by M3's heuristics; novelty first in M3 with numeric conditions; metric of euros plus time; deadlines of timed initial literals (trucks 1 -> 2) |
 | 2026-10-13 | step 24, 1 thread | 177 | 33 | 291 | 141 | Resources in the schedule of M2: steps that borrow and give back capacity overlap as far as the plan stays valid (umts makespan 922 -> 532, 2041 -> 791; B1 quality against step 23: 174.5 -> 176.8) |
+| 2026-10-13 | step 26, 1 thread | | | | | PDDL3: preferences (goal, precondition, over constraints) and trajectory constraints compiled away, all but `always-within` in temporal plans; IPC 2006 suite: 84 of 125 (74 before static instances were left out and same-instant timed literals were fixed in M3) |

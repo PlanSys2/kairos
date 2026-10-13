@@ -15,9 +15,11 @@
 #include "normalize/normalizer.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <functional>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -497,6 +499,11 @@ private:
       case ast::ExprKind::IsViolated:
         out.op = ExprOp::Violated;
         out.name = str(s, e.name);
+        if (auto v = violations_.find(out.name); v != violations_.end()) {
+          out.op = ExprOp::Fluent;  // compiled: the count of its violations
+          out.function = v->second;
+          out.name.clear();
+        }
         break;
     }
     return out;
@@ -584,11 +591,17 @@ private:
         return to_nf(s, f.children.at(0), positive, TimeTag::AtEnd, owner, scope);
       case ast::FormulaKind::OverAll:
         return to_nf(s, f.children.at(0), positive, TimeTag::OverAll, owner, scope);
-      case ast::FormulaKind::Preference:
-        // Soft: does not constrain applicability (handled from phase F4)
-        task_.has_soft_goals = true;
-        n.kind = NF::Kind::True;
-        return n;
+      case ast::FormulaKind::Preference: {
+          // Compiled: satisfied or violated copy; else soft, it does not constrain
+          auto mode = pref_mode_.find(id);
+          if (mode != pref_mode_.end()) {
+            return to_nf(
+              s, f.children.at(0), mode->second ? positive : !positive, time, owner, scope);
+          }
+          task_.has_soft_goals = true;
+          n.kind = NF::Kind::True;
+          return n;
+        }
       case ast::FormulaKind::Modal:
         task_.has_trajectory_constraints = true;
         n.kind = NF::Kind::True;
@@ -966,7 +979,114 @@ private:
     return static_cast<uint32_t>(std::set<uint32_t>(v.begin(), v.end()).size());
   }
 
+  // --- Preferences (PDDL3, compiled as Keyder and Geffner 2009) --------------------------------
+
+  struct TopPref
+  {
+    FormulaId id;
+    std::string name;
+    Timing timing;
+  };
+
+  // Named preferences in the conjunction at the top of a condition
+  void top_preferences(const Source & s, FormulaId id, Timing timing, std::vector<TopPref> & out)
+  {
+    if (!id.valid()) {
+      return;
+    }
+    const ast::Formula & f = s.nodes.formulas[id];
+    switch (f.kind) {
+      case ast::FormulaKind::And:
+        for (FormulaId c : f.children) {
+          top_preferences(s, c, timing, out);
+        }
+        break;
+      case ast::FormulaKind::AtStart:
+        top_preferences(s, f.children.at(0), Timing::Start, out);
+        break;
+      case ast::FormulaKind::AtEnd:
+      case ast::FormulaKind::OverAll:
+        top_preferences(s, f.children.at(0), Timing::End, out);
+        break;
+      case ast::FormulaKind::Preference:
+        if (f.name.valid()) {
+          out.push_back({id, str(s, f.name), timing});
+        }
+        break;
+      default:
+        break;
+    }
+  }
+
+  // The copies of an action: one per choice of satisfied or violated preference (none if too
+  // many, then they are soft)
+  uint32_t preference_copies(std::vector<TopPref> & prefs) const
+  {
+    constexpr size_t kMaxPreconditionPreferences = 4;
+    if (prefs.size() > kMaxPreconditionPreferences) {
+      prefs.clear();
+    }
+    return 1u << prefs.size();
+  }
+
+  // Sets the choice of copy `mask` (bit set: violated) and returns its counting effects
+  std::vector<Effect> choose_preferences(const std::vector<TopPref> & prefs, uint32_t mask)
+  {
+    std::vector<Effect> out;
+    pref_mode_.clear();
+    for (size_t i = 0; i < prefs.size(); ++i) {
+      bool violated = mask & (1u << i);
+      pref_mode_[prefs[i].id] = !violated;
+      if (violated) {
+        out.push_back(count_violation(prefs[i].name, prefs[i].timing));
+      }
+    }
+    return out;
+  }
+
+  // (increase (kairos-violated-name) 1)
+  Effect count_violation(const std::string & name, Timing timing)
+  {
+    Effect e;
+    e.kind = Effect::Kind::Numeric;
+    e.timing = timing;
+    e.function = violation_fluent(name);
+    e.op = ast::AssignOp::Increase;
+    e.value.op = ExprOp::Constant;
+    e.value.value = 1.0;
+    return e;
+  }
+
+  // The fluent that counts the violations of a preference, 0 at first
+  FunctionId violation_fluent(const std::string & name)
+  {
+    if (auto v = violations_.find(name); v != violations_.end()) {
+      return v->second;
+    }
+    FunctionId f(static_cast<uint32_t>(task_.function_names.size()));
+    task_.function_names.push_back("kairos-violated-" + name);
+    task_.numeric.push_back(true);
+    task_.function_params.emplace_back();
+    InitFluent init;
+    init.function = f;
+    task_.init_fluents.push_back(init);
+    violations_.emplace(name, f);
+    return f;
+  }
+
   void instant_action(const ast::Action & a, std::vector<Action> & out)
+  {
+    Source s{d_.nodes, d_.symbols};
+    std::vector<TopPref> prefs;
+    top_preferences(s, a.precondition, Timing::Instant, prefs);
+    uint32_t copies = preference_copies(prefs);
+    for (uint32_t mask = 0; mask < copies; ++mask) {
+      instant_action(a, out, choose_preferences(prefs, mask));
+    }
+    pref_mode_.clear();
+  }
+
+  void instant_action(const ast::Action & a, std::vector<Action> & out, std::vector<Effect> extra)
   {
     Source s{d_.nodes, d_.symbols};
     std::vector<Variable> owner;
@@ -981,6 +1101,7 @@ private:
     if (a.effect.valid()) {
       flatten(s, a.effect, EffectContext{}, owner, scope, effects);
     }
+    effects.insert(effects.end(), extra.begin(), extra.end());
     Clauses clauses = dnf(pre, owner);
     for (const auto & cl : clauses) {
       VarMap m = copy_order(params, cl.exist, owner.size());
@@ -1000,6 +1121,18 @@ private:
   }
 
   void durative_action(const ast::DurativeAction & a)
+  {
+    Source s{d_.nodes, d_.symbols};
+    std::vector<TopPref> prefs;
+    top_preferences(s, a.condition, Timing::Start, prefs);
+    uint32_t copies = preference_copies(prefs);
+    for (uint32_t mask = 0; mask < copies; ++mask) {
+      durative_action(a, choose_preferences(prefs, mask));
+    }
+    pref_mode_.clear();
+  }
+
+  void durative_action(const ast::DurativeAction & a, std::vector<Effect> extra)
   {
     Source s{d_.nodes, d_.symbols};
     std::vector<Variable> owner;
@@ -1046,6 +1179,7 @@ private:
     if (a.effect.valid()) {
       flatten(s, a.effect, EffectContext{}, owner, scope, effects);
     }
+    effects.insert(effects.end(), extra.begin(), extra.end());
     Clauses clauses = dnf(cond, owner);
     for (const auto & cl : clauses) {
       VarMap m = copy_order(params, cl.exist, owner.size());
@@ -1101,6 +1235,841 @@ private:
       }
       in_axiom_ = in_rule_ = false;
     }
+  }
+
+  // A closed goal as a condition (an auxiliary atom when it is not a plain conjunction)
+  Condition goal_condition(const Source & s, const std::vector<FormulaId> & parts)
+  {
+    std::vector<Variable> owner;
+    Scope scope;
+    NF g;
+    g.kind = NF::Kind::And;
+    for (FormulaId id : parts) {
+      g.children.push_back(to_nf(s, id, true, TimeTag::None, owner, scope));
+    }
+    if (g.children.size() == 1) {
+      NF one = std::move(g.children[0]);
+      g = std::move(one);
+    }
+    Clauses cs = dnf(g, owner);
+    if (cs.size() == 1 && cs[0].exist.empty() && owner.empty()) {
+      return to_condition(cs[0].items);
+    }
+    return to_condition({make_aux(g, owner)});
+  }
+
+  struct GoalPref
+  {
+    std::string name;
+    std::vector<ast::TypedName> params;  // (forall (params) (preference name body))
+    FormulaId body;
+  };
+
+  // The hard part of a goal and its named preferences (the unnamed ones count for nothing)
+  void split_goal(
+    const Source & s, FormulaId id, const std::vector<ast::TypedName> & params,
+    std::vector<FormulaId> & hard, std::vector<GoalPref> & prefs)
+  {
+    const ast::Formula & f = s.nodes.formulas[id];
+    if (f.kind == ast::FormulaKind::And) {
+      for (FormulaId c : f.children) {
+        split_goal(s, c, params, hard, prefs);
+      }
+    } else if (f.kind == ast::FormulaKind::Preference) {
+      if (f.name.valid()) {
+        prefs.push_back({str(s, f.name), params, f.children.at(0)});
+      }
+    } else if (f.kind == ast::FormulaKind::Forall && params.empty()) {
+      std::vector<FormulaId> inner_hard;
+      std::vector<GoalPref> inner;
+      split_goal(s, f.children.at(0), f.params, inner_hard, inner);
+      if (inner_hard.empty()) {
+        prefs.insert(prefs.end(), inner.begin(), inner.end());
+      } else {
+        hard.push_back(id);  // mixed: its preferences are soft
+      }
+    } else {
+      hard.push_back(id);
+    }
+  }
+
+  // What holds at the end for a preference to be satisfied: the first `params` variables of
+  // `owner` are those of its instances
+  struct SoftGoal
+  {
+    std::string name;
+    std::vector<Variable> owner;
+    size_t params = 0;
+    NF check;
+  };
+
+  static NF nf_literal(const Literal & l)
+  {
+    NF n;
+    n.kind = NF::Kind::Lit;
+    n.lit = l;
+    return n;
+  }
+
+  static NF nf_of(NF::Kind kind, std::vector<NF> children)
+  {
+    NF n;
+    n.kind = kind;
+    n.children = std::move(children);
+    return n;
+  }
+
+  // --- Trajectory constraints (PDDL3), compiled with monitors ---------------------------------
+  //
+  // Every state but the last is the state before some action: what a constraint forbids there
+  // is a precondition of every action (soft: a "broken" monitor), what it must remember is a
+  // conditional effect, and the last state is checked by the goal
+
+  struct Monitoring
+  {
+    std::vector<Literal> goal;      // hard constraints: closed atoms for the end
+    std::vector<SoftGoal> soft;     // preferences over constraints
+  };
+
+  // A closed formula over the instance variables (the first `k` of owner) as one atom
+  Literal atom_of(const Source & s, FormulaId id, std::vector<Variable> & owner, Scope & scope)
+  {
+    NF n = to_nf(s, id, true, TimeTag::None, owner, scope);
+    if (n.kind == NF::Kind::Lit) {
+      return n.lit;
+    }
+    return make_aux(n, owner).lit;
+  }
+
+  Atom monitor(const std::string & what, const std::vector<Variable> & owner, size_t k)
+  {
+    std::vector<TypeSpec> types;
+    Atom a;
+    for (size_t v = 0; v < k; ++v) {
+      types.push_back(owner[v].types);
+      a.args.push_back(Term::variable(static_cast<uint32_t>(v)));
+    }
+    a.predicate = task_.add_predicate(
+      "kairos-monitor-" + std::to_string(monitor_counter_++) + "-" + what, false, types);
+    return a;
+  }
+
+  static Literal opposite(Literal l)
+  {
+    l.positive = !l.positive;
+    return l;
+  }
+
+  static void shift(Term & t, uint32_t base)
+  {
+    if (t.kind == Term::Kind::Variable) {
+      t.index += base;
+    }
+    for (auto & a : t.args) {
+      shift(a, base);
+    }
+  }
+
+  static Literal shifted(Literal l, uint32_t base)
+  {
+    for (auto & a : l.atom.args) {
+      shift(a, base);
+    }
+    return l;
+  }
+
+  struct Update
+  {
+    std::vector<Literal> when;
+    Literal change;  // positive: add, negative: delete
+    // Or a numeric change of a fluent over the instance variables
+    std::optional<FunctionId> fluent;
+    ast::AssignOp op = ast::AssignOp::Assign;
+    double value = 0.0;
+  };
+
+  static Update update(std::vector<Literal> when, Literal change)
+  {
+    Update u;
+    u.when = std::move(when);
+    u.change = std::move(change);
+    return u;
+  }
+
+  // --- Time for timed constraints: sequential, the step (state k is at time k); temporal,
+  // flags that timed initial literals set
+
+  bool sequential() const {return task_.durative_actions.empty();}
+
+  NF compare_clock(CompareOp op, double t)
+  {
+    if (!clock_) {
+      // Counts steps up to past every time a constraint names (states past it are alike)
+      clock_ = FunctionId(static_cast<uint32_t>(task_.function_names.size()));
+      task_.function_names.push_back("kairos-clock");
+      task_.numeric.push_back(true);
+      task_.function_params.emplace_back();
+      InitFluent init;
+      init.function = *clock_;
+      task_.init_fluents.push_back(init);
+      for (auto & a : task_.actions) {
+        Effect tick;
+        tick.kind = Effect::Kind::Numeric;
+        tick.function = *clock_;
+        tick.op = ast::AssignOp::Increase;
+        tick.value.op = ExprOp::Constant;
+        tick.value.value = 1.0;
+        Comparison below;
+        below.op = CompareOp::Lt;
+        below.lhs.op = ExprOp::Fluent;
+        below.lhs.function = *clock_;
+        below.rhs.op = ExprOp::Constant;
+        below.rhs.value = clock_limit_;
+        tick.condition.comparisons.push_back(std::move(below));
+        a.effects.push_back(std::move(tick));
+      }
+    }
+    NF n;
+    n.kind = NF::Kind::Cmp;
+    n.cmp.op = op;
+    n.cmp.lhs.op = ExprOp::Fluent;
+    n.cmp.lhs.function = *clock_;
+    n.cmp.rhs.op = ExprOp::Constant;
+    n.cmp.rhs.value = t;
+    return n;
+  }
+
+  // An atom true from `on` (and until `off`), set by timed initial literals
+  Literal timed_flag(double on, std::optional<double> off)
+  {
+    PredicateId p = task_.add_predicate(
+      "kairos-monitor-" + std::to_string(monitor_counter_++) + "-time", false);
+    TimedEvent ev;
+    ev.time = on;
+    ev.fact = std::make_pair(p, std::vector<ObjectId>{});
+    task_.timed_events.push_back(ev);
+    if (off) {
+      ev.time = *off;
+      ev.negated = true;
+      task_.timed_events.push_back(ev);
+    }
+    return Literal{Atom{p, {}}, true};
+  }
+
+  // Time at most t / after t / in [t1, t2), in the state before the next action: exact in
+  // sequential plans; in temporal ones read at the next happening (the validator judges)
+  Literal at_most(double t, std::vector<Variable> & owner)
+  {
+    if (sequential()) {
+      return make_aux(compare_clock(CompareOp::Le, t), owner).lit;
+    }
+    return opposite(timed_flag(t, std::nullopt));
+  }
+
+  Literal after(double t, std::vector<Variable> & owner)
+  {
+    if (sequential()) {
+      return make_aux(compare_clock(CompareOp::Gt, t), owner).lit;
+    }
+    return timed_flag(t, std::nullopt);
+  }
+
+  Literal during(double t1, double t2, std::vector<Variable> & owner)
+  {
+    if (sequential()) {
+      return make_aux(nf_of(NF::Kind::And, {compare_clock(CompareOp::Ge, t1),
+                 compare_clock(CompareOp::Lt, t2)}), owner).lit;
+    }
+    return timed_flag(t1, t2);
+  }
+
+  // Attaches to every domain action the updates and what is forbidden before it (soft: what
+  // sets `broken`)
+  void attach(
+    const std::vector<Variable> & owner, size_t k, const std::vector<Update> & updates,
+    const std::optional<Literal> & forbidden, const std::optional<Atom> & broken)
+  {
+    auto instance_vars = [&](std::vector<Variable> & vars) {
+        auto base = static_cast<uint32_t>(vars.size());
+        std::vector<uint32_t> out;
+        for (size_t v = 0; v < k; ++v) {
+          vars.push_back(owner[v]);
+          out.push_back(base + static_cast<uint32_t>(v));
+        }
+        return std::make_pair(base, out);
+      };
+    auto effects = [&](uint32_t base, const std::vector<uint32_t> & vars, Timing timing) {
+        std::vector<Effect> out;
+        std::vector<Update> all = updates;
+        if (forbidden && broken) {
+          all.push_back(update({*forbidden}, Literal{*broken, true}));
+        }
+        for (const auto & u : all) {
+          Effect e;
+          e.kind = u.change.positive ? Effect::Kind::Add : Effect::Kind::Delete;
+          e.timing = timing;
+          e.variables = vars;
+          for (const auto & l : u.when) {
+            e.condition.literals.push_back(shifted(l, base));
+          }
+          e.atom = shifted(u.change, base).atom;
+          if (u.fluent) {
+            e.kind = Effect::Kind::Numeric;
+            e.function = *u.fluent;
+            for (uint32_t v : vars) {
+              e.args.push_back(Term::variable(v));
+            }
+            e.op = u.op;
+            e.value.op = ExprOp::Constant;
+            e.value.value = u.value;
+          }
+          out.push_back(std::move(e));
+        }
+        return out;
+      };
+    auto forbid = [&](Condition & c, uint32_t base, const std::vector<uint32_t> & vars) {
+        if (!forbidden || broken) {
+          return;
+        }
+        Literal allowed = shifted(opposite(*forbidden), base);
+        if (vars.empty()) {
+          c.literals.push_back(allowed);
+        } else {
+          Quantified q;
+          q.variables = vars;
+          q.body.literals.push_back(allowed);
+          c.foralls.push_back(std::move(q));
+        }
+      };
+    for (auto & a : task_.actions) {
+      auto [base, vars] = instance_vars(a.variables);
+      forbid(a.precondition, base, vars);
+      for (auto & e : effects(base, vars, Timing::Instant)) {
+        a.effects.push_back(std::move(e));
+      }
+    }
+    for (auto & a : task_.durative_actions) {
+      auto [base, vars] = instance_vars(a.variables);
+      forbid(a.at_start, base, vars);
+      forbid(a.at_end, base, vars);
+      for (Timing t : {Timing::Start, Timing::End}) {
+        for (auto & e : effects(base, vars, t)) {
+          a.effects.push_back(std::move(e));
+        }
+      }
+    }
+  }
+
+  // One constraint (always, sometime...) over the instance variables of owner
+  void constraint(
+    const Source & s, const ast::Formula & f, std::vector<Variable> owner, Scope scope,
+    const std::string * pref, Monitoring & out)
+  {
+    const size_t k = owner.size();
+    std::vector<Update> updates;
+    std::optional<Literal> forbidden;  // in a state before an action
+    NF final;                          // in the last state
+    auto lit = [](const Literal & l) {return nf_literal(l);};
+    auto both = [&](std::vector<Literal> ls) {
+        // Their conjunction as one literal
+        if (ls.size() == 1) {
+          return ls[0];
+        }
+        std::vector<NF> cs;
+        for (const auto & l : ls) {
+          cs.push_back(nf_literal(l));
+        }
+        return make_aux(nf_of(NF::Kind::And, std::move(cs)), owner).lit;
+      };
+    if (f.kind == ast::FormulaKind::AtEnd) {
+      final = lit(atom_of(s, f.children.at(0), owner, scope));
+    } else {
+      switch (f.modal) {
+        case ast::ModalOp::Always: {
+            Literal phi = atom_of(s, f.children.at(0), owner, scope);
+            forbidden = opposite(phi);
+            final = lit(phi);
+            break;
+          }
+        case ast::ModalOp::Sometime: {
+            Literal phi = atom_of(s, f.children.at(0), owner, scope);
+            Literal seen{monitor("seen", owner, k), true};
+            updates.push_back(update({phi}, seen));
+            final = nf_of(NF::Kind::Or, {lit(seen), lit(phi)});
+            break;
+          }
+        case ast::ModalOp::AtMostOnce: {
+            // Seen, then over (false after seen): true again is the violation
+            Literal phi = atom_of(s, f.children.at(0), owner, scope);
+            Literal seen{monitor("seen", owner, k), true};
+            Literal over{monitor("over", owner, k), true};
+            updates.push_back(update({phi}, seen));
+            updates.push_back(update({seen, opposite(phi)}, over));
+            forbidden = both({over, phi});
+            final = lit(opposite(*forbidden));
+            break;
+          }
+        case ast::ModalOp::SometimeBefore: {
+            // phi only after some earlier state with psi
+            Literal phi = atom_of(s, f.children.at(0), owner, scope);
+            Literal psi = atom_of(s, f.children.at(1), owner, scope);
+            Literal seen{monitor("seen", owner, k), true};
+            updates.push_back(update({psi}, seen));
+            forbidden = both({phi, opposite(seen)});
+            final = lit(opposite(*forbidden));
+            break;
+          }
+        case ast::ModalOp::SometimeAfter: {
+            // After phi, psi then or later
+            Literal phi = atom_of(s, f.children.at(0), owner, scope);
+            Literal psi = atom_of(s, f.children.at(1), owner, scope);
+            Literal pending{monitor("pending", owner, k), true};
+            updates.push_back(update({phi, opposite(psi)}, pending));
+            updates.push_back(update({psi}, opposite(pending)));
+            final = nf_of(NF::Kind::Or, {lit(psi),
+                  nf_of(NF::Kind::And, {lit(opposite(pending)), lit(opposite(phi))})});
+            break;
+          }
+        case ast::ModalOp::Within: {
+            Literal phi = atom_of(s, f.children.at(0), owner, scope);
+            Literal in_time = at_most(f.times.at(0), owner);
+            Literal seen{monitor("seen", owner, k), true};
+            updates.push_back(update({phi, in_time}, seen));
+            if (!sequential()) {
+              // In time also with no happening after phi: an action that notes it (the timed
+              // literals take place even after the goal)
+              Action check;
+              check.name = "kairos-pref-check-" + std::to_string(monitor_counter_++);
+              check.variables.assign(owner.begin(), owner.begin() + static_cast<std::ptrdiff_t>(k));
+              check.parameters = static_cast<uint32_t>(k);
+              check.precondition.literals = {phi, in_time, opposite(seen)};
+              Effect note;
+              note.atom = seen.atom;
+              check.effects.push_back(std::move(note));
+              task_.actions.push_back(std::move(check));
+            }
+            final = nf_of(NF::Kind::Or, {lit(seen),
+                  nf_of(NF::Kind::And, {lit(phi), lit(in_time)})});
+            break;
+          }
+        case ast::ModalOp::HoldAfter: {
+            Literal phi = atom_of(s, f.children.at(0), owner, scope);
+            forbidden = both({after(f.times.at(0), owner), opposite(phi)});
+            final = lit(opposite(*forbidden));
+            break;
+          }
+        case ast::ModalOp::HoldDuring: {
+            Literal phi = atom_of(s, f.children.at(0), owner, scope);
+            forbidden = both({during(f.times.at(0), f.times.at(1), owner), opposite(phi)});
+            final = lit(opposite(*forbidden));
+            break;
+          }
+        case ast::ModalOp::AlwaysWithin: {
+            if (!sequential()) {
+              // A deadline from each time phi holds: needs the time of states (not yet)
+              task_.has_timed_constraints = true;
+              return;
+            }
+            // After phi, psi within t steps: pending, with the steps left
+            Literal phi = atom_of(s, f.children.at(0), owner, scope);
+            Literal psi = atom_of(s, f.children.at(1), owner, scope);
+            Literal pending{monitor("pending", owner, k), true};
+            std::vector<TypeSpec> types;
+            for (size_t v = 0; v < k; ++v) {
+              types.push_back(owner[v].types);
+            }
+            FunctionId left(static_cast<uint32_t>(task_.function_names.size()));
+            task_.function_names.push_back(
+              "kairos-monitor-" + std::to_string(monitor_counter_++) + "-left");
+            task_.numeric.push_back(true);
+            task_.function_params.push_back(types);
+            NF left_cmp;
+            left_cmp.kind = NF::Kind::Cmp;
+            left_cmp.cmp.lhs.op = ExprOp::Fluent;
+            left_cmp.cmp.lhs.function = left;
+            for (uint32_t v = 0; v < k; ++v) {
+              left_cmp.cmp.lhs.args.push_back(Term::variable(v));
+            }
+            left_cmp.cmp.rhs.op = ExprOp::Constant;
+            left_cmp.cmp.op = CompareOp::Lt;
+            Literal late = make_aux(
+              nf_of(NF::Kind::And, {lit(pending), left_cmp}), owner).lit;
+            left_cmp.cmp.op = CompareOp::Ge;
+            Literal in_time = make_aux(left_cmp, owner).lit;
+            Update start = update({phi, opposite(psi), opposite(pending)}, pending);
+            updates.push_back(start);
+            start.fluent = left;
+            start.value = f.times.at(0) - 1.0;
+            updates.push_back(start);
+            updates.push_back(update({psi}, opposite(pending)));
+            Update tick = update({pending, opposite(psi), in_time}, pending);
+            tick.fluent = left;
+            tick.op = ast::AssignOp::Decrease;
+            tick.value = 1.0;
+            updates.push_back(tick);
+            forbidden = late;
+            final = nf_of(NF::Kind::Or, {
+                nf_of(NF::Kind::And, {lit(psi), lit(opposite(late))}),
+                nf_of(NF::Kind::And, {lit(opposite(pending)), lit(opposite(phi))})});
+            break;
+          }
+      }
+    }
+    std::optional<Atom> broken;
+    if (pref && forbidden) {
+      broken = monitor("broken", owner, k);
+    }
+    attach(owner, k, updates, forbidden, broken);
+    if (pref) {
+      NF check = broken ?
+        nf_of(NF::Kind::And, {lit(Literal{*broken, false}), final}) : final;
+      out.soft.push_back({*pref, owner, k, std::move(check)});
+      return;
+    }
+    // Hard: every instance at the end
+    if (k > 0) {
+      NF all;
+      all.kind = NF::Kind::Forall;
+      for (uint32_t v = 0; v < k; ++v) {
+        all.vars.push_back(v);
+      }
+      all.children.push_back(std::move(final));
+      final = std::move(all);
+    }
+    if (final.kind == NF::Kind::Lit) {
+      out.goal.push_back(final.lit);
+    } else {
+      out.goal.push_back(make_aux(final, owner).lit);
+    }
+  }
+
+  // The latest time a constraint names (always-within: its delay)
+  static double latest(const Source & s, FormulaId id)
+  {
+    if (!id.valid()) {
+      return 0.0;
+    }
+    const ast::Formula & f = s.nodes.formulas[id];
+    double out = 0.0;
+    for (double t : f.times) {
+      out = std::max(out, t);
+    }
+    for (FormulaId c : f.children) {
+      out = std::max(out, latest(s, c));
+    }
+    return out;
+  }
+
+  void constraints(
+    const Source & s, FormulaId id, std::vector<Variable> owner, Scope scope,
+    const std::string * pref, Monitoring & out)
+  {
+    const ast::Formula & f = s.nodes.formulas[id];
+    switch (f.kind) {
+      case ast::FormulaKind::And:
+        for (FormulaId c : f.children) {
+          constraints(s, c, owner, scope, pref, out);
+        }
+        return;
+      case ast::FormulaKind::Forall:
+        declare(s, f.params, owner, scope);
+        constraints(s, f.children.at(0), owner, scope, pref, out);
+        return;
+      case ast::FormulaKind::Preference:
+        if (f.name.valid()) {
+          std::string name = str(s, f.name);
+          constraints(s, f.children.at(0), owner, scope, &name, out);
+        }
+        return;  // unnamed: counts for nothing
+      case ast::FormulaKind::Modal:
+      case ast::FormulaKind::AtEnd:
+        constraint(s, f, owner, scope, pref, out);
+        return;
+      default:
+        task_.has_timed_constraints = true;  // not a constraint Kairos knows
+        return;
+    }
+  }
+
+  // Goal preferences and soft constraints: after the hard goal, kairos-pref-end; then each
+  // instance is collected (free if it holds) or forgone (one more violation, which the metric
+  // weighs)
+  void compile_soft_goals(const Condition & hard, std::vector<SoftGoal> & prefs)
+  {
+    PredicateId ended = task_.add_predicate("kairos-pref-ended", false);
+    Literal not_ended{Atom{ended, {}}, false};
+    for (auto & a : task_.actions) {
+      a.precondition.literals.push_back(not_ended);
+    }
+    for (auto & a : task_.durative_actions) {
+      a.at_start.literals.push_back(not_ended);
+      a.at_end.literals.push_back(not_ended);
+    }
+    Action end;
+    end.name = "kairos-pref-end";
+    end.precondition = hard;
+    end.precondition.literals.push_back(not_ended);
+    Effect add_ended;
+    add_ended.atom = Atom{ended, {}};
+    end.effects.push_back(add_ended);
+    task_.actions.push_back(std::move(end));
+    task_.goal = Condition{};
+    task_.goal.literals.push_back(Literal{Atom{ended, {}}, true});
+
+    StaticFacts statics = static_facts();
+    for (size_t i = 0; i < prefs.size(); ++i) {
+      auto & pref = prefs[i];
+      auto & owner = pref.owner;
+      const size_t params = pref.params;
+      std::vector<TypeSpec> types;
+      Atom done_atom;
+      for (uint32_t v = 0; v < params; ++v) {
+        types.push_back(owner[v].types);
+        done_atom.args.push_back(Term::variable(v));
+      }
+
+      // The instances that may be violated: not those that static facts make true for good
+      // (storage: an "imply" whose premise needs two areas connected), often most of them
+      std::vector<std::vector<ObjectId>> relevant;
+      size_t all = 0;
+      std::vector<std::optional<ObjectId>> binding(owner.size());
+      std::vector<ObjectId> tuple(params);
+      std::function<void(size_t)> instances = [&](size_t k) {
+          if (k == params) {
+            ++all;
+            if (evaluate(pref.check, owner, binding, statics) != Tri::True) {
+              relevant.push_back(tuple);
+            }
+            return;
+          }
+          for (ObjectId o : objects_of(types[k])) {
+            tuple[k] = o;
+            binding[k] = o;
+            instances(k + 1);
+          }
+          binding[k].reset();
+        };
+      instances(0);
+      if (relevant.empty()) {
+        violation_fluent(pref.name);  // never violated: 0 in the metric
+        continue;
+      }
+      std::optional<Literal> is_relevant;
+      if (relevant.size() < all) {
+        PredicateId r = task_.add_predicate(
+          "kairos-pref-relevant-" + std::to_string(i), false, types);
+        is_relevant = Literal{Atom{r, done_atom.args}, true};
+        for (const auto & tu : relevant) {
+          task_.init_facts.emplace_back(r, tu);
+        }
+      }
+      done_atom.predicate = task_.add_predicate(
+        "kairos-pref-done-" + std::to_string(i), false, types);
+      Effect add_done;
+      add_done.atom = done_atom;
+
+      // Collect: ended, not done, the preference holds
+      NF pre = nf_of(NF::Kind::And, {nf_literal(Literal{Atom{ended, {}}, true}),
+            nf_literal(Literal{done_atom, false}), std::move(pref.check)});
+      if (is_relevant) {
+        pre.children.push_back(nf_literal(*is_relevant));
+      }
+      for (const auto & cl : dnf(pre, owner)) {
+        VarMap m = copy_order(params, cl.exist, owner.size());
+        Action collect;
+        collect.name = "kairos-pref-collect-" + std::to_string(i);
+        collect.variables = reorder(owner, m);
+        collect.parameters = static_cast<uint32_t>(params);
+        collect.hidden = distinct(cl.exist);
+        collect.precondition = to_condition(cl.items);
+        remap(collect.precondition, m);
+        Effect e = add_done;
+        remap(e, m);
+        collect.effects.push_back(std::move(e));
+        task_.actions.push_back(std::move(collect));
+      }
+
+      // Forgo: ended, not done; one more violation
+      Action forgo;
+      forgo.name = "kairos-pref-forgo-" + std::to_string(i);
+      forgo.variables.assign(owner.begin(), owner.begin() + static_cast<std::ptrdiff_t>(params));
+      forgo.parameters = static_cast<uint32_t>(params);
+      forgo.precondition.literals = {Literal{Atom{ended, {}}, true}, Literal{done_atom, false}};
+      if (is_relevant) {
+        forgo.precondition.literals.push_back(*is_relevant);
+      }
+      forgo.effects = {add_done, count_violation(pref.name, Timing::Instant)};
+      task_.actions.push_back(std::move(forgo));
+
+      // Goal: every instance that may be violated done
+      for (const auto & tu : relevant) {
+        Atom g{done_atom.predicate, {}};
+        for (ObjectId o : tu) {
+          g.args.push_back(Term::object(o));
+        }
+        task_.goal.literals.push_back(Literal{std::move(g), true});
+      }
+    }
+  }
+
+  // --- Static facts: what no action, event or timed literal changes ---------------------------
+
+  enum class Tri : uint8_t {False, True, Unknown};
+
+  struct StaticFacts
+  {
+    std::vector<bool> fixed;  // per predicate
+    std::set<std::pair<uint32_t, std::vector<uint32_t>>> facts;
+  };
+
+  StaticFacts static_facts() const
+  {
+    StaticFacts out;
+    out.fixed.assign(task_.predicate_names.size(), true);
+    for (size_t p = 0; p < task_.derived.size(); ++p) {
+      out.fixed[p] = !task_.derived[p];
+    }
+    auto changes = [&](const std::vector<Effect> & effects) {
+        for (const auto & e : effects) {
+          if (e.kind == Effect::Kind::Add || e.kind == Effect::Kind::Delete) {
+            out.fixed[e.atom.predicate.index()] = false;
+          }
+        }
+      };
+    for (const auto * list : {&task_.actions, &task_.processes, &task_.events}) {
+      for (const auto & a : *list) {
+        changes(a.effects);
+      }
+    }
+    for (const auto & a : task_.durative_actions) {
+      changes(a.effects);
+    }
+    for (const auto & ev : task_.timed_events) {
+      if (ev.fact) {
+        out.fixed[ev.fact->first.index()] = false;
+      }
+    }
+    for (const auto & [p, args] : task_.init_facts) {
+      if (out.fixed[p.index()]) {
+        std::vector<uint32_t> a;
+        for (ObjectId o : args) {
+          a.push_back(o.value());
+        }
+        out.facts.emplace(p.value(), std::move(a));
+      }
+    }
+    return out;
+  }
+
+  std::vector<ObjectId> objects_of(const TypeSpec & t) const
+  {
+    std::vector<ObjectId> out;
+    for (uint32_t o = 0; o < pm_.objects.items.size(); ++o) {
+      if (dm_.types.fits(pm_.objects.items[ObjectId(o)].types, t)) {
+        out.push_back(ObjectId(o));
+      }
+    }
+    return out;
+  }
+
+  // A formula with some variables bound: true or false by static facts alone, or unknown
+  Tri evaluate(
+    const NF & n, const std::vector<Variable> & owner,
+    std::vector<std::optional<ObjectId>> & binding, const StaticFacts & statics) const
+  {
+    auto object = [&](const Term & t) -> std::optional<ObjectId> {
+        if (t.kind == Term::Kind::Object) {
+          return ObjectId(t.index);
+        }
+        if (t.kind == Term::Kind::Variable && t.index < binding.size()) {
+          return binding[t.index];
+        }
+        return std::nullopt;
+      };
+    switch (n.kind) {
+      case NF::Kind::True: return Tri::True;
+      case NF::Kind::False: return Tri::False;
+      case NF::Kind::Lit: {
+          if (!statics.fixed[n.lit.atom.predicate.index()]) {
+            return Tri::Unknown;
+          }
+          std::vector<uint32_t> args;
+          for (const auto & a : n.lit.atom.args) {
+            auto o = object(a);
+            if (!o) {
+              return Tri::Unknown;
+            }
+            args.push_back(o->value());
+          }
+          bool holds = statics.facts.count({n.lit.atom.predicate.value(), args}) > 0;
+          return holds == n.lit.positive ? Tri::True : Tri::False;
+        }
+      case NF::Kind::Cmp: {
+          if (!n.cmp.objects || (n.cmp.op != CompareOp::Eq && n.cmp.op != CompareOp::Ne)) {
+            return Tri::Unknown;
+          }
+          auto l = object(n.cmp.lhs_term);
+          auto r = object(n.cmp.rhs_term);
+          if (!l || !r) {
+            return Tri::Unknown;
+          }
+          return (*l == *r) == (n.cmp.op == CompareOp::Eq) ? Tri::True : Tri::False;
+        }
+      case NF::Kind::And:
+      case NF::Kind::Or: {
+          bool conj = n.kind == NF::Kind::And;
+          Tri out = conj ? Tri::True : Tri::False;
+          for (const auto & c : n.children) {
+            Tri v = evaluate(c, owner, binding, statics);
+            if (v == (conj ? Tri::False : Tri::True)) {
+              return v;
+            }
+            if (v == Tri::Unknown) {
+              out = Tri::Unknown;
+            }
+          }
+          return out;
+        }
+      case NF::Kind::Forall:
+      case NF::Kind::Exists: {
+          // Every binding of the variables, unless there are too many
+          bool all = n.kind == NF::Kind::Forall;
+          std::vector<std::vector<ObjectId>> domains;
+          size_t product = 1;
+          for (uint32_t v : n.vars) {
+            domains.push_back(objects_of(owner[v].types));
+            product *= std::max<size_t>(1, domains.back().size());
+            if (product > 4096 || v >= binding.size()) {
+              return Tri::Unknown;
+            }
+          }
+          Tri out = all ? Tri::True : Tri::False;
+          bool decided = false;
+          std::function<void(size_t)> each = [&](size_t k) {
+              if (decided) {
+                return;
+              }
+              if (k == n.vars.size()) {
+                Tri v = evaluate(n.children.at(0), owner, binding, statics);
+                if (v == (all ? Tri::False : Tri::True)) {
+                  out = v;
+                  decided = true;
+                } else if (v == Tri::Unknown) {
+                  out = Tri::Unknown;
+                }
+                return;
+              }
+              for (ObjectId o : domains[k]) {
+                binding[n.vars[k]] = o;
+                each(k + 1);
+              }
+              binding[n.vars[k]].reset();
+            };
+          each(0);
+          return out;
+        }
+    }
+    return Tri::Unknown;
   }
 
   void problem_part()
@@ -1166,24 +2135,57 @@ private:
       task_.init_fluents.push_back(f);
     }
 
+    // Constraints first: their monitors go on the domain actions only
+    Monitoring mon;
+    Source ds{d_.nodes, d_.symbols};
+    clock_limit_ = std::max(latest(ds, d_.constraints), latest(s, p_.constraints)) + 1.0;
+    if (d_.constraints.valid()) {
+      constraints(ds, d_.constraints, {}, {}, nullptr, mon);
+    }
+    if (p_.constraints.valid()) {
+      constraints(s, p_.constraints, {}, {}, nullptr, mon);
+    }
+    std::stable_sort(task_.timed_events.begin(), task_.timed_events.end(),
+      [](const TimedEvent & a, const TimedEvent & b) {return a.time < b.time;});
+    std::vector<FormulaId> hard;
+    std::vector<SoftGoal> soft;
     if (p_.goal.valid()) {
-      std::vector<Variable> owner;
-      Scope scope;
-      NF g = to_nf(s, p_.goal, true, TimeTag::None, owner, scope);
-      Clauses cs = dnf(g, owner);
-      if (cs.size() == 1 && cs[0].exist.empty() && owner.empty()) {
-        task_.goal = to_condition(cs[0].items);
-      } else {
-        task_.goal = to_condition({make_aux(g, owner)});
+      std::vector<GoalPref> prefs;
+      split_goal(s, p_.goal, {}, hard, prefs);
+      for (const auto & pref : prefs) {
+        SoftGoal g;
+        g.name = pref.name;
+        Scope scope;
+        g.params = declare(s, pref.params, g.owner, scope).size();
+        g.check = to_nf(s, pref.body, true, TimeTag::None, g.owner, scope);
+        soft.push_back(std::move(g));
       }
     }
-    if (p_.constraints.valid() || d_.constraints.valid()) {
-      task_.has_trajectory_constraints = true;
+    soft.insert(soft.end(), std::make_move_iterator(mon.soft.begin()),
+      std::make_move_iterator(mon.soft.end()));
+    Condition goal = goal_condition(s, soft.empty() ? std::vector<FormulaId>{p_.goal} : hard);
+    if (!p_.goal.valid()) {
+      goal = Condition{};
     }
+    goal.literals.insert(goal.literals.end(), mon.goal.begin(), mon.goal.end());
+    if (soft.empty()) {
+      task_.goal = std::move(goal);
+    } else {
+      compile_soft_goals(goal, soft);
+    }
+    task_.has_trajectory_constraints = task_.has_timed_constraints;
 
     if (p_.metric) {
       task_.metric.minimize = p_.metric->minimize;
       task_.metric.expr = expr(s, p_.metric->expr, {});
+      if (!task_.metric.minimize && !violations_.empty()) {
+        // Maximizing what preferences are worth: minimizing its negation weighs each violation
+        Expr neg;
+        neg.op = ExprOp::Neg;
+        neg.children.push_back(std::move(task_.metric.expr));
+        task_.metric.expr = std::move(neg);
+        task_.metric.minimize = true;
+      }
     } else {
       task_.metric.is_default = true;
       task_.metric.expr.op = d_.durative_actions.empty() ? ExprOp::StepCount : ExprOp::TotalTime;
@@ -1199,6 +2201,11 @@ private:
   size_t aux_counter_ = 0;
   bool in_axiom_ = false;  // normalizing the body of a derived predicate
   bool in_rule_ = false;   // the body of any axiom: existentials are rule variables
+  std::map<FormulaId, bool> pref_mode_;              // compiled preferences: satisfied?
+  std::map<std::string, FunctionId> violations_;     // preference: its violation count
+  size_t monitor_counter_ = 0;
+  std::optional<FunctionId> clock_;  // steps, for timed constraints in sequential plans
+  double clock_limit_ = 0.0;         // past every time they name
 
 public:
   void run_all()
