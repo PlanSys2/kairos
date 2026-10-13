@@ -24,11 +24,12 @@ Kairos aims to be a reference PDDL planner: broad language coverage, efficient o
 robust, and easy to embed. It is developed within the [PlanSys2](https://github.com/PlanSys2)
 organization and will become a planner for PlanSys2, but it does not depend on ROS.
 
-**How it compares**: on temporal, numeric and robotics benchmarks, and on PlanSys2 problems
-scaled up to thousands of objects, Kairos solves more problems than OPTIC, TFD, POPF and the
-other planners it was measured against; on classical planning, Fast Downward's LAMA is still
-ahead. Results and method in [docs/benchmark.md](docs/benchmark.md); which PDDL features each
-planner handles in [docs/pddl-support.md](docs/pddl-support.md).
+**How it compares**: on classical, numeric, temporal and robotics benchmarks, and on PlanSys2
+problems scaled up to thousands of objects, Kairos solves more problems than LAMA, the winners of
+the IPC 2023 classical and numeric tracks, OPTIC, TFD, POPF, ENHSP and the other planners it was
+measured against, under the same limits, and as many or more of them within 100 ms and 1 s. Results and
+method in [docs/benchmark.md](docs/benchmark.md); which PDDL features each planner handles in
+[docs/pddl-support.md](docs/pddl-support.md).
 
 ## Why another planner?
 

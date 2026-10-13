@@ -823,6 +823,14 @@ private:
         } else {
           phases_.push_back({kind, "lama-novelty", share, improve, false, !improve});
         }
+      } else if (portfolio && kind == Kind::Plain && resolve_auto(first_task, false) == "lama") {
+        // Classical: LAMA, and if it has no plan, eager search with novelty for the last part
+        // (blocksworld, depots, sokoban, recharging-robots: 0.2-2.5 s where lazy LAMA finds
+        // nothing in 30 s). Novelty first slowed what LAMA solves at once (woodworking: 55
+        // expansions, 1.5 s with novelty first) and, as a share of a long limit, waited long
+        log_.info(LogChannel::Orchestrator, "search: lama, then novelty (auto)");
+        phases_.push_back({kind, "lama", 0.85, improve, false});
+        phases_.push_back({kind, "novelty", share, false, false, true});
       } else {
         phases_.push_back({kind, o_.search, share, improve, false});
       }
@@ -929,6 +937,20 @@ private:
     search::SearchContext ctx(task_k, registry, space, costs, sink, &bk);
     if (ph.kind == Kind::Snap) {
       ctx.heuristic_task = &snap_task_->guide;
+    }
+    // M2: preferred steps go to the agent that is free first in a schedule of the partial
+    // plan (bt_example's first plan had one robot doing everything)
+    std::optional<temporal::PartialSchedule> partial;
+    if (ph.kind == Kind::Compressed) {
+      partial.emplace(*compressed_, space);
+      log_.debug(LogChannel::Orchestrator, "partial schedule: {}",
+            partial->active() ? "on" : "off");
+      if (partial->active()) {
+        ctx.tie_key = [&partial](state::StateId p, uint32_t a) {return partial->end(p, a);};
+        ctx.on_reach = [&partial](state::StateId p, uint32_t a, state::StateId c) {
+            partial->reach(p, a, c);
+          };
+      }
     }
     if (filter) {
       ctx.accept = [&filter](state::StateId p, uint32_t a, state::StateId c) {

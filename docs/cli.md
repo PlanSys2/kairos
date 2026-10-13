@@ -771,7 +771,7 @@ yet` and `solve` refuse a task.
 
 ```console
 $ kairos --features
-kairos 0.4.0: PDDL features (full, partial, none)
+kairos 0.5.0: PDDL features (full, partial, none)
   typing                     full     :typing
   negative-preconditions     full     :negative-preconditions
   disjunctive-preconditions  full     :disjunctive-preconditions
@@ -788,7 +788,7 @@ kairos 0.4.0: PDDL features (full, partial, none)
 
 ```console
 $ kairos --features --format json
-{"version": "0.4.0", "features": [{"feature": "typing", "requirements": [":typing", ":adl"], "support": "full", "note": ""}, ...]}
+{"version": "0.5.0", "features": [{"feature": "typing", "requirements": [":typing", ":adl"], "support": "full", "note": ""}, ...]}
 ```
 
 Which features other planners plan with: [pddl-support.md](pddl-support.md).
@@ -797,7 +797,7 @@ Which features other planners plan with: [pddl-support.md](pddl-support.md).
 
 ```console
 $ kairos --version
-kairos 0.4.0
+kairos 0.5.0
 ```
 
 `--version` must be the first argument. It prints to stdout and exits with 0.

@@ -83,8 +83,21 @@ struct Bench
   {
     std::set<std::string> out;
     for (const auto & l : lg.landmarks()) {
-      for (uint32_t q : l.parents) {
-        out.insert(name(lg.landmarks()[q]) + " < " + name(l));
+      for (uint32_t c : l.needed_by) {
+        out.insert(name(l) + " < " + name(lg.landmarks()[c]));
+      }
+    }
+    return out;
+  }
+  // "a < b" for each reasonable ordering
+  std::set<std::string> reasonable(const LandmarkGraph & lg) const
+  {
+    std::set<std::string> out;
+    for (const auto & l : lg.landmarks()) {
+      for (uint32_t c : l.children) {
+        if (std::find(l.needed_by.begin(), l.needed_by.end(), c) == l.needed_by.end()) {
+          out.insert(name(l) + " < " + name(lg.landmarks()[c]));
+        }
       }
     }
     return out;
@@ -359,6 +372,10 @@ Graph explore(const Bench & b, size_t limit)
           bool derived = b.p->sas.variables[l.fact.var].kind == sas::Variable::Kind::Derived;
           for (uint32_t p : l.parents) {
             const auto & pl = lg.landmarks()[p];
+            uint32_t self = static_cast<uint32_t>(&l - lg.landmarks().data());
+            if (std::find(pl.needed_by.begin(), pl.needed_by.end(), self) == pl.needed_by.end()) {
+              continue;  // a reasonable ordering: not greedy-necessary
+            }
             if (!holds(s, pl) && !(derived && holds(t, pl))) {
               return ::testing::AssertionFailure() << b.name(pl) << " < " <<
                      b.name(l) << " is not greedy-necessary";
@@ -384,6 +401,62 @@ const char * kBlocks =
   "  :effect (and (not (holding ?x)) (not (clear ?y)) (clear ?x) (handempty) (on ?x ?y)))"
   " (:action unstack :parameters (?x ?y) :precondition (and (on ?x ?y) (clear ?x) (handempty))"
   "  :effect (and (holding ?x) (clear ?y) (not (clear ?x)) (not (handempty)) (not (on ?x ?y)))))";
+
+TEST(LandmarksTest, ReasonableOrderingsBetweenGoals)
+{
+  // A tower a on b on c: stacking b on c clears b, so (on a b) first would be undone; (on b c)
+  // comes first, reasonably (no greedy-necessary ordering between them)
+  auto b = bench(kBlocks,
+      "(define (problem p) (:domain blocks) (:objects a b c)"
+      " (:init (clear a) (clear b) (clear c) (ontable a) (ontable b) (ontable c) (handempty))"
+      " (:goal (and (on a b) (on b c))))");
+  auto lg = b->landmarks();
+  auto r = b->reasonable(lg);
+  EXPECT_TRUE(r.count("(on b c) < (on a b)")) << ::testing::PrintToString(r);
+  EXPECT_FALSE(r.count("(on a b) < (on b c)"));
+  EXPECT_FALSE(b->orderings(lg).count("(on b c) < (on a b)"));
+  // Counting: (on a b) before (on b c) is not reached, so the count does not fall
+  auto h = make_landmark_count(b->p->sas, b->costs);
+  std::vector<uint32_t> v;
+  std::vector<double> n;
+  StateId s = b->reg->initial();
+  auto c0 = b->context(s, v, n);
+  h->initial(c0);
+  double before = h->evaluate(c0).value;
+  for (const char * a : {"(pick-up a)", "(stack a b)"}) {
+    StateId t = b->after(s, a);
+    auto ct = b->context(t, v, n);
+    h->transition(s, b->action(a), ct);
+    s = t;
+  }
+  auto cs = b->context(s, v, n);
+  EXPECT_GE(h->evaluate(cs).value, before - 1.0);  // (holding a) reached, (on a b) not
+}
+
+TEST(LandmarksTest, PreferredOnlyWhenTheEffectHappensNow)
+{
+  // shift moves the token around: (at s1) is a landmark, but shift adds it only from s0
+  auto b = bench(
+    "(define (domain ring) (:requirements :strips :conditional-effects)"
+    " (:predicates (at0) (at1) (at2) (done))"
+    " (:action shift :parameters () :effect (and (when (at0) (and (not (at0)) (at1)))"
+    "  (when (at1) (and (not (at1)) (at2))) (when (at2) (and (not (at2)) (at0)))))"
+    " (:action back :parameters () :effect (and (when (at1) (and (not (at1)) (at0)))"
+    "  (when (at2) (and (not (at2)) (at1)))))"
+    " (:action finish :parameters () :precondition (at1) :effect (done)))",
+    "(define (problem p) (:domain ring) (:init (at2)) (:goal (done)))");
+  auto h = make_landmark_count(b->p->sas, b->costs);
+  std::vector<uint32_t> v;
+  std::vector<double> n;
+  auto c0 = b->context(b->reg->initial(), v, n);
+  h->initial(c0);
+  auto r = h->evaluate(c0);
+  // From (at2) only back makes (at1) true now; shift would make (at0)
+  EXPECT_EQ(r.preferred, (std::vector<uint32_t>{b->action("(back)")}));
+  auto ff = make_heuristic("ff", b->p->sas, b->costs);
+  auto rf = ff->evaluate(c0);
+  EXPECT_EQ(rf.preferred, (std::vector<uint32_t>{b->action("(back)")}));
+}
 
 TEST(LandmarksPropertiesTest, SmallDomains)
 {

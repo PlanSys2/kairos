@@ -115,6 +115,12 @@ struct SearchContext
   /// (the makespan of a temporal plan; never below the parent's g)
   std::function<double(state::StateId parent, uint32_t action, state::StateId child, double g)>
   path_cost;
+  /// @brief Optional: a key of the step parent -> action (lower is better): each preferred
+  /// action is swapped for its applicable variant with one argument changed that has a lower
+  /// key; on_reach is told of each state reached, before its evaluation (M2: the end of the
+  /// step in a schedule of the partial plan, so the work goes to the agent that is free first)
+  std::function<double(state::StateId parent, uint32_t action)> tie_key;
+  std::function<void(state::StateId parent, uint32_t action, state::StateId child)> on_reach;
   SearchStats stats;
 };
 

@@ -72,6 +72,38 @@ std::optional<Plan> schedule(
   const std::vector<uint32_t> & actions, double epsilon,
   const std::function<bool(const Plan &)> & prefix_valid = {});
 
+/**
+ * @brief A schedule of the partial plans of a search on the compressed task, kept per state:
+ * when each variable was last written and last read. The end of a step after a state, with
+ * steps starting when what they read or write was last written and what they write was last
+ * read, picks among the variants of a preferred step the one that ends first (in the factory of
+ * PlanSys2's bt_example, a robot that is free, not the one that did everything). Ordering the
+ * open lists by it too lost storage instances in B1 (FIFO ties work better there).
+ * Off for tasks with many variables, and once it holds too many states.
+ */
+class PartialSchedule
+{
+public:
+  PartialSchedule(const Compressed & compressed, state::StateSpace & space);
+  bool active() const {return active_;}
+  /// @brief The end of `action` after `parent` (0 if the parent is not kept).
+  double end(state::StateId parent, uint32_t action) const;
+  /// @brief Keeps the schedule of `child`, reached from `parent` (kNoState: the initial state).
+  void reach(state::StateId parent, uint32_t action, state::StateId child);
+
+private:
+  double duration(state::StateId parent, uint32_t action) const;
+  double start(const float * times, uint32_t action) const;
+
+  const Compressed & c_;
+  state::StateSpace & space_;
+  bool active_ = false;
+  size_t width_ = 0;  // per state: write and read times of each fact and numeric variable
+  std::vector<std::vector<uint32_t>> reads_, writes_;  // per action: slots
+  std::vector<float> times_;
+  std::vector<int64_t> slot_;  // per state: offset in times_, or -1
+};
+
 }  // namespace kairos::temporal
 
 #endif  // KAIROS__TEMPORAL__COMPRESS_HPP_

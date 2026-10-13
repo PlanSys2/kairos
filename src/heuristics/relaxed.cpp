@@ -18,6 +18,7 @@
 #include <cmath>
 #include <map>
 #include <set>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -26,7 +27,8 @@
 namespace kairos::heuristics
 {
 
-RelaxedGraph::RelaxedGraph(const sas::Task & task, const std::vector<double> & costs)
+RelaxedGraph::RelaxedGraph(
+  const sas::Task & task, const std::vector<double> & costs, bool simplify_ops)
 : task_(task), costs_(costs)
 {
   fact_offset_.resize(task.variables.size());
@@ -117,6 +119,9 @@ RelaxedGraph::RelaxedGraph(const sas::Task & task, const std::vector<double> & c
       num_[n].contributors.push_back(a);
       action_num_[a].push_back(n);
     }
+  }
+  if (simplify_ops && num_.empty()) {
+    simplify();
   }
   triggers_.assign(nodes_, {});
   for (uint32_t o = 0; o < ops_.size(); ++o) {
@@ -295,6 +300,113 @@ uint32_t RelaxedGraph::false_node(sas::VarId v)
 void RelaxedGraph::add_op(std::vector<uint32_t> pre, uint32_t effect, double base, uint32_t action)
 {
   ops_.push_back(Op{std::move(pre), effect, base, action});
+}
+
+// One unary operator per effect (precondition and condition together); then, per effect, the
+// duplicates and those dominated by one with a subset of the preconditions and no higher cost
+// go (FD tests subsets of up to 5 preconditions): hiking 15, 65 430 -> 4 194 in FD
+void RelaxedGraph::simplify()
+{
+  // Each effect gets its action's precondition: not when that is too big (patrol XL of B6,
+  // 537 680 actions, ran out of memory)
+  constexpr size_t kMaxEntries = size_t{2} << 20;
+  size_t entries = 0;
+  for (const Op & op : ops_) {
+    if (op.action != kNone) {
+      entries += op.pre.size() + ops_[act_op_[op.action]].pre.size();
+    }
+  }
+  if (entries > kMaxEntries) {
+    return;
+  }
+  std::vector<Op> unary, other;
+  for (uint32_t o = 0; o < ops_.size(); ++o) {
+    const Op & op = ops_[o];
+    if (op.action == kNone) {
+      if (node_action_[op.effect] < 0) {
+        other.push_back(op);  // axioms, the goal, negated facts
+      }
+      continue;  // the precondition op of an action: folded into its effects
+    }
+    Op u = op;
+    u.pre.clear();
+    const auto & pre = ops_[act_op_[op.action]].pre;
+    u.pre.insert(u.pre.end(), pre.begin(), pre.end());
+    for (uint32_t p : op.pre) {
+      if (p != act_node_[op.action]) {
+        u.pre.push_back(p);
+      }
+    }
+    std::sort(u.pre.begin(), u.pre.end());
+    u.pre.erase(std::unique(u.pre.begin(), u.pre.end()), u.pre.end());
+    unary.push_back(std::move(u));
+  }
+  // The cheapest operator per (effect, preconditions)
+  using Key = std::pair<uint32_t, std::vector<uint32_t>>;
+  struct KeyHash
+  {
+    size_t operator()(const Key & k) const
+    {
+      uint64_t h = k.first * 0x9E3779B97F4A7C15ull;
+      for (uint32_t p : k.second) {
+        h = (h ^ p) * 0x100000001B3ull;
+      }
+      return static_cast<size_t>(h ^ (h >> 29));
+    }
+  };
+  std::unordered_map<Key, uint32_t, KeyHash> best;
+  best.reserve(unary.size());
+  for (uint32_t i = 0; i < unary.size(); ++i) {
+    auto [it, fresh] = best.emplace(Key{unary[i].effect, unary[i].pre}, i);
+    if (!fresh && unary[i].base < unary[it->second].base) {
+      it->second = i;
+    }
+  }
+  constexpr size_t kMaxTested = 5;
+  std::vector<uint32_t> order;
+  order.reserve(best.size());
+  for (const auto & [key, i] : best) {
+    order.push_back(i);
+  }
+  std::sort(order.begin(), order.end());  // deterministic, whatever the hash order
+  std::vector<Op> kept;
+  for (uint32_t i : order) {
+    const Op & u = unary[i];
+    bool dominated = false;
+    const size_t k = u.pre.size();
+    if (k > 0 && k <= kMaxTested) {
+      Key sub{u.effect, {}};
+      for (uint32_t mask = 0; mask + 1 < (1u << k) && !dominated; ++mask) {
+        sub.second.clear();
+        for (size_t b = 0; b < k; ++b) {
+          if (mask & (1u << b)) {
+            sub.second.push_back(u.pre[b]);
+          }
+        }
+        auto it = best.find(sub);
+        dominated = it != best.end() && unary[it->second].base <= u.base;
+      }
+    }
+    if (!dominated) {
+      kept.push_back(u);
+    }
+  }
+  // Only when it removes most of them (hiking: 94 %): a smaller cut changes the relaxed plans
+  // the search follows for little gain (storage, 12 %: B1 lost temporal instances)
+  if (kept.size() * 2 > unary.size()) {
+    return;
+  }
+  ops_.clear();
+  for (auto & op : other) {
+    if (op.effect == goal_) {
+      goal_op_ = static_cast<uint32_t>(ops_.size());
+    }
+    ops_.push_back(std::move(op));
+  }
+  for (auto & op : kept) {
+    ops_.push_back(std::move(op));
+  }
+  std::fill(act_op_.begin(), act_op_.end(), kNone);
 }
 
 // How much the action moves e up in this state
@@ -590,6 +702,8 @@ double RelaxedGraph::relaxed_plan(std::vector<uint32_t> * preferred)
   // Best supporters back from the goal; an action counts once, or as many times as a numeric
   // condition needs it
   std::map<uint32_t, uint32_t> times;
+  // Actions with an effect of the plan that would happen now (preferred only then, as FD)
+  std::set<uint32_t> firing;
   if (seen_stamp_.size() != nodes_) {
     seen_stamp_.assign(nodes_, 0);
   }
@@ -612,6 +726,7 @@ double RelaxedGraph::relaxed_plan(std::vector<uint32_t> * preferred)
     if (node_num_[n] >= 0) {
       auto & t = times[s];
       t = std::max(t, node_[n].repeat);
+      firing.insert(s);
       stack.push_back(act_node_[s]);
       continue;
     }
@@ -619,6 +734,12 @@ double RelaxedGraph::relaxed_plan(std::vector<uint32_t> * preferred)
     if (op.action != kNone) {
       auto & t = times[op.action];
       t = std::max<uint32_t>(t, 1);
+      bool now = std::all_of(op.pre.begin(), op.pre.end(), [&](uint32_t p) {
+            return p == act_node_[op.action] || (fresh(p) && node_[p].initial);
+          });
+      if (now) {
+        firing.insert(op.action);
+      }
     }
     for (uint32_t p : op.pre) {
       stack.push_back(p);
@@ -628,7 +749,9 @@ double RelaxedGraph::relaxed_plan(std::vector<uint32_t> * preferred)
   for (const auto & [a, t] : times) {
     h += costs_[a] * t;
     // Preferred: applicable now (the real precondition: the relaxed one leaves some out)
-    if (preferred && state::holds(task_.actions[a].pre, task_, ctx_->values, ctx_->numbers)) {
+    if (preferred && firing.count(a) &&
+      state::holds(task_.actions[a].pre, task_, ctx_->values, ctx_->numbers))
+    {
       preferred->push_back(a);
     }
   }

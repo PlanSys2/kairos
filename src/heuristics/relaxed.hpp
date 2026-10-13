@@ -52,7 +52,12 @@ class RelaxedGraph
 public:
   enum class Mode : uint8_t {Max, Add};
 
-  RelaxedGraph(const sas::Task & task, const std::vector<double> & costs);
+  /// With simplify (tasks without numeric conditions), one unary operator per effect, without
+  /// duplicates or dominated ones (as Fast Downward), when that removes at least half of them
+  /// and fits in memory: hmax and hadd do not change; action nodes and action_op() are then
+  /// not used.
+  RelaxedGraph(
+    const sas::Task & task, const std::vector<double> & costs, bool simplify = false);
 
   /// @brief Cost of the goal in the relaxation (kInfinity if unreachable).
   double run(const EvalContext & ctx, Mode mode);
@@ -122,6 +127,7 @@ private:
   uint32_t num_node(const sas::LinearExpr & e, bool strict);
   void condition(const sas::Condition & c, std::vector<uint32_t> & out);
   void add_op(std::vector<uint32_t> pre, uint32_t effect, double base, uint32_t action);
+  void simplify();
   double change(uint32_t action, const NumNode & n, const EvalContext & ctx) const;
   double missing(const NumNode & n, const EvalContext & ctx) const;
   bool state_dependent(uint32_t action, const NumNode & n) const;

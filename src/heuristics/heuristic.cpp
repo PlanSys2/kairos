@@ -146,7 +146,7 @@ public:
   enum class Kind : uint8_t {Max, Add, FF};
 
   Relaxed(const sas::Task & t, const std::vector<double> & costs, Kind kind)
-  : t_(t), graph_(t, costs), kind_(kind) {}
+  : t_(t), graph_(t, costs, true), kind_(kind) {}
 
   HeuristicResult evaluate(const EvalContext & ctx) override
   {

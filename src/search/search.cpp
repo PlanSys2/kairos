@@ -395,11 +395,19 @@ private:
     }
   }
 
-  Evaluation evaluate(const heuristics::EvalContext & ec)
+  Evaluation evaluate(const heuristics::EvalContext & given)
   {
     ++ctx_.stats.evaluated;
     Evaluation r;
     r.h.reserve(hs_.size());
+    heuristics::EvalContext ec = given;
+    if (o_.preferred && path_dependent_) {
+      // The applicable actions, for the preferred ones of lmcount (FD looks only at these)
+      eval_ops_.clear();
+      ctx_.space.applicable(ec.state, eval_ops_);
+      eval_state_ = ec.state;
+      ec.applicable = &eval_ops_;
+    }
     for (size_t i = 0; i < hs_.size(); ++i) {
       auto hr = hs_[i]->evaluate(ec);
       r.h.push_back(hr.value);
@@ -493,6 +501,54 @@ private:
     return Outcome::Solved;
   }
 
+  // Each preferred action replaced by its applicable variant with one argument changed
+  // (another agent for the same step) that ends first in the schedule of the partial plan, if
+  // it ends sooner: the relaxed plan gives every step to one agent (M2). The set keeps its size,
+  // so the search stays as focused
+  void with_other_agents(StateId s, std::unordered_set<uint32_t> & pref) const
+  {
+    std::vector<std::pair<uint32_t, uint32_t>> swaps;
+    for (uint32_t p : pref) {
+      const auto & b = ctx_.task.actions[p];
+      double best = ctx_.tie_key(s, p);
+      uint32_t pick = p;
+      for (uint32_t op : ops_) {
+        const auto & a = ctx_.task.actions[op];
+        if (op == p || a.schema != b.schema || a.args.size() != b.args.size()) {
+          continue;
+        }
+        size_t differ = 0;
+        for (size_t i = 0; i < a.args.size() && differ < 2; ++i) {
+          differ += a.args[i] != b.args[i];
+        }
+        if (differ != 1) {
+          continue;
+        }
+        double e = ctx_.tie_key(s, op);
+        if (e < best) {
+          best = e;
+          pick = op;
+        }
+      }
+      if (pick != p) {
+        swaps.emplace_back(p, pick);
+      }
+    }
+    for (auto [from, to] : swaps) {
+      pref.erase(from);
+      pref.insert(to);
+    }
+  }
+
+  void log_initial(const std::vector<double> & h) const
+  {
+    std::string values;
+    for (size_t i = 0; i < h.size(); ++i) {
+      values += (i ? ", " : "") + hs_[i]->name() + " " + std::to_string(h[i]);
+    }
+    ctx_.logger.debug(LogChannel::Search, "initial h: {}", values);
+  }
+
   void progress(const std::vector<double> & h)
   {
     bool better = false;
@@ -574,6 +630,9 @@ private:
     }
     Node & n0 = space_[s0];
     n0 = Node{kNoState, kNoAction, 0.0, r0.h[0], kOpen};
+    if (ctx_.on_reach) {
+      ctx_.on_reach(kNoState, kNoAction, s0);
+    }
     store(s0, r0);
     best_h_ = r0.h;
     if (o_.preferred) {
@@ -610,6 +669,11 @@ private:
       if (out_of_budget()) {
         return Outcome::Stopped;
       }
+      if (ctx_.tie_key && !pref.empty()) {
+        std::unordered_set<uint32_t> set(pref.begin(), pref.end());
+        with_other_agents(e.state, set);
+        pref.assign(set.begin(), set.end());
+      }
       for (const auto & [t, op] : succ) {
         if (out_of_budget()) {
           return Outcome::Stopped;
@@ -627,6 +691,9 @@ private:
           auto ct = context(t, g2);
           transition(e.state, op, ct);
           if (m.status == kNew) {
+            if (ctx_.on_reach) {
+              ctx_.on_reach(e.state, op, t);
+            }
             auto r = evaluate(ct);
             Node & mm = space_[t];
             if (r.dead_end) {
@@ -688,7 +755,11 @@ private:
       return Outcome::Unsolvable;
     }
     space_[current] = Node{kNoState, kNoAction, 0.0, r.h[0], kClosed};
+    if (ctx_.on_reach) {
+      ctx_.on_reach(kNoState, kNoAction, current);
+    }
     best_h_ = r.h;
+    log_initial(r.h);
     std::vector<double> current_h = r.h;
     std::vector<uint32_t> preferred = std::move(r.preferred);
     while (true) {
@@ -697,9 +768,17 @@ private:
       }
       // Expand: one entry per operator, keyed by the parent's h
       ++ctx_.stats.expanded;
-      ops_.clear();
-      ctx_.space.applicable(current, ops_);
+      if (eval_state_ == current) {
+        ops_.swap(eval_ops_);  // computed when it was evaluated
+        eval_state_ = kNoState;
+      } else {
+        ops_.clear();
+        ctx_.space.applicable(current, ops_);
+      }
       std::unordered_set<uint32_t> pref(preferred.begin(), preferred.end());
+      if (ctx_.tie_key) {
+        with_other_agents(current, pref);
+      }
       Keys k = keys(0.0, current_h, 0);
       for (uint32_t op : ops_) {
         open_->push(Entry{current, op}, k, pref.count(op) > 0);
@@ -730,6 +809,9 @@ private:
         Node & m = space_[*next];
         if (m.status != kNew) {
           continue;
+        }
+        if (ctx_.on_reach) {
+          ctx_.on_reach(e.state, e.action, *next);
         }
         auto rr = evaluate(cn);
         if (rr.dead_end) {
@@ -835,6 +917,8 @@ private:
   std::unique_ptr<Alternation> open_;
   std::unordered_map<StateId, std::vector<uint32_t>> preferred_;
   std::vector<uint32_t> ops_;
+  std::vector<uint32_t> eval_ops_;  // applicable actions of the state being evaluated
+  StateId eval_state_ = kNoState;    // which (lazy search expands it next)
   std::vector<double> best_h_;
 };
 

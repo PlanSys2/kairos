@@ -69,11 +69,11 @@ public:
   {
     auto t0 = std::chrono::steady_clock::now();
     copy_names();
-    std::vector<std::vector<ground::AtomId>> chosen;
+    std::vector<std::vector<ground::AtomId>> chosen, groups;
     TranslateStats st;
     if (options_.use_invariants) {
       auto invariants = find_invariants(lt_, g_, options_.invariants, budget_, &st.invariants);
-      auto groups = mutex_groups(invariants, g_);
+      groups = mutex_groups(invariants, g_);
       st.mutex_groups = groups.size();
       chosen = choose_groups(groups, g_);
     }
@@ -81,6 +81,18 @@ public:
       return Result<Task>::failure(budget_error());
     }
     make_variables(chosen);
+    for (const auto & group : groups) {
+      std::vector<Fact> facts;
+      for (ground::AtomId a : group) {
+        auto [var, value] = out_.atom_fact[a];
+        if (var != kNoAtom) {
+          facts.push_back(Fact{var, value});
+        }
+      }
+      if (facts.size() > 1) {
+        out_.mutex_groups.push_back(std::move(facts));
+      }
+    }
     st.group_variables = chosen.size();
     initial_state();
     try {

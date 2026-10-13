@@ -771,7 +771,8 @@ TEST_F(CliTest, PrintedTemporalPlansStayValid)
     write("plan.txt", r.out);
     Outcome v = run("validate " + pair + " '" + path("plan.txt") + "'");
     EXPECT_EQ(v.code, 0) << format << ": " << v.err << r.out;
-    EXPECT_TRUE(contains(r.out, ".807521")) << r.out;  // six decimals
+    // Six decimals, whatever the route (the times are fractions of 1000 / 8.2)
+    EXPECT_TRUE(std::regex_search(r.out, std::regex(R"(\.\d{6}: \(move)"))) << r.out;
   }
   // Plans that survive 3 decimals keep them
   Outcome f = run("'" + dir + "factory.pddl' '" + dir + "factory_problem_1.pddl' --no-anytime");

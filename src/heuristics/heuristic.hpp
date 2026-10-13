@@ -40,6 +40,7 @@ struct EvalContext
   const uint32_t * values = nullptr;
   const double * numbers = nullptr;
   double g = 0.0;
+  const std::vector<uint32_t> * applicable = nullptr;  // actions applicable here, if known
 };
 
 struct HeuristicResult

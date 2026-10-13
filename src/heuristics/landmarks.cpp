@@ -14,6 +14,7 @@
 
 #include "heuristics/landmarks.hpp"
 
+
 #include <algorithm>
 #include <cstddef>
 #include <cmath>
@@ -157,12 +158,193 @@ LandmarkGraph LandmarkGraph::build(
       auto & children = lg.landmarks_[p].children;
       if (std::find(children.begin(), children.end(), id) == children.end()) {
         children.push_back(id);
+        lg.landmarks_[p].needed_by.push_back(id);
         lg.landmarks_[id].parents.push_back(p);
       }
     }
   }
-  (void)task;
+  lg.reasonable_orderings(task, budget);
   return lg;
+}
+
+// a interferes with b: achieving b before a would mean destroying b to achieve a (FD): a and
+// b mutex, every achiever of a destroying b, or a greedy-necessary parent of a mutex with b
+bool LandmarkGraph::interferes(const sas::Task & task, uint32_t a, uint32_t b) const
+{
+  const Landmark & la = landmarks_[a];
+  const Landmark & lb = landmarks_[b];
+  // Mutex: two values of a variable, or in one of the mutex groups found (also those that did
+  // not become variables: (clear b) and (on a b) in blocks)
+  auto mutex = [&](const sas::Fact & x, const sas::Fact & y) {
+      if (task.variables[x.var].kind == sas::Variable::Kind::Derived || x == y) {
+        return false;
+      }
+      if (x.var == y.var) {
+        return true;
+      }
+      auto gx = groups_of_.find({x.var, x.value});
+      auto gy = groups_of_.find({y.var, y.value});
+      if (gx == groups_of_.end() || gy == groups_of_.end()) {
+        return false;
+      }
+      for (uint32_t g : gx->second) {
+        if (std::binary_search(gy->second.begin(), gy->second.end(), g)) {
+          return true;
+        }
+      }
+      return false;
+    };
+  if (a == b || task.variables[lb.fact.var].kind == sas::Variable::Kind::Derived) {
+    return false;
+  }
+  if (mutex(la.fact, lb.fact)) {
+    return true;
+  }
+  if (!la.achievers.empty() && la.cost > 0.0) {
+    bool all = true;
+    for (uint32_t act : la.achievers) {
+      const auto & changes = task.actions[act].changes;
+      all = std::any_of(changes.begin(), changes.end(),
+          [&](const sas::Fact & e) {return mutex(e, lb.fact);});
+      if (!all) {
+        break;
+      }
+    }
+    if (all) {
+      return true;
+    }
+  }
+  for (uint32_t x : la.parents) {
+    const auto & needed = landmarks_[x].needed_by;
+    if (std::find(needed.begin(), needed.end(), a) != needed.end() &&
+      mutex(landmarks_[x].fact, lb.fact))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+void LandmarkGraph::reasonable_orderings(const sas::Task & task, Budget * budget)
+{
+  const auto n = static_cast<uint32_t>(landmarks_.size());
+  groups_of_.clear();
+  for (uint32_t g = 0; g < task.mutex_groups.size(); ++g) {
+    for (const auto & f : task.mutex_groups[g]) {
+      groups_of_[{f.var, f.value}].push_back(g);
+    }
+  }
+  std::vector<std::pair<uint32_t, uint32_t>> found;  // (before, after)
+  for (uint32_t b = 0; b < n; ++b) {
+    if (budget && budget->exhausted()) {
+      return;
+    }
+    const Landmark & lb = landmarks_[b];
+    if (lb.initially_true) {
+      continue;
+    }
+    if (lb.goal) {
+      // A goal achieved before a landmark that destroys it is achieved again
+      for (uint32_t a = 0; a < n; ++a) {
+        if (interferes(task, a, b)) {
+          found.emplace_back(a, b);
+        }
+      }
+      continue;
+    }
+    // The other parents of what b is needed for, and their ancestors
+    std::vector<uint8_t> interesting(n, 0);
+    std::vector<uint32_t> stack;
+    for (uint32_t c : lb.needed_by) {
+      for (uint32_t p : landmarks_[c].parents) {
+        if (p != b && !interesting[p]) {
+          interesting[p] = 1;
+          stack.push_back(p);
+        }
+      }
+    }
+    while (!stack.empty()) {
+      uint32_t x = stack.back();
+      stack.pop_back();
+      for (uint32_t p : landmarks_[x].parents) {
+        if (p != b && !interesting[p]) {
+          interesting[p] = 1;
+          stack.push_back(p);
+        }
+      }
+    }
+    for (uint32_t a = 0; a < n; ++a) {
+      if (interesting[a] && interferes(task, a, b)) {
+        found.emplace_back(a, b);
+      }
+    }
+  }
+  if (found.empty()) {
+    return;
+  }
+  // Strongly connected components with every ordering: reasonable ones inside one are dropped
+  std::vector<std::vector<uint32_t>> succ(n);
+  for (uint32_t i = 0; i < n; ++i) {
+    succ[i] = landmarks_[i].children;
+  }
+  for (auto [a, b] : found) {
+    succ[a].push_back(b);
+  }
+  std::vector<int32_t> comp(n, -1), low(n, 0), num(n, -1);
+  std::vector<uint32_t> st;
+  std::vector<uint8_t> on(n, 0);
+  int32_t counter = 0, comps = 0;
+  for (uint32_t root = 0; root < n; ++root) {
+    if (num[root] >= 0) {
+      continue;
+    }
+    // Iterative Tarjan: (node, next successor)
+    std::vector<std::pair<uint32_t, size_t>> work{{root, 0}};
+    num[root] = low[root] = counter++;
+    st.push_back(root);
+    on[root] = 1;
+    while (!work.empty()) {
+      auto & [v, i] = work.back();
+      if (i < succ[v].size()) {
+        uint32_t w = succ[v][i++];
+        if (num[w] < 0) {
+          num[w] = low[w] = counter++;
+          st.push_back(w);
+          on[w] = 1;
+          work.emplace_back(w, 0);
+        } else if (on[w]) {
+          low[v] = std::min(low[v], num[w]);
+        }
+        continue;
+      }
+      if (low[v] == num[v]) {
+        uint32_t w;
+        do {
+          w = st.back();
+          st.pop_back();
+          on[w] = 0;
+          comp[w] = comps;
+        } while (w != v);
+        ++comps;
+      }
+      uint32_t done = v;
+      work.pop_back();
+      if (!work.empty()) {
+        low[work.back().first] = std::min(low[work.back().first], low[done]);
+      }
+    }
+  }
+  for (auto [a, b] : found) {
+    if (comp[a] == comp[b]) {
+      continue;
+    }
+    auto & children = landmarks_[a].children;
+    if (std::find(children.begin(), children.end(), b) == children.end()) {
+      children.push_back(b);
+      landmarks_[b].parents.push_back(a);
+      landmarks_[b].reasonable.push_back(a);
+    }
+  }
 }
 
 size_t LandmarkGraph::orderings() const
@@ -198,7 +380,11 @@ public:
     if (!built_) {
       lm_ = LandmarkGraph::build(t_, graph_, ctx, costs_, budget_);
       words_ = (lm_.landmarks().size() + 63) / 64;
-      order_ = topological(lm_);
+      future_.assign(lm_.landmarks().size(), 0);
+      for (uint32_t i = 0; i < lm_.landmarks().size(); ++i) {
+        const auto & f = lm_.landmarks()[i].fact;
+        lm_of_.emplace((uint64_t{f.var} << 32) | f.value, i);
+      }
       built_ = true;
     }
     uint64_t * r = slot(ctx.state);
@@ -217,17 +403,9 @@ public:
       return;
     }
     scratch_.assign(slot(parent), slot(parent) + words_);
-    const auto & ls = lm_.landmarks();
-    // Parents before children: a derived landmark holds in the same state as the body of its
-    // axiom, so what this transition reaches counts too
-    for (uint32_t i : order_) {
-      if (get(scratch_.data(), i) || !holds(i, child)) {
-        continue;
-      }
-      bool ready = std::all_of(
-        ls[i].parents.begin(), ls[i].parents.end(),
-        [&](uint32_t p) {return get(scratch_.data(), p);});
-      if (ready) {
+    // Reached (past, as FD): true in some state of the path, whatever came before
+    for (uint32_t i = 0; i < lm_.landmarks().size(); ++i) {
+      if (!get(scratch_.data(), i) && holds(i, child)) {
         set(scratch_.data(), i);
       }
     }
@@ -251,37 +429,105 @@ public:
     }
     const uint64_t * reached = slot(ctx.state);
     const auto & ls = lm_.landmarks();
-    std::vector<uint8_t> marked_action;
     for (uint32_t i = 0; i < ls.size(); ++i) {
-      bool interesting = false;
-      if (!get(reached, i)) {
-        r.value += ls[i].cost;
-        interesting = std::all_of(
-          ls[i].parents.begin(), ls[i].parents.end(), [&](uint32_t p) {return get(reached, p);});
-      } else if (!holds(i, ctx) && needed_again(i, reached)) {
-        r.value += ls[i].cost;
-        interesting = true;
+      // Future (FD): not reached; or reached, false now, and a goal or needed by a landmark
+      // not reached (greedy-necessary); or reached before a reasonable parent
+      bool future = !get(reached, i);
+      if (!future && !holds(i, ctx)) {
+        future = needed_again(i, reached);
       }
-      if (!interesting) {
+      if (!future) {
+        future = std::any_of(ls[i].reasonable.begin(), ls[i].reasonable.end(),
+            [&](uint32_t p) {return !get(reached, p);});
+      }
+      if (!future) {
+        continue;
+      }
+      r.value += ls[i].cost;
+      future_[i] = 1;
+      if (ctx.applicable) {
         continue;
       }
       for (uint32_t a : ls[i].achievers) {
-        if (marked_action.empty()) {
-          marked_action.assign(t_.actions.size(), 0);
-        }
-        if (marked_action[a]) {
-          continue;
-        }
-        marked_action[a] = 1;
-        if (state::holds(t_.actions[a].pre, t_, ctx.values, ctx.numbers)) {
+        if (achieves_now(a, ls[i].fact, ctx)) {
           r.preferred.push_back(a);
         }
       }
     }
+    if (ctx.applicable) {
+      // Preferred, as FD: of the applicable actions (hundreds), those that make a future
+      // landmark true now, instead of every achiever of each (thousands in hiking)
+      for (uint32_t a : *ctx.applicable) {
+        if (achieves_future(a, ctx)) {
+          r.preferred.push_back(a);
+        }
+      }
+    } else {
+      std::sort(r.preferred.begin(), r.preferred.end());
+      r.preferred.erase(std::unique(r.preferred.begin(), r.preferred.end()), r.preferred.end());
+    }
+    std::fill(future_.begin(), future_.end(), 0);
     return r;
   }
 
 private:
+  // Applicable and, here, makes the fact true: an unconditional change, or a conditional
+  // effect whose condition holds (as FD; else every action with some conditional effect on it
+  // is preferred: rubiks-cube, where all 12 are, needed 18 times the expansions)
+  bool achieves_now(uint32_t a, const sas::Fact & f, const EvalContext & ctx) const
+  {
+    const auto & act = t_.actions[a];
+    if (!state::holds(act.pre, t_, ctx.values, ctx.numbers)) {
+      return false;
+    }
+    for (const auto & c : act.changes) {
+      if (c == f) {
+        return true;
+      }
+    }
+    for (const auto & e : act.effects) {
+      if (e.kind == sas::Effect::Kind::Assign && e.fact == f &&
+        state::holds(e.condition, t_, ctx.values, ctx.numbers))
+      {
+        return true;
+      }
+      if (e.kind == sas::Effect::Kind::Copy && e.target == f.var &&
+        ctx.values[e.source] == f.value)
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool future_fact(sas::VarId var, uint32_t value) const
+  {
+    auto it = lm_of_.find((uint64_t{var} << 32) | value);
+    return it != lm_of_.end() && future_[it->second];
+  }
+
+  // Applicable (known), and makes some future landmark true now
+  bool achieves_future(uint32_t a, const EvalContext & ctx) const
+  {
+    const auto & act = t_.actions[a];
+    for (const auto & c : act.changes) {
+      if (future_fact(c.var, c.value)) {
+        return true;
+      }
+    }
+    for (const auto & e : act.effects) {
+      if (e.kind == sas::Effect::Kind::Assign && future_fact(e.fact.var, e.fact.value) &&
+        state::holds(e.condition, t_, ctx.values, ctx.numbers))
+      {
+        return true;
+      }
+      if (e.kind == sas::Effect::Kind::Copy && future_fact(e.target, ctx.values[e.source])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   bool holds(uint32_t i, const EvalContext & ctx) const
   {
     const auto & f = lm_.landmarks()[i].fact;
@@ -295,39 +541,7 @@ private:
       return true;
     }
     return std::any_of(
-      l.children.begin(), l.children.end(), [&](uint32_t c) {return !get(reached, c);});
-  }
-
-  // Landmarks with parents first (orderings form no cycles but, if they did, the rest go last)
-  static std::vector<uint32_t> topological(const LandmarkGraph & lg)
-  {
-    const auto & ls = lg.landmarks();
-    std::vector<uint32_t> pending(ls.size()), out;
-    std::vector<uint32_t> ready;
-    for (uint32_t i = 0; i < ls.size(); ++i) {
-      pending[i] = static_cast<uint32_t>(ls[i].parents.size());
-      if (pending[i] == 0) {
-        ready.push_back(i);
-      }
-    }
-    std::vector<uint8_t> done(ls.size(), 0);
-    while (!ready.empty()) {
-      uint32_t i = ready.back();
-      ready.pop_back();
-      out.push_back(i);
-      done[i] = 1;
-      for (uint32_t c : ls[i].children) {
-        if (--pending[c] == 0) {
-          ready.push_back(c);
-        }
-      }
-    }
-    for (uint32_t i = 0; i < ls.size(); ++i) {
-      if (!done[i]) {
-        out.push_back(i);
-      }
-    }
-    return out;
+      l.needed_by.begin(), l.needed_by.end(), [&](uint32_t c) {return !get(reached, c);});
   }
 
   static bool get(const uint64_t * bits, uint32_t i) {return (bits[i / 64] >> (i % 64)) & 1;}
@@ -357,11 +571,12 @@ private:
   Budget * budget_;
   bool built_ = false;
   LandmarkGraph lm_;
-  std::vector<uint32_t> order_;  // topological, for acceptance
   size_t words_ = 0;
   std::vector<uint64_t> data_;   // reached landmarks per state, words_ words each
   std::vector<uint8_t> known_;
   std::vector<uint64_t> scratch_;
+  std::vector<uint8_t> future_;                   // during evaluate
+  std::unordered_map<uint64_t, uint32_t> lm_of_;  // fact (var << 32 | value): its landmark
   size_t accounted_ = 0;
 };
 

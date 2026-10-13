@@ -6,42 +6,109 @@ version produced it.
 
 ## Summary
 
-Problems solved in 30 s with 3 GB per problem; every plan checked by Kairos's validator
-(planners that print invalid plans do not get the problem).
+Kairos is meant to answer in milliseconds, so each suite counts the problems solved within
+**100 ms**, **1 s** and the whole limit (30 s and 3 GB per problem; B6: 60 s and 2 GB), all
+planners under the same limits. Every plan is checked by Kairos's validator: a planner that
+prints an invalid plan does not get the problem.
 
-| Suite | Kairos | OPTIC | TFD | POPF | LPG-td | ENHSP | Metric-FF | LAMA |
-|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Robotics examples (11) | **11** | 8 | 5 | 6 | 2 | | | |
-| B2: required concurrency, temporal numeric (55) | **33** | 17 | 24 | 24 | 0 | | | |
-| B1: temporal, IPC 2002-2014 (225) | **177** (**183** with 3 threads) | 107 | 110 | 104 | 125 | | | |
-| B3: numeric, IPC 2002/2023/2026 (420) | **291** | | | | | 103 | 57 | |
-| Classical, IPC 1998-2023 (220) | 141 | | | | | | | **151** |
-| B6: PlanSys2 problems scaled up (144; 60 s, 2 GB) | **95** | 57 | 58 | 57 | | | | |
-| PDDL3: IPC 2006 preferences and constraints (125) | **84** | 45 | | 16 | | | | |
+The short columns need the time of the first plan. Kairos reports it; planners that stop at
+their first plan take that long (the agile configurations of the IPC 2023 winners, lama-first,
+POPF, ENHSP, Metric-FF, LNM-Plan, DecStar, Dual-BFWS). Anytime runs (LAMA, OPTIC, TFD, LPG-td,
+NextFLAP, the satisficing IPC 2023 configurations) only show when they stopped: "-".
 
-The other planners were measured on 2026-10-11 with Kairos 0.3.0 at `023fe98`; the Kairos
-column is the current version (B1: 161 at `023fe98`, 172 at `cf886fc`, 177 at step 20). The robotics row is
-the 11 problems of that day; the 3 battery patrol problems added since (continuous effects) are
-solved by Kairos, POPF solves the simplest and OPTIC none (see [examples.md](examples.md)). Blank cells: the
-planner does not handle that kind of problem, or was not run on it.
+### Classical (220)
 
-- **Temporal planning** (B1, B2, robotics): Kairos solves the most problems and has the best
-  plan quality in every suite.
-- **Numeric planning** (B3): Kairos solves almost three times as many as ENHSP and Metric-FF as
-  run here (both do not read part of the domains; see the notes).
-- **PlanSys2 problems at scale** (B6): Kairos solves 95 of 144, the others at most 58 (TAMER
-  21 and Aries 9 of unified-planning); at the large sizes (L, XL) Kairos 26, the best of the
-  others 8 (OPTIC, POPF).
-- **Preferences and trajectory constraints** (PDDL3, IPC 2006; OPTIC and POPF measured on
-  2026-10-13): Kairos 84 of 125, OPTIC 45, POPF 16. Kairos compiles them away (Keyder and
-  Geffner); its misses are large storage and pipesworld instances and `always-within` in
-  temporal plans, not supported yet.
-- **Classical planning**: Fast Downward's LAMA solves more (barman, sokoban, parking, hiking,
-  rubiks-cube); Kairos is not yet at its level there.
+| Planner | 100 ms | 1 s | whole limit |
+|---|---:|---:|---:|
+| **Kairos** | 67 | 103 | 153 |
+| LAMA (anytime) | - | - | 151 |
+| lama-first | 0 | 68 | 150 |
+| Scorpion Maidu | - | - | 145 |
+| Scorpion Maidu agile | 0 | 65 | 132 |
+| Levitron | - | - | 146 |
+| Levitron agile | 0 | 72 | 131 |
+| FD Stone Soup 2023 | - | - | 147 |
+| FD Stone Soup 2023 agile | 0 | 66 | 132 |
+| DecStar 2023 (agile) | 0 | 67 | 136 |
+| Dual-BFWS | 51 | 78 | 123 |
+
+### B3: numeric (420)
+
+| Planner | 100 ms | 1 s | whole limit |
+|---|---:|---:|---:|
+| **Kairos** | 152 | 203 | 289 |
+| ENHSP (current) | 0 | 128 | 208 |
+| ENHSP-2020 | 0 | 41 | 103 |
+| LNM-Plan | 22 | 69 | 117 |
+| Metric-FF | 46 | 51 | 57 |
+
+### B1: temporal (225)
+
+| Planner | 100 ms | 1 s | whole limit |
+|---|---:|---:|---:|
+| **Kairos** | 101 | 146 | 178 |
+| POPF | 53 | 84 | 104 |
+| OPTIC | - | - | 107 |
+| TFD | - | - | 110 |
+| LPG-td | - | - | 125 |
+| NextFLAP | - | - | 80 |
+
+### B2: required concurrency, temporal numeric (55)
+
+| Planner | 100 ms | 1 s | whole limit |
+|---|---:|---:|---:|
+| **Kairos** | 25 | 32 | 33 |
+| POPF | 14 | 19 | 24 |
+| OPTIC | - | - | 17 |
+| TFD | - | - | 24 |
+| LPG-td | - | - | 0 |
+| NextFLAP | - | - | 2 |
+
+### Robotics examples
+
+| Planner | 100 ms | 1 s | whole limit |
+|---|---:|---:|---:|
+| **Kairos** | 13 | 14 | 14 |
+| POPF | 4 | 5 | 6 (of 11) |
+| OPTIC | - | - | 8 (of 11) |
+| TFD | - | - | 5 (of 11) |
+| LPG-td | - | - | 2 (of 11) |
+| NextFLAP | - | - | 4 |
+
+### PDDL3: IPC 2006 preferences and constraints (125)
+
+| Planner | 100 ms | 1 s | whole limit |
+|---|---:|---:|---:|
+| **Kairos** | 58 | 67 | 84 |
+| POPF | 13 | 15 | 16 |
+| OPTIC | - | - | 45 |
+| NextFLAP | - | - | 10 |
+
+### B6: PlanSys2 problems at scale (144; 60 s, 2 GB)
+
+| Planner | 100 ms | 1 s | whole limit |
+|---|---:|---:|---:|
+| **Kairos** | 60 | 77 | 92 |
+| POPF | 23 | 45 | 57 |
+| OPTIC | - | - | 57 |
+| TFD | - | - | 58 |
+| TAMER (unified-planning) | 0 | 0 | 21 |
+| Aries (unified-planning) | - | - | 9 |
+
+- **Classical**: Kairos solves 153, more than LAMA (151) and than the winners of the IPC 2023
+  satisficing track (Scorpion Maidu 145, Levitron 146, Fast Downward Stone Soup 2023 147) with
+  the same 30 s, and the most within 100 ms (67; Dual-BFWS 51, the others none) and 1 s (103;
+  the best of the others 78).
+- **Numeric** (B3): Kairos 289, the current ENHSP 208 and LNM-Plan (IPC 2023 numeric winner) 117.
+- **Temporal** (B1, B2, robotics, PDDL3): Kairos solves the most at every limit.
+- **PlanSys2 problems at scale** (B6): Kairos 92 of 144, the others at most 58. Kairos keeps the
+  2 GB limit from the start of grounding: the largest patrol problems (537 680 actions) need
+  more than that just to be prepared.
 
 ## Method
 
-- **Machine**: a 16-core laptop, 60 GB of RAM, 8 planner processes at a time.
+- **Machine**: a 16-core laptop, 60 GB of RAM, 8 planner processes at a time (measured on
+  2026-10-13; the details below are older).
 - **Limits**: 30 s of wall time and 3 GB of memory per problem (a cgroup, so no planner can
   exceed them), one CPU per planner.
 - **Kairos**: the release build of the command (`kairos DOMAIN PROBLEM --timeout 30 --memory
@@ -50,9 +117,17 @@ planner does not handle that kind of problem, or was not run on it.
   to 4 by default (its search phases at once), while the other planners use one core each.
 - **Other planners**: planutils 0.10.25 (https://github.com/AI-Planning/planutils) in a
   container: OPTIC, TFD (Temporal Fast Downward), POPF, LPG-td (`-quality`), ENHSP-2020
-  (`-planner sat-hmrphj`), Metric-FF and LAMA (Fast Downward). Their time is measured inside the
+  (`-planner sat-hmrphj`), Metric-FF and LAMA (Fast Downward). Built from source at pinned
+  commits, in release mode (the workspace's `bench/sota/Dockerfile`): the IPC 2023 classical
+  winners as submitted (Scorpion Maidu, Levitron, Fast Downward Stone Soup 2023, DecStar 2023,
+  with their satisficing and agile configurations), lama-first, Dual-BFWS (LAPKT), LNM-Plan
+  (IPC 2023 numeric winner), the current ENHSP and NextFLAP. Their time is measured inside the
   container, without Docker's start-up. Their last plan is taken (anytime planners keep
   improving until the timeout).
+- **Packaging is not the planner's**: planutils runs POPF and ENHSP-2020 in Apptainer, started
+  cold for each problem; their times lose 0.189 s (POPF's whole time on a one-action problem,
+  the most favourable reading) and 0.084 s (Apptainer's cold start; the JVM is ENHSP's). Kairos's
+  first-plan time leaves out its process start (about 5 ms).
 - **Validation**: every plan of every planner is checked by `kairos validate` against the
   original domain and problem; an invalid plan counts as not solved and is listed.
 - **Quality**: the IPC score. For each problem, the best cost among the planners that solved it
@@ -173,7 +248,7 @@ Domains where another planner solves more than Kairos:
 | ipc2023/ricochet-robots | 0 | lama 1 |
 | ipc2023/rubiks-cube | 6 | lama 10 |
 
-## B6: PlanSys2 problems at scale (2026-10-12, step 20)
+## B6: PlanSys2 problems at scale (2026-10-12, Kairos 0.4.0)
 
 How each planner copes as PlanSys2 problems grow. Eight domains of PlanSys2's packages, used
 unchanged: `patrol`, `simple` (with battery), `charging` and `road_trip` (energy and fuel as
@@ -208,7 +283,7 @@ of unified-planning (`up-tamer` 1.1.6, `up-aries` 0.5.0).
 - Targets of the plan: first plan at L in under 10 s and at XL in under 60 s with 2 GB. Met at L
   in every family Kairos solves there but elevator (median 0.1-0.6 s: patrol, simple, cooking,
   suave and 2 of 3 charging; elevator 51 s), and at XL for patrol (4 s), cooking (2.9 s) and
-  simple (8 s). These come from the incremental goals of step 20 (one goal at a time when there
+  simple (8 s). These come from the incremental goals (one goal at a time when there
   are many); before them, patrol L had no plan in 100 s.
 
 Per family (solved of 3, and Kairos's median time of the solved ones and its peak memory):
@@ -277,18 +352,3 @@ The generator, the reference plans and the runners are in the workspace's `bench
 - LPG-td sometimes announces a plan file it never writes; runs that fail at once are retried.
 - POPF here is planutils's build; the one PlanSys2 ships may differ slightly.
 - Robotics examples, per problem: see the results table of [examples.md](examples.md).
-
-## Kairos over time
-
-| Date | Version | B1 | B2 | B3 | Classical | What changed |
-|---|---|---:|---:|---:|---:|---|
-| 2026-10-11 | `023fe98` | 161 | 32 | 252 | 120 | First comparison with the planners of planutils |
-| 2026-10-12 | `cf886fc` | 172 | 32 | 252 | 120 | Novelty memory cap, unit costs for the first plan of M2, FF when LAMA has no plan |
-| 2026-10-12 | step 18 | 172 | 32 | 252 | 120 | Duration inequalities and continuous effects (battery patrol examples: 3 more robotics problems, all solved); cost + 1 for the first plan of temporal numeric tasks |
-| 2026-10-12 | step 19, 1 thread | 172 | 32 | 252 | 120 | Phases of the search in parallel; with one thread nothing changes |
-| 2026-10-12 | step 19, 3 threads | **180** | 32 | | | The phases at once, each with the whole time: 8 more temporal problems, better plans (quality 166 -> 180), first plans in B2 much sooner (agile 19 -> 31) |
-| 2026-10-12 | step 20 (0.4.0), 1 thread | 177 | 32 | 253 | 117 | Incremental goals for tasks with many goals (B6: 95 of 144), unused quantified variables dropped, timeout seen by time, lazy reset of the relaxed graph. Classical -3: parking, hiking and rubiks-cube instances that took 21-29 s, now just over 30 (step 28) |
-| 2026-10-12 | step 20 (0.4.0), 3 threads | **183** | 32 | | | |
-| 2026-10-12 | step 23, 1 thread | 177 | **33** | **289** | **140** | Found with PlanSys2's combat example: numeric variables nothing reads (`total-cost`, euros spent) no longer tell states apart (barman 0 -> 10, sokoban 3 -> 9, forestfire 2 -> 10, settlers-snp 1 -> 8); derived atoms being false in the heuristics; over all conditions seen by M3's heuristics; novelty first in M3 with numeric conditions; metric of euros plus time; deadlines of timed initial literals (trucks 1 -> 2) |
-| 2026-10-13 | step 24, 1 thread | 177 | 33 | 291 | 141 | Resources in the schedule of M2: steps that borrow and give back capacity overlap as far as the plan stays valid (umts makespan 922 -> 532, 2041 -> 791; B1 quality against step 23: 174.5 -> 176.8) |
-| 2026-10-13 | step 26, 1 thread | | | | | PDDL3: preferences (goal, precondition, over constraints) and trajectory constraints compiled away, all but `always-within` in temporal plans; IPC 2006 suite: 84 of 125 (74 before static instances were left out and same-instant timed literals were fixed in M3) |

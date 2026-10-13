@@ -688,4 +688,109 @@ std::optional<Plan> schedule(
   return plan_of(steps.size());
 }
 
+PartialSchedule::PartialSchedule(const Compressed & compressed, state::StateSpace & space)
+: c_(compressed), space_(space)
+{
+  const auto & task = c_.task;
+  size_t vars = task.variables.size();
+  width_ = 2 * (vars + task.numeric_fluents.size());
+  constexpr size_t kMaxWidth = 1024;
+  if (width_ == 0 || width_ > kMaxWidth) {
+    return;
+  }
+  for (const auto & a : task.actions) {
+    Access acc;
+    acc.read(a.pre);
+    for (const auto & f : a.changes) {
+      acc.writes.push_back(f.var);
+    }
+    for (const auto & e : a.effects) {
+      acc.effect(e);
+    }
+    acc.finish({});
+    std::vector<uint32_t> r, w;
+    for (auto v : acc.reads) {
+      r.push_back(static_cast<uint32_t>(v));
+    }
+    for (auto v : acc.writes) {
+      w.push_back(static_cast<uint32_t>(v));
+    }
+    for (auto n : acc.num_reads) {
+      r.push_back(static_cast<uint32_t>(vars + n));
+    }
+    for (auto n : acc.num_writes) {
+      w.push_back(static_cast<uint32_t>(vars + n));
+    }
+    reads_.push_back(std::move(r));
+    writes_.push_back(std::move(w));
+  }
+  active_ = true;
+}
+
+double PartialSchedule::duration(state::StateId parent, uint32_t action) const
+{
+  if (action < c_.instant) {
+    return 0.001;
+  }
+  double d = state::evaluate(c_.duration[action - c_.instant], space_.numbers(parent).data());
+  return std::isnan(d) || d < 0.0 ? 0.0 : d;
+}
+
+// Slots: 2v the last write of variable v, 2v + 1 its last read
+double PartialSchedule::start(const float * times, uint32_t action) const
+{
+  double s = 0.0;
+  for (uint32_t v : reads_[action]) {
+    s = std::max<double>(s, times[2 * v]);
+  }
+  for (uint32_t v : writes_[action]) {
+    s = std::max<double>(s, std::max(times[2 * v], times[2 * v + 1]));
+  }
+  return s;
+}
+
+double PartialSchedule::end(state::StateId parent, uint32_t action) const
+{
+  if (!active_ || parent >= slot_.size() || slot_[parent] < 0) {
+    return 0.0;
+  }
+  const float * times = times_.data() + slot_[parent];
+  return start(times, action) + duration(parent, action);
+}
+
+void PartialSchedule::reach(state::StateId parent, uint32_t action, state::StateId child)
+{
+  if (!active_) {
+    return;
+  }
+  // Kept for a bounded number of states (64 MB of times)
+  constexpr size_t kMaxFloats = size_t{16} << 20;
+  if (times_.size() + width_ > kMaxFloats) {
+    active_ = false;
+    return;
+  }
+  if (slot_.size() <= child) {
+    slot_.resize(std::max<size_t>(child + 1, slot_.size() * 2), -1);
+  }
+  if (slot_[child] >= 0) {
+    return;  // the first path that reached it
+  }
+  auto offset = static_cast<int64_t>(times_.size());
+  if (parent == state::kNoState || parent >= slot_.size() || slot_[parent] < 0) {
+    times_.resize(times_.size() + width_, 0.0f);
+  } else {
+    std::vector<float> copy(times_.begin() + slot_[parent],
+      times_.begin() + slot_[parent] + static_cast<int64_t>(width_));
+    double e = start(copy.data(), action) + duration(parent, action);
+    for (uint32_t v : writes_[action]) {
+      copy[2 * v] = static_cast<float>(e);
+    }
+    for (uint32_t v : reads_[action]) {
+      copy[2 * v + 1] = std::max(copy[2 * v + 1], static_cast<float>(e));
+    }
+    times_.insert(times_.end(), copy.begin(), copy.end());
+  }
+  slot_[child] = offset;
+}
+
 }  // namespace kairos::temporal

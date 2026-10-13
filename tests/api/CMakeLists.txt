@@ -22,4 +22,5 @@ kairos_add_test(api_tests
   DEPENDS
     kairos::kairos)
 target_compile_definitions(api_tests PRIVATE
-  KAIROS_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/docs/examples/pddls")
+  KAIROS_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/docs/examples/pddls"
+  KAIROS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data")

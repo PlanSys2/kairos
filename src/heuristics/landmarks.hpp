@@ -19,7 +19,9 @@
 #define KAIROS__HEURISTICS__LANDMARKS_HPP_
 
 #include <cstdint>
+#include <map>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "core/budget.hpp"
@@ -37,15 +39,19 @@ struct Landmark
   bool goal = false;
   bool initially_true = false;
   std::vector<uint32_t> achievers;    // actions that add it
-  std::vector<uint32_t> parents;      // landmarks ordered greedy-necessarily before it
+  std::vector<uint32_t> parents;      // landmarks ordered before it (greedy-necessary, reasonable)
   std::vector<uint32_t> children;
+  std::vector<uint32_t> needed_by;    // children by greedy-necessary orderings only
+  std::vector<uint32_t> reasonable;   // parents by reasonable orderings only
 };
 
 /**
  * @brief Fact landmarks of a task from a state, found backwards from the goal as in LAMA's
  * RHW generation (without disjunctive landmarks): for each landmark not true in the state, its
  * first achievers are the achievers reachable without it in the relaxation; the facts all of
- * them need are landmarks, ordered greedy-necessarily before it.
+ * them need are landmarks, ordered greedy-necessarily before it. Then reasonable orderings
+ * (Hoffmann et al.), approximated as Fast Downward does: a before b when achieving b first
+ * would mean destroying it to achieve a; those that close cycles are dropped.
  *
  * Every landmark is true at some point of every plan from the state (sound). Numeric
  * conditions and negated facts are crossed but never become landmarks. An ordering a < b means
@@ -63,17 +69,23 @@ public:
   size_t orderings() const;
 
 private:
+  bool interferes(const sas::Task & task, uint32_t a, uint32_t b) const;
+  void reasonable_orderings(const sas::Task & task, Budget * budget);
+
   std::vector<Landmark> landmarks_;
+  std::map<std::pair<sas::VarId, uint32_t>, std::vector<uint32_t>> groups_of_;  // mutex groups
 };
 
 /**
- * @brief The landmark count heuristic (LAMA): the cost of the landmarks not reached yet, plus
- * those reached but needed again (false now, and a goal or ordered before one not reached).
+ * @brief The landmark count heuristic (LAMA, as Fast Downward counts it today): the cost of the
+ * future landmarks: not reached yet; reached but false now, and a goal or greedy-necessarily
+ * before one not reached; or reached before one of their reasonable parents.
  *
- * Path dependent: a landmark is reached on a path when it holds after a transition and every
- * landmark ordered before it was reached; a state reached on several paths keeps what all of
- * them reached. Preferred operators: applicable achievers of landmarks not reached whose
- * parents are, or needed again.
+ * Path dependent: a landmark is reached on a path when it holds in some state of it (whatever
+ * was reached before: requiring every parent first, as the LAMA of 2008, left most landmarks
+ * unreached in blocksworld, 4 million expansions against 47 000); a state reached on several
+ * paths keeps what all of them reached. Preferred operators: applicable actions that make a
+ * future landmark true now.
  */
 std::unique_ptr<Heuristic> make_landmark_count(
   const sas::Task & task, const std::vector<double> & costs, Budget * budget = nullptr);

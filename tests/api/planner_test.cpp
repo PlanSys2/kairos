@@ -22,12 +22,14 @@
 #include <fstream>
 #include <mutex>
 #include <stdexcept>
+#include <set>
 #include <string>
 #include <tuple>
 #include <thread>
 #include <vector>
 
 #include "kairos/kairos.hpp"
+#include "support/pddl_helpers.hpp"
 
 namespace kairos
 {
@@ -1854,11 +1856,72 @@ TEST(PlannerApiTest, RequiredConcurrencyThenActionsThatNeedItsResult)
   }
 }
 
+TEST(PlannerApiTest, FirstPlanSpreadsTheWorkAmongTheRobots)
+{
+  // PlanSys2's bt_example: three robots assemble cars. The first plan gave every step to one
+  // robot (makespan 85 with 3 cars, POPF 45): ties now go to the step that ends first in the
+  // schedule, and preferred steps to the robot that is free first
+  auto factory = [](int cars) {
+      std::string pieces,
+    init = "(is_assembly_zone assembly_zone) (is_recharge_zone recharge_zone)";
+      for (int i = 1; i <= cars; ++i) {
+        for (auto [kind, zone] : {std::pair{"wheel", "wheels_zone"},
+            std::pair{"body_car", "body_car_zone"},
+            std::pair{"steering_wheel", "steering_wheels_zone"}})
+        {
+          std::string p = std::string(kind) + "_" + std::to_string(i);
+          pieces += " " + p;
+          init += " (piece_is_" + std::string(kind) + " " + p + ") (piece_at " + p + " " + zone +
+            ") (piece_not_used " + p + ")";
+        }
+      }
+      std::string goal, carlist;
+      for (int i = 1; i <= cars; ++i) {
+        goal += " (car_assembled car_" + std::to_string(i) + ")";
+        carlist += " car_" + std::to_string(i);
+      }
+      for (const char * r : {"r2d2", "c3po", "bb8"}) {
+        init += std::string(" (robot_at ") + r + " wheels_zone) (battery_full " + r +
+          ") (robot_available " + r + ")";
+      }
+      return "(define (problem f) (:domain factory) (:objects r2d2 c3po bb8 - robot"
+             " wheels_zone steering_wheels_zone body_car_zone assembly_zone recharge_zone - zone" +
+             pieces + " - piece" + carlist + " - car) (:init " + init + ") (:goal (and" + goal +
+             ")))";
+    };
+  std::string domain = kairos::testing::read_file(
+    kairos::testing::data_path("plansys2/plansys2_bt_example__bt_example.pddl"));
+  for (auto [cars, popf] : {std::pair{2, 30.0}, std::pair{3, 45.0}, std::pair{4, 60.0}}) {
+    Problem p = problem(domain, factory(cars));
+    SolveOptions o = quick();
+    o.anytime = false;
+    o.threads = 1;
+    SolveResult r = Planner().solve(p, o);
+    ASSERT_EQ(r.status, Status::Solved) << cars;
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+    EXPECT_LE(r.plan->makespan(), popf + 0.1) << cars << " cars";
+    std::set<std::string> robots;
+    for (const auto & s : r.plan->steps) {
+      robots.insert(s.args.at(0));
+    }
+    EXPECT_EQ(robots.size(), 3u) << cars << " cars";
+  }
+}
+
 TEST(PlannerApiTest, AutoSearchFollowsTheTask)
 {
-  // Classical: LAMA; numeric conditions: lazy LAMA, then LAMA with novelty
-  EXPECT_EQ(auto_choice(problem(kBlocks, kBlocksProblem)), "search: lama (auto)");
-  EXPECT_EQ(auto_choice(problem(kRoutes, kRoutesProblem)), "search: lama (auto)");  // costs only
+  // Classical: LAMA, then novelty if no plan; numeric conditions: lazy LAMA, then LAMA with
+  // novelty
+  EXPECT_EQ(auto_choice(problem(kBlocks, kBlocksProblem)), "search: lama, then novelty (auto)");
+  EXPECT_EQ(auto_choice(problem(kRoutes, kRoutesProblem)),  // costs only
+    "search: lama, then novelty (auto)");
+  // Asked for, no portfolio
+  {
+    SolveOptions o = quick();
+    o.search = "lama";
+    SolveResult r = Planner().solve(problem(kBlocks, kBlocksProblem), o);
+    ASSERT_EQ(r.status, Status::Solved);
+  }
   Problem numeric = problem(
     "(define (domain n) (:requirements :strips :fluents) (:predicates (g))"
     " (:functions (x)) (:action inc :parameters () :precondition () :effect (increase (x) 1))"

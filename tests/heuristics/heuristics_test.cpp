@@ -329,6 +329,35 @@ TEST(HeuristicsTest, DerivedAtomsBeingFalse)
   EXPECT_EQ(b->value("ff", s1), 1.0);
 }
 
+TEST(HeuristicsTest, SimplifiedRelaxationKeepsHmaxAndHadd)
+{
+  // ?w is never read: one ground action per witness with the same precondition and effect,
+  // duplicates the simplified relaxation removes (as FD); hmax and hadd stay the same
+  auto b = bench(
+    "(define (domain dup) (:requirements :strips :typing) (:types place thing)"
+    " (:predicates (at ?p - place) (link ?a ?b - place) (seen ?w - thing))"
+    " (:action go :parameters (?a ?b - place ?w - thing) :precondition (and (at ?a) (link ?a ?b))"
+    "  :effect (and (not (at ?a)) (at ?b))))",
+    "(define (problem p) (:domain dup) (:objects a b c d - place w1 w2 w3 w4 w5 - thing)"
+    " (:init (at a) (link a b) (link b c) (link c d) (link b a)) (:goal (at d)))");
+  RelaxedGraph full(b->p->sas, b->costs, false);
+  RelaxedGraph simple(b->p->sas, b->costs, true);
+  EXPECT_LT(simple.ops().size() * 2, full.ops().size());
+  std::vector<uint32_t> v;
+  b->reg->unpack(b->reg->initial(), v);
+  std::vector<double> n;
+  EvalContext ctx{b->reg->initial(), v.data(), n.data(), 0.0};
+  for (auto mode : {RelaxedGraph::Mode::Max, RelaxedGraph::Mode::Add}) {
+    EXPECT_EQ(full.run(ctx, mode), simple.run(ctx, mode));
+  }
+  EXPECT_EQ(simple.run(ctx, RelaxedGraph::Mode::Max), 3.0);
+  // FF and its preferred operators on the simplified graph: still a move from a
+  auto ff = make_heuristic("ff", b->p->sas, b->costs);
+  auto r = b->eval(*ff, b->reg->initial());
+  EXPECT_EQ(r.value, 3.0);
+  ASSERT_FALSE(r.preferred.empty());
+}
+
 TEST(HeuristicsTest, DeadEnds)
 {
   // drop loses the key for good: then open is unreachable even relaxed
@@ -435,8 +464,25 @@ Space explore(const Bench & b, size_t limit)
   auto hmax = make_heuristic("hmax", b.p->sas, b.costs);
   auto hadd = make_heuristic("hadd", b.p->sas, b.costs);
   auto ff = make_heuristic("ff", b.p->sas, b.costs);
+  // Without duplicate and dominated unary operators the relaxation gives the same hmax and
+  // hadd (only FF's ties may change)
+  RelaxedGraph full(b.p->sas, b.costs, false);
+  RelaxedGraph simple(b.p->sas, b.costs, true);
   size_t checked_fresh = 0;
   for (StateId s : sp.states) {
+    {
+      std::vector<uint32_t> v;
+      b.reg->unpack(s, v);
+      std::vector<double> n(b.reg->numbers(s).begin(), b.reg->numbers(s).end());
+      EvalContext ctx{s, v.data(), n.data(), 0.0};
+      for (auto mode : {RelaxedGraph::Mode::Max, RelaxedGraph::Mode::Add}) {
+        double a = full.run(ctx, mode);
+        double c = simple.run(ctx, mode);
+        if (!(a == c || (std::isinf(a) && std::isinf(c)))) {
+          return ::testing::AssertionFailure() << "simplified relaxation " << c << ", full " << a;
+        }
+      }
+    }
     auto it = sp.h_star.find(s);
     double star = it == sp.h_star.end() ? kInfinity : it->second;
     auto mx = b.eval(*hmax, s);

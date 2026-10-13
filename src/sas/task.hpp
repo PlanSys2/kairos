@@ -213,6 +213,7 @@ struct Task
 
   std::vector<Variable> variables;
   std::vector<std::pair<VarId, uint32_t>> atom_fact;  // per ground atom: its variable and value
+  std::vector<std::vector<Fact>> mutex_groups;  // every one found, variables or not (landmarks)
   std::vector<uint32_t> initial;                      // value per variable
   std::vector<std::optional<double>> initial_numeric;  // per numeric variable
 
