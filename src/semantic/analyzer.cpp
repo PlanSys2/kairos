@@ -708,6 +708,15 @@ private:
     const FunctionInfo & info = functions_.items[*f];
     check_args(info.name, info.params, target.args, target.loc);
 
+    // (assign (f ...) undefined): PDDL 3.1, an object fluent with no value
+    const ast::Expr & raw = nodes_.exprs[e.value];
+    if (!info.numeric && e.op == ast::AssignOp::Assign && raw.kind == ast::ExprKind::Term &&
+      nodes_.terms[raw.term].kind == ast::TermKind::Name &&
+      str(nodes_.terms[raw.term].name) == "undefined")
+    {
+      features_.add(Feature::ObjectFluents);
+      return;
+    }
     bool incremental = e.op == ast::AssignOp::Increase || e.op == ast::AssignOp::Decrease;
     Ctx vc = base;
     vc.continuous = incremental &&

@@ -78,8 +78,7 @@ const std::vector<Support> & support_table()
     {F::UniversalPreconditions, Support::Full, "", ""},
     {F::ConditionalEffects, Support::Full, "", ""},
     {F::NumericFluents, Support::Full, "", ""},
-    {F::ObjectFluents, Support::Partial,
-      "one that changes cannot be the argument of an atom yet (phase F4)", ""},
+    {F::ObjectFluents, Support::Full, "", ""},
     {F::NonLinearNumeric, Support::Partial,
       "planned and validated exactly; the heuristics take non-linear conditions as true", ""},
     {F::ActionCosts, Support::Full, "", ""},
@@ -95,7 +94,8 @@ const std::vector<Support> & support_table()
     {F::TimedInitialLiterals, Support::Full, "", ""},
     {F::TimedInitialFluents, Support::Full, "", ""},
     {F::Preferences, Support::Partial,
-      "in goals (also under forall) and at the top of preconditions; elsewhere soft, ignored",
+      "in goals (also under forall), at the top of preconditions and over constraints; "
+      "elsewhere soft, ignored",
       ""},
     {F::TrajectoryConstraints, Support::Partial,
       "all, hard or as preferences, but always-within in temporal plans; in temporal plans "

@@ -465,20 +465,32 @@ TEST(GroundTest, StaticObjectFluentsAreSubstituted)
   ASSERT_EQ(t.object_fluents.size(), 2u);
 }
 
-TEST(GroundTest, ChangingObjectFluentsInsideAtomsAreUnsupported)
+TEST(GroundTest, ChangingObjectFluentsInsideAtomsAreCompiled)
 {
-  auto n = normalize_text(
+  // (visited (loc ?r)): one effect per place, with (= (loc ?r) place) read before the action
+  // (the old place, not the one it assigns)
+  auto g = ground_text(
     "(define (domain d) (:requirements :typing :object-fluents) (:types place robot)"
     " (:predicates (visited ?l - place))"
     " (:functions (loc ?r - robot) - place)"
     " (:action go :parameters (?r - robot ?l - place) :precondition ()"
     "  :effect (and (assign (loc ?r) ?l) (visited (loc ?r)))))",
-    "(define (problem p) (:domain d) (:objects r - robot a - place)"
-    " (:init (= (loc r) a)) (:goal (visited a)))");
-  auto r = ground(n->task);
-  ASSERT_FALSE(r.ok());
-  EXPECT_EQ(r.diagnostics()[0].code, "ground.unsupported");
-  EXPECT_NE(r.diagnostics()[0].message.find("loc"), std::string::npos);
+    "(define (problem p) (:domain d) (:objects r - robot a b - place)"
+    " (:init (= (loc r) a)) (:goal (visited b)))");
+  const Task & t = g->task;
+  ASSERT_EQ(t.actions.size(), 2u);  // go to a, go to b
+  for (const auto & a : t.actions) {
+    size_t visits = 0;
+    for (const auto & e : a.effects) {
+      if (e.kind == Effect::Kind::Add) {
+        ++visits;
+        ASSERT_EQ(e.condition.objects.size(), 1u);
+        EXPECT_TRUE(e.condition.objects[0].lhs.is_fluent);
+        EXPECT_FALSE(e.condition.objects[0].rhs.is_fluent);
+      }
+    }
+    EXPECT_EQ(visits, 2u) << instance_name(t, a);  // visited a, visited b
+  }
 }
 
 // --- Time -------------------------------------------------------------------------------------

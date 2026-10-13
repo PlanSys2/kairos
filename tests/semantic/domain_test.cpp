@@ -385,6 +385,16 @@ TEST(DomainAnalysisTest, ObjectFluents)
   EXPECT_FALSE(analyze(
     "(define (domain d) (:types robot gripper) (:functions (holder ?g - gripper) - robot)"
     " (:action take :parameters (?g - gripper) :effect (increase (holder ?g) 1)))").ok);
+  // undefined: an object fluent with no value (PDDL 3.1); not for numeric ones
+  Analysis release = analyze(
+    "(define (domain d) (:requirements :typing :object-fluents :numeric-fluents)"
+    " (:types robot gripper) (:functions (holder ?g - gripper) - robot (n))"
+    " (:action drop :parameters (?g - gripper) :effect (assign (holder ?g) undefined)))");
+  EXPECT_TRUE(release.ok) << dump(release.diagnostics);
+  EXPECT_FALSE(analyze(
+    "(define (domain d) (:requirements :typing :numeric-fluents) (:types gripper)"
+    " (:functions (n))"
+    " (:action drop :parameters (?g - gripper) :effect (assign (n) undefined)))").ok);
 }
 
 TEST(DomainAnalysisTest, ActionCosts)

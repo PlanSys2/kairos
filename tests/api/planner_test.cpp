@@ -1303,6 +1303,106 @@ TEST(PlannerApiTest, MetricOfEurosPlusTime)
   }
 }
 
+// --- Object fluents (PDDL 3.1) --------------------------------------------------------------
+
+TEST(PlannerApiTest, ChangingObjectFluentsAsArgumentsOfAtoms)
+{
+  // (box-at ?b (loc ?r)), (weight (holding ?r)), (box-at (holding ?r) (loc ?r)): all change
+  std::string domain =
+    "(define (domain carry) (:requirements :typing :object-fluents :numeric-fluents"
+    " :negative-preconditions :action-costs)"
+    " (:types robot room box)"
+    " (:predicates (connected ?a ?b - room) (box-at ?b - box ?r - room) (free ?r - robot)"
+    "  (clean ?r - room))"
+    " (:functions (loc ?r - robot) - room (holding ?r - robot) - box (weight ?b - box)"
+    "  (total-cost))"
+    " (:action move :parameters (?r - robot ?to - room)"
+    "  :precondition (connected (loc ?r) ?to)"
+    "  :effect (and (assign (loc ?r) ?to) (increase (total-cost) 1)))"
+    " (:action pick :parameters (?r - robot ?b - box)"
+    "  :precondition (and (free ?r) (box-at ?b (loc ?r)))"
+    "  :effect (and (not (free ?r)) (not (box-at ?b (loc ?r))) (assign (holding ?r) ?b)))"
+    " (:action drop :parameters (?r - robot)"
+    "  :precondition (and (not (free ?r)) (< (weight (holding ?r)) 10))"
+    "  :effect (and (free ?r) (box-at (holding ?r) (loc ?r)) (clean (loc ?r))"
+    "  (assign (holding ?r) undefined))))";
+  std::string problem_text =
+    "(define (problem p) (:domain carry)"
+    " (:objects r1 - robot a b c - room b1 b2 heavy - box)"
+    " (:init (= (loc r1) a) (free r1) (connected a b) (connected b a) (connected b c)"
+    "  (connected c b) (box-at b1 a) (box-at b2 c) (box-at heavy b) (= (weight b1) 3)"
+    "  (= (weight b2) 4) (= (weight heavy) 12))"
+    " (:goal (and (box-at b1 c) (box-at b2 a) (clean (loc r1)) (= (loc r1) b)))"
+    " (:metric minimize (total-cost)))";
+  Problem p = problem(domain, problem_text);
+  for (unsigned threads : {1u, 3u}) {
+    SolveOptions o = quick();
+    o.threads = threads;
+    SolveResult r = Planner().solve(p, o);
+    ASSERT_EQ(r.status, Status::Solved) << threads;
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+    ASSERT_TRUE(r.plan->cost);
+    EXPECT_NEAR(*r.plan->cost, 5.0, 1e-6);  // a-b-c, c-b-a, then b
+    for (const auto & s : r.plan->steps) {
+      EXPECT_FALSE(s.name == "pick" && s.args[1] == "heavy") << "too heavy to drop again";
+    }
+  }
+  // The heavy box at a: picked, it can never be dropped (weight 12)
+  std::string heavy = problem_text;
+  heavy.replace(heavy.find("(box-at b1 c)"), 13, "(box-at heavy a)");
+  EXPECT_EQ(Planner().solve(problem(domain, heavy), quick()).status, Status::Unsolvable);
+}
+
+TEST(PlannerApiTest, NestedChangingObjectFluentsInTemporalPlans)
+{
+  // (loc (bearer ?k)): who bears the key and where that one is both change
+  Problem p = problem(
+    "(define (domain nest) (:requirements :typing :object-fluents :durative-actions :equality)"
+    " (:types robot room key)"
+    " (:predicates (connected ?a ?b - room) (lit ?r - room))"
+    " (:functions (loc ?r - robot) - room (bearer ?k - key) - robot (target ?k - key) - room)"
+    " (:durative-action go :parameters (?r - robot ?to - room) :duration (= ?duration 2)"
+    "  :condition (at start (connected (loc ?r) ?to))"
+    "  :effect (at end (assign (loc ?r) ?to)))"
+    " (:durative-action hand :parameters (?k - key ?to - robot) :duration (= ?duration 1)"
+    "  :condition (at start (= (loc (bearer ?k)) (loc ?to)))"
+    "  :effect (at end (assign (bearer ?k) ?to)))"
+    " (:durative-action light :parameters (?k - key) :duration (= ?duration 1)"
+    "  :condition (at start (= (loc (bearer ?k)) (target ?k)))"
+    "  :effect (at end (lit (loc (bearer ?k))))))",
+    "(define (problem p) (:domain nest)"
+    " (:objects r1 r2 - robot a b c - room k - key)"
+    " (:init (= (loc r1) a) (= (loc r2) a) (= (bearer k) r1) (= (target k) c)"
+    "  (connected a b) (connected b a) (connected b c) (connected c b))"
+    " (:goal (and (lit c) (lit (loc r2)) (= (bearer k) r2))))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+  EXPECT_NEAR(r.plan->makespan(), 5.0, 0.01);  // hand while going, then light at c
+}
+
+TEST(PlannerApiTest, DurationsThatReadChangingObjectFluents)
+{
+  // (dist (loc ?r) ?to): the place at start decides the duration; two short legs beat one long
+  Problem p = problem(
+    "(define (domain dur) (:requirements :typing :object-fluents :durative-actions"
+    " :numeric-fluents)"
+    " (:types robot room) (:predicates (connected ?a ?b - room))"
+    " (:functions (loc ?r - robot) - room (dist ?a ?b - room))"
+    " (:durative-action go :parameters (?r - robot ?to - room)"
+    "  :duration (= ?duration (dist (loc ?r) ?to))"
+    "  :condition (at start (connected (loc ?r) ?to))"
+    "  :effect (at end (assign (loc ?r) ?to))))",
+    "(define (problem p) (:domain dur) (:objects r1 - robot a b c - room)"
+    " (:init (= (loc r1) a) (connected a b) (connected b c) (connected a c)"
+    "  (= (dist a b) 1) (= (dist b c) 1) (= (dist a c) 5))"
+    " (:goal (= (loc r1) c)))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+  EXPECT_NEAR(r.plan->makespan(), 2.0, 0.01);
+}
+
 // --- Preferences (PDDL3) ---------------------------------------------------------------------
 
 const char * kPrefDomain =

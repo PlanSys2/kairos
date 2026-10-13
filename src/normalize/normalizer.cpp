@@ -509,6 +509,81 @@ private:
     return out;
   }
 
+  // --- Changing object fluents inside terms --------------------------------------------------
+  //
+  // (p (f ?a)) with f changing: exists ?v (= (f ?a) ?v) and (p ?v); in effects, a variable of
+  // the effect with that condition (read when the effect happens). At the top of a comparison
+  // or as the value assigned, one level is left as it is (grounding handles it)
+
+  using ValueBindings = std::vector<std::pair<uint32_t, Term>>;
+
+  Term bind_changing(Term t, std::vector<Variable> & owner, ValueBindings & out, bool top)
+  {
+    if (t.kind != Term::Kind::Function) {
+      return t;
+    }
+    for (auto & a : t.args) {
+      a = bind_changing(std::move(a), owner, out, false);
+    }
+    const auto & info = dm_.functions.items[FunctionId(t.index)];
+    if (top || !info.changes) {
+      return t;
+    }
+    auto v = static_cast<uint32_t>(owner.size());
+    owner.push_back(Variable{"?kairos-value-" + std::to_string(value_counter_++), info.result});
+    out.emplace_back(v, std::move(t));
+    return Term::variable(v);
+  }
+
+  void bind_changing(Expr & e, std::vector<Variable> & owner, ValueBindings & out)
+  {
+    if (e.op == ExprOp::Fluent) {
+      for (auto & a : e.args) {
+        a = bind_changing(std::move(a), owner, out, false);
+      }
+    }
+    for (auto & c : e.children) {
+      bind_changing(c, owner, out);
+    }
+  }
+
+  static Comparison value_of(const std::pair<uint32_t, Term> & b)
+  {
+    Comparison c;
+    c.op = CompareOp::Eq;
+    c.objects = true;
+    c.lhs_term = b.second;
+    c.rhs_term = Term::variable(b.first);
+    return c;
+  }
+
+  // inner with its values bound: exists the variables, their equalities and inner
+  static NF bound(NF inner, const ValueBindings & values)
+  {
+    if (values.empty()) {
+      return inner;
+    }
+    NF all;
+    all.kind = NF::Kind::And;
+    all.time = inner.time;
+    for (const auto & b : values) {
+      NF eq;
+      eq.kind = NF::Kind::Cmp;
+      eq.time = inner.time;
+      eq.cmp = value_of(b);
+      all.children.push_back(std::move(eq));
+    }
+    all.children.push_back(std::move(inner));
+    NF ex;
+    ex.kind = NF::Kind::Exists;
+    ex.time = all.time;
+    for (const auto & b : values) {
+      ex.vars.push_back(b.first);
+    }
+    ex.children.push_back(std::move(all));
+    return ex;
+  }
+
   // --- Formulas to NF ------------------------------------------------------------------------
 
   NF to_nf(
@@ -564,10 +639,11 @@ private:
           n.kind = NF::Kind::Lit;
           n.lit.positive = positive;
           n.lit.atom.predicate = *dm_.predicates.find(s.symbols.name(f.name));
+          ValueBindings values;
           for (TermId a : f.args) {
-            n.lit.atom.args.push_back(term(s, a, scope));
+            n.lit.atom.args.push_back(bind_changing(term(s, a, scope), owner, values, false));
           }
-          return n;
+          return bound(std::move(n), values);
         }
       case ast::FormulaKind::Compare: {
           n.kind = NF::Kind::Cmp;
@@ -575,15 +651,18 @@ private:
             CompareOp::Gt, CompareOp::Ge};
           CompareOp op = ops[static_cast<int>(f.compare)];
           n.cmp.op = positive ? op : negate(op);
+          ValueBindings values;
           if (is_object_expr(s, f.lhs) || is_object_expr(s, f.rhs)) {
             n.cmp.objects = true;
-            n.cmp.lhs_term = object_term(s, f.lhs, scope);
-            n.cmp.rhs_term = object_term(s, f.rhs, scope);
+            n.cmp.lhs_term = bind_changing(object_term(s, f.lhs, scope), owner, values, true);
+            n.cmp.rhs_term = bind_changing(object_term(s, f.rhs, scope), owner, values, true);
           } else {
             n.cmp.lhs = expr(s, f.lhs, scope);
             n.cmp.rhs = expr(s, f.rhs, scope);
+            bind_changing(n.cmp.lhs, owner, values);
+            bind_changing(n.cmp.rhs, owner, values);
           }
-          return n;
+          return bound(std::move(n), values);
         }
       case ast::FormulaKind::AtStart:
         return to_nf(s, f.children.at(0), positive, TimeTag::AtStart, owner, scope);
@@ -892,13 +971,21 @@ private:
       append(at_start ? eff.start_condition : eff.condition, cond);
     }
 
+    ValueBindings values;
+    auto with_values = [&]() {
+        for (const auto & b : values) {
+          eff.variables.push_back(b.first);
+          eff.condition.comparisons.push_back(value_of(b));
+        }
+        out.push_back(std::move(eff));
+      };
     if (e.kind == ast::EffectKind::Add || e.kind == ast::EffectKind::Delete) {
       eff.kind = e.kind == ast::EffectKind::Add ? Effect::Kind::Add : Effect::Kind::Delete;
       eff.atom.predicate = *dm_.predicates.find(s.symbols.name(e.name));
       for (TermId a : e.args) {
-        eff.atom.args.push_back(term(s, a, scope));
+        eff.atom.args.push_back(bind_changing(term(s, a, scope), owner, values, false));
       }
-      out.push_back(std::move(eff));
+      with_values();
       return;
     }
     // Assign
@@ -906,7 +993,7 @@ private:
     auto fn = *dm_.functions.find(s.symbols.name(target.name));
     eff.function = fn;
     for (TermId a : target.args) {
-      eff.args.push_back(term(s, a, scope));
+      eff.args.push_back(bind_changing(term(s, a, scope), owner, values, false));
     }
     eff.op = e.op;
     if (!dm_.functions.items[fn].numeric) {
@@ -916,14 +1003,15 @@ private:
         s.nodes.terms[v.term].kind == ast::TermKind::Name &&
         str(s, s.nodes.terms[v.term].name) == "undefined";
       if (!undefined) {
-        eff.object = object_term(s, e.value, scope);
+        eff.object = bind_changing(object_term(s, e.value, scope), owner, values, true);
       }
     } else {
       eff.kind = Effect::Kind::Numeric;
       eff.value = expr(s, e.value, scope);
+      bind_changing(eff.value, owner, values);
       eff.continuous = has_t(s, e.value);
     }
-    out.push_back(std::move(eff));
+    with_values();
   }
 
   // Splits a (conjunctive at the top) formula into groups by time tag
@@ -1174,6 +1262,29 @@ private:
     NF cond;
     if (a.condition.valid()) {
       cond = to_nf(s, a.condition, true, TimeTag::None, owner, scope);
+    }
+    // A duration that reads changing object fluents: their values at start, hidden parameters
+    ValueBindings values;
+    for (auto & c : duration) {
+      bind_changing(c.value, owner, values);
+    }
+    if (!values.empty()) {
+      NF all;
+      all.kind = NF::Kind::And;
+      all.children.push_back(std::move(cond));
+      for (const auto & b : values) {
+        NF eq;
+        eq.kind = NF::Kind::Cmp;
+        eq.time = TimeTag::AtStart;
+        eq.cmp = value_of(b);
+        all.children.push_back(std::move(eq));
+      }
+      cond = NF{};
+      cond.kind = NF::Kind::Exists;
+      for (const auto & b : values) {
+        cond.vars.push_back(b.first);
+      }
+      cond.children.push_back(std::move(all));
     }
     std::vector<Effect> effects;
     if (a.effect.valid()) {
@@ -2204,6 +2315,7 @@ private:
   std::map<FormulaId, bool> pref_mode_;              // compiled preferences: satisfied?
   std::map<std::string, FunctionId> violations_;     // preference: its violation count
   size_t monitor_counter_ = 0;
+  size_t value_counter_ = 0;
   std::optional<FunctionId> clock_;  // steps, for timed constraints in sequential plans
   double clock_limit_ = 0.0;         // past every time they name
 
