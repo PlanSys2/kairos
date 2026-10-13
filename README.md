@@ -30,26 +30,6 @@ other planners it was measured against; on classical planning, Fast Downward's L
 ahead. Results and method in [docs/benchmark.md](docs/benchmark.md); which PDDL features each
 planner handles in [docs/pddl-support.md](docs/pddl-support.md).
 
-> **Status: early development.** The core infrastructure is in place (build system, CI,
-> diagnostics, cancellation and memory budget, logging), the PDDL front-end parses the whole of
-> PDDL 3.1 and PDDL+ (13,149 of 13,152 public benchmark files; the other 3 are broken), and
-> domains and problems can be checked (`kairos::check_domain`, `kairos::check_problem`), and plans
-> can be read, written and validated (`kairos::validate_plan`, same verdicts as VAL on 515 test
-> plans). Tasks are normalized into a lifted representation (disjunctions, existentials,
-> derived predicates, durative actions, PDDL+) and grounded by relaxed reachability in Datalog,
-> both checked against the validator; grounding gives the same atoms and actions as Fast
-> Downward's translator (fewer where its static filters are tighter), several times faster.
-> Ground tasks become SAS+ tasks with mutex groups found by invariant synthesis (also for
-> durative actions), matching Fast Downward's, whose states are packed and expanded with a
-> decision-tree successor generator (about 900,000 states per second), with blind, goal count,
-> hmax, hadd and FF heuristics (numeric subgoaling, preferred operators) guiding lazy and
-> eager greedy search, weighted A*, enforced hill-climbing and a LAMA-style anytime driver.
-> **Kairos plans** classical, numeric and temporal problems (STRIPS, ADL, derived predicates,
-> numeric fluents, action costs, durative actions, required concurrency, timed initial
-> literals), as a library and as the `kairos` executable, validating every plan before handing
-> it over. The search combines the FF heuristic, LAMA-style landmarks and novelty; temporal
-> tasks use action compression with rescheduling, or snap actions over a temporal network.
-
 ## Why another planner?
 
 The planners that cover most of PDDL 2.1 (POPF, OPTIC, TFD, LPG) are no longer maintained, are
@@ -64,7 +44,7 @@ Kairos is written from scratch to close that gap.
 
 - **Coverage.** PDDL 2.1 level 3 (durative actions, required concurrency, numeric fluents),
   PDDL 2.2 (derived predicates, timed initial literals), full ADL also inside durative actions,
-  and general metrics. Later: PDDL 3 constraints and preferences, object fluents and PDDL+.
+  and general metrics. PDDL 3 constraints and preferences and object fluents. Later: PDDL+.
 - **Efficiency.** A fast engine for temporally simple problems (action compression plus
   rescheduling) and a complete one for required concurrency (snap actions with partial-order
   states and an incremental STN), chosen automatically by analyzing the task.
