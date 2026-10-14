@@ -263,6 +263,9 @@ struct Task
   std::vector<Effect> clock_rates;  // the rate of each process effect, integrated by the clock
   uint32_t first_event = UINT32_MAX;  // PDDL+: actions from here on are events (forced)
   std::vector<ClockDeadline> clock_deadlines;  // PDDL+: ends of durative actions, timed literals
+  // Numeric variables an engine reads outside the actions (durations, over all conditions of
+  // the durative actions M2 and M3 check apart): states never merge on them
+  std::vector<NumVarId> read_outside;
   bool goal_unreachable = false;
   Metric metric;
 

@@ -124,3 +124,13 @@ The test domains and the script live outside the repository, in the maintainers'
 (`bench/features`: `make.py` writes the 22 domain/problem pairs, `run.py` runs every planner
 and prints this table). Kairos runs with `--no-anytime --threads 1`; the others as planutils
 runs them, in a container with 3 GB and one CPU.
+
+Beyond that one problem per feature, every feature has a bank of domains, from easy to hard,
+with problems that have no plan: the `features` suite of
+[kairos-benchmarks](https://github.com/PlanSys2/kairos-benchmarks). It takes up to six families
+per feature from the public collections (chosen by the features `kairos check` reports) and adds
+families written for what none of them has: object fluents, timed initial fluents and a robotic
+warehouse with up to 400 robots. Kairos answers "unsolvable" only with a proof; when the
+engines that apply are not complete for the task and run out of states, it answers
+`no plan found` (exit code 14). On the bank it gives no wrong answer: no "unsolvable" for a
+problem with a plan, no plan for one without.

@@ -45,6 +45,7 @@ constexpr int kUnsolvable = 10;
 constexpr int kTimeout = 11;
 constexpr int kMemory = 12;
 constexpr int kUnsupported = 13;
+constexpr int kNoPlanFound = 14;
 
 std::atomic<bool> g_interrupted{false};
 
@@ -82,8 +83,9 @@ const char * kUsage =
   "  --debug[=CHANNELS]      debug messages (all channels, or e.g. search,ground)\n"
   "  --dump=WHAT --dump-dir DIR  write ast, lifted, ground, sas, plan-trace to DIR\n"
   "\n"
-  "Exit codes: 0 solved, 10 unsolvable, 11 timeout, 12 memory, 13 unsupported,\n"
-  "2 invalid input, 1 internal error. With --format popf: 0 also without a plan.\n";
+  "Exit codes: 0 solved, 10 unsolvable (proved), 11 timeout, 12 memory, 13 unsupported,\n"
+  "14 no plan found (no engine that applies could prove there is none), 2 invalid input,\n"
+  "1 internal error. With --format popf: 0 also without a plan.\n";
 
 std::optional<std::string> read(const std::string & path)
 {
@@ -117,6 +119,7 @@ int exit_code(kairos::Status s)
     case kairos::Status::GroundingTooLarge: return kMemory;
     case kairos::Status::Unsupported: return kUnsupported;
     case kairos::Status::InvalidInput: return kInvalidInput;
+    case kairos::Status::NoPlanFound: return kNoPlanFound;
     default: return kInternal;
   }
 }

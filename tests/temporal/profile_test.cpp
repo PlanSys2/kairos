@@ -115,6 +115,33 @@ TEST(TemporalProfileTest, NeedingTheIntermediateValueIsNotSimple)
   EXPECT_TRUE(q.simple) << (q.reasons.empty() ? "" : q.reasons[0]);
 }
 
+TEST(TemporalProfileTest, AWindowBetweenTwoVariablesIsNotSimple)
+{
+  // An envelope (time2processes' sailing): "started" at start, "alive" gone at end; a rescue
+  // needs both, so it happens while the envelope runs. Compressed, the envelope makes them
+  // true and false at once and no plan is left (M2 exhausted it and claimed "unsolvable")
+  const char * domain =
+    "(define (domain sail) (:requirements :durative-actions :negative-preconditions)"
+    " (:predicates (started) (alive) (saved))"
+    " (:durative-action overall :parameters () :duration (= ?duration 40)"
+    "  :condition (at start (not (started)))"
+    "  :effect (and (at start (started)) (at end (not (alive)))))"
+    " (:durative-action rescue :parameters () :duration (= ?duration 1)"
+    "  :condition (and (at start (started)) (at start (alive)) (at end (alive)))"
+    "  :effect (at end (saved))))";
+  auto p = profile(domain,
+      "(define (problem x) (:domain sail) (:init (alive)) (:goal (saved)))");
+  EXPECT_FALSE(p.simple);
+  ASSERT_FALSE(p.reasons.empty());
+  EXPECT_NE(p.reasons[0].find("overall"), std::string::npos) << p.reasons[0];
+  // The same without needing "alive": nothing ties the rescue to the envelope's interval
+  std::string loose = domain;
+  const std::string needs = " (at start (alive)) (at end (alive))";
+  loose.replace(loose.find(needs), needs.size(), "");
+  auto q = profile(loose, "(define (problem x) (:domain sail) (:init (alive)) (:goal (saved)))");
+  EXPECT_TRUE(q.simple) << (q.reasons.empty() ? "" : q.reasons[0]);
+}
+
 TEST(TemporalProfileTest, AValueThatHeldBeforeTheActionIsNothingNew)
 {
   // Starts by adding what its start condition already needs, deletes it at end (PlanSys2's

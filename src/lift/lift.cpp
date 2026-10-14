@@ -225,7 +225,28 @@ private:
   uint32_t gen_ = 1;
 };
 
-using State = std::vector<Relation>;  // per fluent predicate (index into Lift::fluent_of)
+using State = std::vector<Relation>;
+
+// Action instances, flat: schema i with arguments args[offset[i], offset[i] + vars)
+struct Instances
+{
+  std::vector<uint32_t> schema;
+  std::vector<uint32_t> offset;
+  std::vector<uint32_t> args;
+
+  size_t size() const {return schema.size();}
+  void clear()
+  {
+    schema.clear();
+    offset.clear();
+    args.clear();
+  }
+  Tuple at(size_t i, uint32_t vars) const
+  {
+    auto b = args.begin() + offset[i];
+    return Tuple(b, b + vars);
+  }
+};  // per fluent predicate (index into Lift::fluent_of)
 
 // The tuples of a relation by the value at one position: (value, tuple) sorted
 using Index = std::vector<std::pair<uint32_t, uint32_t>>;
@@ -265,13 +286,13 @@ public:
 
 private:
   void build();
-  void successors(const State & s, std::vector<std::pair<uint32_t, Tuple>> & out);
+  void successors(const State & s, Instances & out);
   void join(
     const Schema & sc, const State & s, size_t k, Tuple & a,
-    std::vector<uint8_t> & bound, uint32_t si, std::vector<std::pair<uint32_t, Tuple>> & out);
+    std::vector<uint8_t> & bound, uint32_t si, Instances & out);
   void rest(
     const Schema & sc, const State & s, size_t v, Tuple & a,
-    std::vector<uint8_t> & bound, uint32_t si, std::vector<std::pair<uint32_t, Tuple>> & out);
+    std::vector<uint8_t> & bound, uint32_t si, Instances & out);
   bool holds(const Pattern & p, const State & s, const Tuple & a) const;
   bool comparisons_ok(const Schema & sc, const Tuple & a, const std::vector<uint8_t> & bound) const;
   State apply(const State & s, const Schema & sc, const Tuple & a) const;
@@ -493,7 +514,7 @@ bool Lift::comparisons_ok(
 
 void Lift::join(
   const Schema & sc, const State & s, size_t k, Tuple & a, std::vector<uint8_t> & bound,
-  uint32_t si, std::vector<std::pair<uint32_t, Tuple>> & out)
+  uint32_t si, Instances & out)
 {
   if (k == sc.pos.size()) {
     rest(sc, s, 0, a, bound, si, out);
@@ -554,7 +575,7 @@ void Lift::join(
 
 void Lift::rest(
   const Schema & sc, const State & s, size_t v, Tuple & a, std::vector<uint8_t> & bound,
-  uint32_t si, std::vector<std::pair<uint32_t, Tuple>> & out)
+  uint32_t si, Instances & out)
 {
   while (v < sc.vars && bound[v]) {
     ++v;
@@ -565,15 +586,17 @@ void Lift::rest(
         return;
       }
     }
-    // Before the list doubles: room for it (an action without preconditions and six
+    // Before the lists grow: room for them (an action without preconditions and six
     // parameters over 40 objects has 4 billion instances)
-    if (out.size() == out.capacity() && budget_ &&
-      (budget_->exhausted() ||
-      !budget_->reserve(out.capacity() * (sizeof(out[0]) + sc.vars * sizeof(uint32_t)))))
-    {
-      throw OutOfBudget{};
+    if (budget_ && out.args.size() + sc.vars > out.args.capacity()) {
+      size_t grow = std::max<size_t>(out.args.capacity(), 1024) * sizeof(uint32_t) * 3;
+      if (budget_->exhausted() || !budget_->reserve(grow)) {
+        throw OutOfBudget{};
+      }
     }
-    out.emplace_back(si, a);
+    out.schema.push_back(si);
+    out.offset.push_back(static_cast<uint32_t>(out.args.size()));
+    out.args.insert(out.args.end(), a.begin(), a.end());
     return;
   }
   for (uint32_t o : sc.domain[v]) {
@@ -586,7 +609,7 @@ void Lift::rest(
   }
 }
 
-void Lift::successors(const State & s, std::vector<std::pair<uint32_t, Tuple>> & out)
+void Lift::successors(const State & s, Instances & out)
 {
   out.clear();
   for (uint32_t si = 0; si < schemas_.size(); ++si) {
@@ -996,9 +1019,10 @@ uint32_t Lift::ff_or_throw(const State & s, Preferred * preferred)
           Tuple a(sc.vars, 0);
           std::vector<uint8_t> bound(sc.vars, 0);
           // reuse the successor join over the static relations
-          std::vector<std::pair<uint32_t, Tuple>> inst;
+          Instances inst;
           join(sc, s, 0, a, bound, si, inst);
-          for (auto & [unused, args] : inst) {
+          for (size_t i = 0; i < inst.size(); ++i) {
+            Tuple args = inst.at(i, sc.vars);
             for (const auto & ad : sc.add) {
               fact.clear();
               for (Arg x : ad.args) {
@@ -1225,7 +1249,7 @@ std::optional<Plan> Lift::search(const std::function<bool()> & stop)
   push(0, h0, 1, f0);
   stats_.states = 1;
   std::vector<uint8_t> closed(1, 0);
-  std::vector<std::pair<uint32_t, Tuple>> succ;
+  Instances succ;
   uint32_t turn = 0;
   uint32_t best = h0;
   uint32_t best_ff = f0;
@@ -1321,8 +1345,10 @@ std::optional<Plan> Lift::search(const std::function<bool()> & stop)
     ++stats_.expanded;
     ++expansion_;  // the indexes of the fluent relations are of another state now
     successors(states[id], succ);
-    for (auto & [si, args] : succ) {
+    for (size_t i = 0; i < succ.size(); ++i) {
+      uint32_t si = succ.schema[i];
       const Schema & sc = schemas_[si];
+      Tuple args = succ.at(i, sc.vars);
       // Its key: the parent's, less the atoms it deletes that hold, plus those it adds that
       // do not (an atom both deleted and added stays)
       const State & s = states[id];

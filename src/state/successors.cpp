@@ -549,8 +549,14 @@ bool StateSpace::integrate(double max_dt, bool long_wait)
     }
     blocks = std::min<int64_t>(blocks * 2, 4096);
   }
-  // A long wait that nothing stops changes nothing that matters: not applicable
-  return !long_wait || (stopped && last_wait_ > 0.0);
+  // A long wait that nothing stops changes nothing that matters: not applicable. One that ran
+  // all its steps towards a deadline still ahead is (a drive of 2316 s: the next wait goes on)
+  bool towards = false;
+  if (taken >= kLongSteps) {
+    auto left = deadline_left(next_numbers_);
+    towards = left && std::isfinite(*left);
+  }
+  return !long_wait || ((stopped || towards) && last_wait_ > 0.0);
 }
 
 bool StateSpace::holds_numeric(const sas::NumericCondition & c, const double * numbers) const

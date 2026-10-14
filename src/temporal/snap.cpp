@@ -132,6 +132,7 @@ SnapTask snap(const sas::Task & task, bool keep_variable_duration)
   s.task = task;
   s.task.durative_actions.clear();
   s.task.timed_events.clear();
+  s.task.read_outside = durative_num_reads(task);  // the filter checks them
   s.instant = task.actions.size();
   auto starts = static_cast<uint32_t>(s.task.action_names.size());
   for (const auto & n : task.durative_action_names) {
@@ -340,6 +341,12 @@ std::vector<Access> accesses(const sas::Task & original, const SnapTask & s)
       // open interval), so no write breaks them in between
       acc.invariant(original.durative_actions[s.durative(a)].over_all);
     }
+    if (s.is_start(a)) {
+      // The duration is read at start (a timed literal that changes it comes after)
+      for (const auto & d : original.durative_actions[s.durative(a)].duration) {
+        acc.read(d.value.tree);
+      }
+    }
     acc.finish(bases);
   }
   return out;
@@ -380,15 +387,17 @@ public:
       st.kind = Op::Start;
       st.index = i;
       facts(da.at_start, st.pre);
-      facts(da.over_all, st.pre);
       st.check = st.pre;
+      facts(da.over_all, st.pre);
+      facts(da.over_all, st.open_after);
       adds(da.start, da.effects, sas::Timing::Start, st.adds);
       Op en;
       en.kind = Op::End;
       en.index = i;
       facts(da.at_end, en.check);
-      facts(da.over_all, en.check);
+      facts(da.over_all, en.open_before);
       en.pre = en.check;
+      en.pre.insert(en.pre.end(), en.open_before.begin(), en.open_before.end());
       en.pre.push_back(facts_ + i);
       adds(da.end, da.effects, sas::Timing::End, en.adds);
       ops_.push_back(std::move(st));
@@ -467,6 +476,13 @@ public:
     }
     for (sas::VarId v = 0; v < o_.variables.size(); ++v) {
       reach(offset_[v] + values[v], written(v));
+      if (o_.variables[v].kind == sas::Variable::Kind::Derived) {
+        // Axioms only make a derived atom true here; it turns false again when what made it
+        // true goes away: optimistic, every value from now on
+        for (uint32_t x = 0; x < o_.variables[v].size(); ++x) {
+          reach(offset_[v] + x, written(v));
+        }
+      }
     }
     for (size_t k = tils_done; k < tils_.size(); ++k) {
       for (const auto & f : tils_[k]) {
@@ -507,7 +523,10 @@ private:
     Kind kind = Instant;
     uint32_t index = 0;          // durative action of a start or an end
     std::vector<uint32_t> pre;   // nodes
-    std::vector<uint32_t> check;  // facts that must not be past their deadline
+    std::vector<uint32_t> check;  // facts that must not be past their deadline (epsilon before)
+    // Over all conditions: they hold in the open interval, so a literal that takes one away at
+    // the instant of the end does not break it; right after the start it must still hold
+    std::vector<uint32_t> open_after, open_before;
     std::vector<uint32_t> adds;
   };
 
@@ -580,6 +599,16 @@ private:
     for (uint32_t c : op.check) {
       if (t > deadline_[c] - eps_) {
         return;  // too late for that fact
+      }
+    }
+    for (uint32_t c : op.open_after) {
+      if (t >= deadline_[c]) {
+        return;
+      }
+    }
+    for (uint32_t c : op.open_before) {
+      if (t > deadline_[c]) {
+        return;
       }
     }
     for (uint32_t f : op.adds) {

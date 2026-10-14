@@ -109,6 +109,11 @@ std::vector<uint8_t> unread_numbers(const sas::Task & t)
   }
   cond(t.goal);
   cond(t.always);
+  for (auto v : t.read_outside) {
+    if (v < read.size()) {
+      read[v] = 1;
+    }
+  }
   effects(t.clock_rates);
   for (const auto & r : t.clock_rates) {
     read[r.num] = 1;  // what time changes tells states apart (the time itself, for the plan)

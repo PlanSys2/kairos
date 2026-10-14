@@ -214,6 +214,7 @@ std::string_view to_string(Status status)
     case Status::InvalidInput: return "invalid input";
     case Status::GroundingTooLarge: return "grounding too large";
     case Status::InternalError: return "internal error";
+    case Status::NoPlanFound: return "no plan found";
   }
   return "unknown";
 }

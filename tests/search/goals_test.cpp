@@ -134,6 +134,48 @@ TEST(GoalsTest, KeepsTheGoalsAlreadyTrue)
   EXPECT_TRUE(r->best_is_valid());
 }
 
+TEST(GoalsTest, GoalsTrueFromTheStartMayBreakForAWhile)
+{
+  // A warehouse: every shelf starts home (a goal) and must visit the station for its item;
+  // each delivery breaks a goal true from the start, which then comes back as a goal
+  std::string objects, init, goals;
+  const int n = 25;
+  for (int i = 0; i < n; ++i) {
+    std::string s = "s" + std::to_string(i), z = "z" + std::to_string(i);
+    objects += " " + s;
+    init += " (shelf-at " + s + " " + z + ") (home " + s + " " + z + ") (link st " + z + ")" +
+      " (link " + z + " st)";
+    goals += " (shown " + s + ") (shelf-at " + s + " " + z + ")";
+  }
+  std::string zones;
+  for (int i = 0; i < n; ++i) {
+    zones += " z" + std::to_string(i);
+  }
+  const char * domain =
+    "(define (domain wh) (:requirements :strips :typing) (:types shelf zone)"
+    " (:predicates (at ?z - zone) (shelf-at ?s - shelf ?z - zone) (home ?s - shelf ?z - zone)"
+    "  (carrying ?s - shelf) (free) (link ?a ?b - zone) (shown ?s - shelf)"
+    "  (station ?z - zone))"
+    " (:action move :parameters (?a ?b - zone) :precondition (and (at ?a) (link ?a ?b))"
+    "  :effect (and (not (at ?a)) (at ?b)))"
+    " (:action lift :parameters (?s - shelf ?z - zone)"
+    "  :precondition (and (at ?z) (shelf-at ?s ?z) (free))"
+    "  :effect (and (not (shelf-at ?s ?z)) (not (free)) (carrying ?s)))"
+    " (:action show :parameters (?s - shelf ?z - zone)"
+    "  :precondition (and (at ?z) (station ?z) (carrying ?s))"
+    "  :effect (shown ?s))"
+    " (:action lower :parameters (?s - shelf ?z - zone)"
+    "  :precondition (and (at ?z) (carrying ?s) (home ?s ?z))"
+    "  :effect (and (shelf-at ?s ?z) (free) (not (carrying ?s)))))";
+  std::string problem = "(define (problem p) (:domain wh) (:objects" + objects +
+    " - shelf st" + zones + " - zone) (:init (at st) (station st) (free)" + init +
+    ") (:goal (and" + goals + ")))";
+  auto r = setup(domain, problem);
+  ASSERT_TRUE(goals_apply(r->p->sas));
+  EXPECT_EQ(incremental_goals(*r->ctx), Outcome::Solved);
+  EXPECT_TRUE(r->best_is_valid());
+}
+
 TEST(GoalsTest, GoalsTrueFromTheStartNeedNothing)
 {
   std::string seen;

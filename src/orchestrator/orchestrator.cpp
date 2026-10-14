@@ -783,6 +783,12 @@ private:
   // running out proves nothing
   bool bounded_durations() const {return hybrid_ && !hybrid_primary_;}
 
+  // M3 ran out of states without a plan
+  bool snap_exhausted(search::AnytimeResult result, const Phase & ph)
+  {
+    return result == search::AnytimeResult::Exhausted && !has_plan() && ph.kind == Kind::Snap;
+  }
+
   // Without processes or events in the domain, plans are PDDL 2.1 ones: happenings that
   // depend on each other epsilon apart
   void separate_happenings()
@@ -860,9 +866,13 @@ private:
           "initial literals", task.durative_actions.size(), task.timed_events.size());
       }
     }
-    if (temporal_task_ && fixed_.changed && o_.search == "auto") {
+    if (temporal_task_ && (fixed_.changed || !task.timed_events.empty()) &&
+      o_.search == "auto")
+    {
       // Durations between their bounds and continuous effects as they are: in steps of time
-      // too (the battery patrol recharges once 4 s, not four times 1 s)
+      // too (the battery patrol recharges once 4 s, not four times 1 s). With timed literals
+      // as well: M3 keeps one partial plan per state, and tight deadlines can need another
+      // (pipesworld with within constraints)
       auto both = temporal::hybrid(*translated_, kHybridDelta, temporal::Waits::Both, o_.epsilon);
       if (both.unsupported.empty()) {
         hybrid_ = std::move(both);
@@ -873,7 +883,7 @@ private:
         hybrid_short_->task.symmetries = hybrid_->task.symmetries;
         hybrid_crossing_->task.symmetries = hybrid_->task.symmetries;
         separate_happenings();
-        log_.info(LogChannel::Orchestrator, "durations: also in steps of {} s", kHybridDelta);
+        log_.info(LogChannel::Orchestrator, "also in steps of {} s", kHybridDelta);
       }
     }
     length_metric_ = in_.problem.metric == std::nullopt;
@@ -1391,10 +1401,18 @@ private:
           auto result = run_phase(ph, true);
           results[k] = result;
           if (result == search::AnytimeResult::Exhausted && !has_plan() && !bounded_durations()) {
-            bool proof = ph.kind == Kind::Plain ||
+            bool proof = (ph.kind == Kind::Plain && !hybrid_primary_) ||
               (ph.kind == Kind::Compressed && m2_complete_);
-            (proof ? proof_ : m3_exhausted_) = true;
+            if (proof) {
+              proof_ = true;
+            } else if (ph.kind == Kind::Plain) {
+              steps_exhausted_ = true;
+            } else {
+              m3_exhausted_ = true;
+            }
             internal_.request_stop();
+          } else if (snap_exhausted(result, ph)) {
+            m3_exhausted_ = true;  // evidence only: the steps of time run beside
           }
           if (result == search::AnytimeResult::ProvenOptimal && ph.kind == Kind::Plain) {
             optimal = true;
@@ -1461,11 +1479,16 @@ private:
       if (result == search::AnytimeResult::Exhausted && !res_.plan && !bounded_durations()) {
         // No plan in its whole space: a proof for the plain task and a complete M2; strong
         // evidence for M3 (one partial plan per state)
-        proof_ = ph.kind == Kind::Plain || (ph.kind == Kind::Compressed && m2_complete_);
+        // Steps of time (PDDL+) are no proof either
+        proof_ = (ph.kind == Kind::Plain && !hybrid_primary_) ||
+          (ph.kind == Kind::Compressed && m2_complete_);
         m3_exhausted_ = ph.kind == Kind::Snap;
+        steps_exhausted_ = ph.kind == Kind::Plain && hybrid_primary_;
         if (proof_ || m3_exhausted_) {
           break;
         }
+      } else if (snap_exhausted(result, ph)) {
+        m3_exhausted_ = true;  // evidence only: the steps of time come next
       }
       if (result == search::AnytimeResult::ProvenOptimal && ph.kind == Kind::Plain) {
         break;  // nothing better exists
@@ -1516,14 +1539,20 @@ private:
       res_.diagnostics.push_back(Diagnostic::note(
           "orchestrator.m3_exhausted", "engine M3 found no plan; as POPF, it keeps one "
           "partial plan per state, so this is strong evidence but not a proof"));
-      return finish(Status::Unsolvable, StopReason::Exhausted);
+      return finish(Status::NoPlanFound, StopReason::Exhausted);
+    }
+    if (steps_exhausted_) {
+      res_.diagnostics.push_back(Diagnostic::note(
+          "orchestrator.steps_exhausted", "no plan in steps of time; a plan that needs finer "
+          "timing than the steps would be missed, so this is evidence but not a proof"));
+      return finish(Status::NoPlanFound, StopReason::Exhausted);
     }
     if (outcome_ == search::AnytimeResult::Exhausted) {
-      res_.diagnostics.push_back(Diagnostic::error(
-          "unsupported.m2_incomplete",
+      res_.diagnostics.push_back(Diagnostic::note(
+          "orchestrator.m2_incomplete",
           "engine M2 found no plan, which does not prove there is none for this task "
           "(variable durations or possible required concurrency)"));
-      return finish(Status::Unsupported, StopReason::Exhausted);
+      return finish(Status::NoPlanFound, StopReason::Exhausted);
     }
     if (outcome_ == search::AnytimeResult::Stopped || budget_->check() != BudgetState::Ok) {
       auto [st, r] = budget_status();
@@ -1585,6 +1614,7 @@ private:
   double bytes_per_state_ = 0.0;
   std::atomic<bool> proof_{false};  // a complete phase exhausted its space without a plan
   std::atomic<bool> m3_exhausted_{false};
+  std::atomic<bool> steps_exhausted_{false};  // PDDL+ in steps of time, no plan: no proof
   std::jthread lifted_;  // last: stopped and joined before the members it uses go
 };
 

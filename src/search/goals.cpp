@@ -57,12 +57,20 @@ public:
       if (stopped()) {
         return Outcome::Stopped;
       }
+      // Kept (true at the end of each later search): every goal true now; once that gets
+      // stuck, only the goals this method reached, since reaching one may need to break a goal
+      // true from the start for a while (a shelf lifted from its place) and a broken one comes
+      // back as a goal to reach
       std::vector<sas::Fact> keep;
       std::vector<sas::Fact> todo;
       {
         const auto & v = ctx_.space.values(s);
         for (const auto & f : goal) {
-          (v[f.var] == f.value ? keep : todo).push_back(f);
+          if (v[f.var] != f.value) {
+            todo.push_back(f);
+          } else if (keep_all_ || std::find(kept_.begin(), kept_.end(), f) != kept_.end()) {
+            keep.push_back(f);
+          }
         }
       }
       if (todo.empty()) {
@@ -96,19 +104,34 @@ public:
           return Outcome::Stopped;
         }
         if (r == Reach::Reached) {
+          kept_.push_back(next);
           ctx_.logger.debug(
-            LogChannel::Search, "goals: {} of {} ({} steps, {} expanded)", keep.size() + 1,
-            goal.size(), plan.size(), ctx_.stats.expanded);
+            LogChannel::Search, "goals: {} reached of {} ({} steps, {} expanded)",
+            kept_.size(), goal.size(), plan.size(), ctx_.stats.expanded);
           advanced = true;
           break;
         }
         todo.erase(std::remove(todo.begin(), todo.end(), next), todo.end());
+      }
+      if (!advanced && keep_all_) {
+        keep_all_ = false;
+        limited_ = false;
+        ctx_.logger.debug(LogChannel::Search, "goals: keeping only the goals reached");
+        continue;
+      }
+      if (!advanced && limited_ && boost_ < kMaxBoost) {
+        // The searches ran out of expansions, not of states: again with a larger limit
+        boost_ *= 4;
+        limited_ = false;
+        ctx_.logger.debug(LogChannel::Search, "goals: limits {} times larger", boost_);
+        continue;
       }
       if (!advanced) {
         ctx_.logger.debug(LogChannel::Search, "goals: no candidate reached, {} goals done",
           keep.size());
         return Outcome::Failed;
       }
+      limited_ = false;
     }
   }
 
@@ -206,6 +229,7 @@ private:
     if (reached_ > 0) {
       limit = std::clamp(o_.per_goal * spent_ / reached_, o_.min_expansions, o_.max_expansions);
     }
+    limit *= boost_;
     for (size_t expanded = 0; expanded < limit; ++expanded) {
       if (stopped()) {
         return Reach::Stopped;
@@ -268,16 +292,22 @@ private:
       }
     }
     ctx_.logger.debug(LogChannel::Search, "goals: expansion limit for the next goal");
+    limited_ = true;
     return Reach::Failed;
   }
 
   SearchContext & ctx_;
+  std::vector<sas::Fact> kept_;  // goals this method reached, kept from then on
+  bool keep_all_ = true;  // every goal true is kept (until that gets stuck)
   GoalsOptions o_;
   std::vector<double> costs_;
   heuristics::RelaxedGraph graph_;
   bool resources_;  // numeric conditions: a goal reached may leave the others unreachable
   size_t reached_ = 0;  // goals reached by a short search
   size_t spent_ = 0;    // and the expansions they took
+  bool limited_ = false;  // a search for the next goal ran out of expansions
+  size_t boost_ = 1;      // the limits grow when every candidate ran out of them
+  static constexpr size_t kMaxBoost = 64;
 };
 
 }  // namespace

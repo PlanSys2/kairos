@@ -700,6 +700,22 @@ TEST(PlannerApiTest, PddlPlusObjectsThatDifferAreNotSymmetric)
   }
 }
 
+TEST(PlannerApiTest, PddlPlusWaitsLongerThanOneLongWait)
+{
+  // A trip of 2500 s while a process runs: a long wait takes at most 20000 steps of 0.1 s
+  // (2000 s), and one that ran them all was not applicable, so the trip never ended
+  Problem p = problem(
+    "(define (domain trip) (:requirements :fluents :time :durative-actions)"
+    " (:predicates (on) (arrived)) (:functions (age))"
+    " (:process aging :parameters () :precondition (on) :effect (increase (age) (* #t 1)))"
+    " (:durative-action travel :parameters () :duration (= ?duration 2500)"
+    "  :condition (at start (on)) :effect (at end (arrived))))",
+    "(define (problem x) (:domain trip) (:init (on) (= (age) 0)) (:goal (arrived)))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+}
+
 TEST(PlannerApiTest, PddlPlusWithTimedInitialLiterals)
 {
   // The gate opens at 3; the level (1 per second) must reach 3.5 too: through at 3.5
@@ -817,9 +833,9 @@ TEST(PlannerApiTest, RequiredConcurrencyWithEngineM3)
   SolveOptions m2 = quick();
   m2.engine = Engine::M2;
   SolveResult f = Planner().solve(p, m2);
-  EXPECT_EQ(f.status, Status::Unsupported);
+  EXPECT_EQ(f.status, Status::NoPlanFound);
   EXPECT_TRUE(has_code(f.diagnostics, "orchestrator.forced_m2"));
-  EXPECT_TRUE(has_code(f.diagnostics, "unsupported.m2_incomplete"));
+  EXPECT_TRUE(has_code(f.diagnostics, "orchestrator.m2_incomplete"));
 }
 
 TEST(PlannerApiTest, OverAllConditionsHoldInTheOpenInterval)
@@ -868,8 +884,89 @@ TEST(PlannerApiTest, TimedInitialLiteralsWithEngineM3)
       "(define (problem x) (:domain w) (:init (at 3 (open)) (at 6 (not (open))))"
       " (:goal (done)))");
   SolveResult n = Planner().solve(q, quick());
-  EXPECT_EQ(n.status, Status::Unsolvable);
+  EXPECT_EQ(n.status, Status::NoPlanFound);  // M3 is no proof
   EXPECT_TRUE(has_code(n.diagnostics, "orchestrator.m3_exhausted"));
+}
+
+// Timed initial fluents read where M2 and M3 keep them apart from the snap actions: a duration
+// (rush hour triples a travel time) and an over all condition (power only in windows). The
+// states dropped them as unread, so the travel kept its old time (a plan the validator
+// rejected) and the power never came (a false "unsolvable")
+TEST(PlannerApiTest, TimedInitialFluentsInDurationsAndOverAllConditions)
+{
+  Problem traffic = problem(
+    "(define (domain traffic) (:requirements :typing :durative-actions :numeric-fluents"
+    " :timed-initial-literals) (:types car place)"
+    " (:predicates (at ?c - car ?p - place) (road ?a ?b - place))"
+    " (:functions (travel ?a ?b - place))"
+    " (:durative-action drive :parameters (?c - car ?a ?b - place)"
+    "  :duration (= ?duration (travel ?a ?b))"
+    "  :condition (and (at start (at ?c ?a)) (over all (road ?a ?b)))"
+    "  :effect (and (at start (not (at ?c ?a))) (at end (at ?c ?b)))))",
+    "(define (problem p) (:domain traffic) (:objects c - car x0 x1 x2 - place)"
+    " (:init (at c x0) (road x0 x1) (road x1 x2) (= (travel x0 x1) 6) (= (travel x1 x2) 6)"
+    "  (at 5 (= (travel x1 x2) 18)))"
+    " (:goal (at c x2)))");
+  SolveResult r = Planner().solve(traffic, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_TRUE(validate(traffic, *r.plan).valid());
+  ASSERT_EQ(r.plan->steps.size(), 2u);
+  EXPECT_NEAR(r.plan->steps[1].duration, 18.0, 1e-6);  // it starts after rush hour begins
+  auto charger = [](const std::string & windows) {
+      return problem(
+        "(define (domain charger) (:requirements :typing :durative-actions :numeric-fluents"
+        " :timed-initial-literals) (:types robot)"
+        " (:predicates (done ?r - robot))"
+        " (:functions (energy ?r - robot) (power))"
+        " (:durative-action charge :parameters (?r - robot) :duration (= ?duration 2)"
+        "  :condition (over all (>= (power) 5))"
+        "  :effect (at end (increase (energy ?r) 10)))"
+        " (:durative-action work :parameters (?r - robot) :duration (= ?duration 3)"
+        "  :condition (at start (>= (energy ?r) 5))"
+        "  :effect (and (at start (decrease (energy ?r) 5)) (at end (done ?r)))))",
+        "(define (problem p) (:domain charger) (:objects r - robot)"
+        " (:init (= (energy r) 0) (= (power) 0) " + windows + ")"
+        " (:goal (done r)))");
+    };
+  Problem window = charger("(at 1 (= (power) 8)) (at 7 (= (power) 0))");
+  SolveResult w = Planner().solve(window, quick());
+  ASSERT_EQ(w.status, Status::Solved);
+  EXPECT_TRUE(validate(window, *w.plan).valid());
+  EXPECT_GE(w.plan->steps[0].time, 1.0 - 1e-9);  // charging waits for the power
+  // A window too short for a charge of 2: no plan
+  EXPECT_EQ(Planner().solve(charger("(at 1 (= (power) 8)) (at 2 (= (power) 0))"), quick()).status,
+    Status::NoPlanFound);  // M3 and the steps of time: no proof
+}
+
+// The pruning of M3 by deadlines (a literal takes a fact away for good) reached only the true
+// value of a derived atom: "busy" while holding something could never turn false, and the
+// robot that had to put its load down before the window closed was "unsolvable" (airport with
+// time windows, compiled with derived atoms)
+TEST(PlannerApiTest, DeadlinesLetDerivedAtomsTurnFalse)
+{
+  auto window = [](const std::string & closes) {
+      return problem(
+        "(define (domain w) (:requirements :durative-actions :derived-predicates"
+        " :negative-preconditions :timed-initial-literals)"
+        " (:predicates (holding) (busy) (open) (done))"
+        " (:derived (busy) (holding))"
+        " (:durative-action put-down :parameters () :duration (= ?duration 2)"
+        "  :condition (at start (holding)) :effect (at end (not (holding))))"
+        " (:durative-action work :parameters () :duration (= ?duration 3)"
+        "  :condition (and (at start (not (busy))) (over all (open)))"
+        "  :effect (at end (done))))",
+        "(define (problem x) (:domain w) (:init (holding) (open) (at " + closes +
+        " (not (open)))) (:goal (done)))");
+    };
+  // Put down by 2, work from 2.001 to 5.001: the window may close then, at the end of the work
+  // (over all holds in the open interval)
+  for (const char * closes : {"10", "5.001"}) {
+    Problem p = window(closes);
+    SolveResult r = Planner().solve(p, quick());
+    ASSERT_EQ(r.status, Status::Solved) << closes;
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+  }
+  EXPECT_NE(Planner().solve(window("4"), quick()).status, Status::Solved);
 }
 
 TEST(PlannerApiTest, TemporallySimpleIpcDomains)

@@ -348,6 +348,77 @@ TemporalProfile analyze(const sas::Task & task)
       break;  // enough to explain it
     }
   }
+  // A window between two variables: an action sets one at start and changes another at end,
+  // and some other action needs both the value set and the one before the end (an envelope:
+  // "started" at start, "alive" gone at end, rescues need both)
+  if (p.simple) {
+    std::map<std::pair<sas::VarId, uint32_t>, std::vector<int64_t>> readers;  // >= 0: instant
+    std::set<std::pair<sas::VarId, uint32_t>> set_at_start;
+    for (const auto & da : task.durative_actions) {
+      for (const auto & f : da.start) {
+        set_at_start.emplace(f.var, f.value);
+      }
+    }
+    auto note = [&](const sas::Condition & c, int64_t id) {
+        for (const auto & f : c.facts) {
+          if (set_at_start.count({f.var, f.value})) {
+            readers[{f.var, f.value}].push_back(id);
+          }
+        }
+      };
+    for (size_t i = 0; i < task.actions.size(); ++i) {
+      note(task.actions[i].pre, static_cast<int64_t>(i));
+    }
+    for (size_t i = 0; i < task.durative_actions.size(); ++i) {
+      const auto & da = task.durative_actions[i];
+      for (const auto * c : {&da.at_start, &da.over_all, &da.at_end}) {
+        note(*c, -1 - static_cast<int64_t>(i));
+      }
+    }
+    for (size_t a = 0; a < task.durative_actions.size() && p.simple; ++a) {
+      const auto & da = task.durative_actions[a];
+      std::map<sas::VarId, uint32_t> at_end;
+      for (const auto & f : da.end) {
+        at_end[f.var] = f.value;
+      }
+      std::set<sas::VarId> started;
+      for (const auto & f : da.start) {
+        started.insert(f.var);
+      }
+      auto needs_before_end = [&](const sas::Condition & c) {
+          return std::any_of(c.facts.begin(), c.facts.end(), [&](const sas::Fact & f) {
+                     auto it = at_end.find(f.var);
+                     return it != at_end.end() && it->second != f.value && !started.count(f.var);
+                 });
+        };
+      for (const auto & f : da.start) {
+        auto it = readers.find({f.var, f.value});
+        if (it == readers.end() || at_end.count(f.var)) {
+          continue;  // the same variable at both ends: the check above
+        }
+        for (int64_t id : it->second) {
+          bool hit = false;
+          if (id >= 0) {
+            hit = needs_before_end(task.actions[static_cast<size_t>(id)].pre);
+          } else if (static_cast<size_t>(-1 - id) != a) {
+            const auto & other = task.durative_actions[static_cast<size_t>(-1 - id)];
+            hit = needs_before_end(other.at_start) || needs_before_end(other.over_all) ||
+              needs_before_end(other.at_end);
+          }
+          if (hit) {
+            p.simple = false;
+            p.reasons.push_back(
+              sas::instance_name(task, da) + " sets " + sas::fact_name(task, f) +
+              " at start and changes at end what another action needs with it");
+            break;
+          }
+        }
+        if (!p.simple) {
+          break;
+        }
+      }
+    }
+  }
   // Timed initial literals change what some action reads at fixed times
   if (p.timed_initial_literals) {
     p.simple = false;

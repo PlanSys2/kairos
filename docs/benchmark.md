@@ -4,6 +4,12 @@ How Kairos compares with the planners it is meant to replace or match, on public
 and on robotics problems. The tables are regenerated as Kairos improves; each one says which
 version produced it.
 
+**Every problem is in [kairos-benchmarks](https://github.com/PlanSys2/kairos-benchmarks)**: the
+suites of public problems (the exact files, pinned by commit and sha256, with a script that
+downloads them) and the problems written for Kairos (object fluents, timed initial fluents,
+durations between their bounds, a robotic warehouse with hundreds of robots, PlanSys2 problems
+at scale), with their generators. Anyone can run the same problems.
+
 ## Summary
 
 Kairos is meant to answer in milliseconds, so each suite counts the problems solved within
@@ -240,7 +246,9 @@ with lifted FF, Yannakakis joins, unit costs.
 | PDDL+ | 255 | The PDDL+ domains of hstairs (processes, events, ENHSP's global constraints), up to 10 instances each, and SMTPlan's benchmarks (PDDL+ and PDDL 2.1 with non-linear continuous effects) (`coverage.py` suite `pddlplus`) |
 
 The instances come from public collections (potassco pddl-instances, the IPC 2023 and 2026
-datasets, time2processes), fetched at pinned commits by `tools/fetch_corpus.sh`.
+datasets, hstairs, time2processes, htg-domains, SMTPlan) at pinned commits. Each suite is a file
+of [kairos-benchmarks](https://github.com/PlanSys2/kairos-benchmarks) (`suites/SUITE.tsv`), and
+`fetch.py SUITE` there downloads exactly its files and checks them.
 
 ## Details (2026-10-11, Kairos 0.3.0 at `023fe98`; the other planners)
 

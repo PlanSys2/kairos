@@ -48,10 +48,11 @@ General rules:
 | 0 | success: a plan was found, the plan is valid, the file is valid |
 | 1 | internal error; also an invalid plan in `validate` (see [validate](#validate)) |
 | 2 | invalid input: bad arguments, unreadable file, PDDL errors |
-| 10 | unsolvable |
+| 10 | unsolvable (proved) |
 | 11 | timeout without a plan |
 | 12 | out of memory without a plan (also: grounding too large) |
 | 13 | unsupported: the task uses something Kairos cannot plan with yet |
+| 14 | no plan found: the engines that apply ran out of states, and none of them proves there is no plan |
 
 ## solve (the default)
 
@@ -125,8 +126,8 @@ to `FILE`.
 kairos: STATUS (STOP REASON)[, cost C]
 ```
 
-`STATUS` is one of `solved`, `unsolvable`, `timeout`, `cancelled`, `out of memory`,
-`unsupported`, `invalid input`, `grounding too large`, `internal error`. `STOP REASON` is one of
+`STATUS` is one of `solved`, `unsolvable`, `no plan found`, `timeout`, `cancelled`,
+`out of memory`, `unsupported`, `invalid input`, `grounding too large`, `internal error`. `STOP REASON` is one of
 `exhausted`, `proven optimal`, `timeout`, `no improvement`, `target reached`, `stopped`,
 `memory limit` (see [How a search ends](#how-a-search-ends)).
 
@@ -142,10 +143,11 @@ $ echo $?
 | Code | Status | When |
 |-----:|--------|------|
 | 0 | `solved` | at least one valid plan (also when stopped by timeout, memory, `Ctrl-C`, `--target-cost` or `--no-improvement` after a plan) |
-| 10 | `unsolvable` | no plan exists (proved, or with M3 strong evidence, see [Engines](#engines---engine)) |
+| 10 | `unsolvable` | no plan exists: proved (a complete search, grounding or the lifted search ran out of states) |
 | 11 | `timeout` | out of time before the first plan |
 | 12 | `out of memory`, `grounding too large` | memory limit reached before the first plan |
-| 13 | `unsupported` | features Kairos cannot plan with yet, `--engine m1` on a temporal task, M2 exhausted without proof |
+| 13 | `unsupported` | features Kairos cannot plan with yet, `--engine m1` on a temporal task |
+| 14 | `no plan found` | every engine that applies ran out of states without a plan, and none of them is complete for the task (M3 keeps one partial plan per state, as POPF; steps of time miss finer timing): likely no plan exists, but nothing proves it |
 | 2 | `invalid input` | bad options, unreadable files, PDDL errors |
 | 1 | `cancelled`, `internal error` | stopped by a signal before any plan; a bug (e.g. every plan found failed validation) |
 
@@ -571,11 +573,11 @@ Forcing an engine:
 - `--engine m2` on a task that may need overlapping actions: a warning (`engine M2 forced on a
   task that may need actions to overlap: plans may be missed`). If M2 then exhausts its space
   without a plan and that is not a proof (variable durations, possible required concurrency), the
-  status is `unsupported` (exit 13). On a simple task without variable durations, it is a proof:
-  `unsolvable`.
-- `--engine m3`: when M3 exhausts its space without a plan the status is `unsolvable` (exit 10)
-  with a note: like POPF, M3 keeps one partial plan per state, so this is strong evidence, not a
-  proof. Constructs M3 cannot handle yet give `unsupported.m3` and exit 13.
+  status is `no plan found` (exit 14). On a simple task without variable durations, it is a
+  proof: `unsolvable`.
+- `--engine m3`: when M3 exhausts its space without a plan the status is `no plan found` (exit
+  14) with a note: like POPF, M3 keeps one partial plan per state, so this is strong evidence, not
+  a proof. Constructs M3 cannot handle yet give `unsupported.m3` and exit 13.
 
 ```bash
 kairos domain.pddl problem.pddl --engine m3 -v      # see the phases in the [orchestrator] lines
@@ -916,6 +918,7 @@ case $? in
   0)  echo "solved" ;;
   10) echo "no plan exists" ;;
   11) echo "no plan in time" ;;
+  14) echo "no plan found (and no proof that none exists)" ;;
   *)  echo "error" ;;
 esac
 ```

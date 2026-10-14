@@ -54,6 +54,10 @@ enum class Status : uint8_t
   InvalidInput,       // parse or semantic errors
   GroundingTooLarge,  // grounding does not fit in memory, and planning without it neither
   InternalError,      // a bug: every plan found failed validation, or an exception
+  // Every engine that applies searched its whole space without a plan, and none of them is
+  // complete for this task: likely none exists, but nothing proves it (M3 keeps one partial
+  // plan per state, as POPF; steps of time miss what needs finer timing)
+  NoPlanFound,
 };
 
 enum class StopReason : uint8_t

@@ -94,8 +94,8 @@ auto first = search.wait_first(std::chrono::seconds(5));
 kairos::SolveResult best = search.wait();  // or search.stop(); destroying it stops it too
 ```
 
-`result.status` tells what happened (`Solved`, `Unsolvable`, `Timeout`, `Cancelled`,
-`OutOfMemory`, `Unsupported`, `InvalidInput`, `GroundingTooLarge`), `result.stop_reason` why a
+`result.status` tells what happened (`Solved`, `Unsolvable` (proved), `NoPlanFound` (no proof),
+`Timeout`, `Cancelled`, `OutOfMemory`, `Unsupported`, `InvalidInput`, `GroundingTooLarge`), `result.stop_reason` why a
 solved search ended (for instance `ProvenOptimal`), and `result.stats` where the time went.
 
 The executable prints the plan to stdout (messages go to stderr):

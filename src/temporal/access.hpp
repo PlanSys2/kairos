@@ -225,6 +225,28 @@ inline std::vector<std::vector<sas::VarId>> derived_bases(const sas::Task & t)
   return out;
 }
 
+/// @brief The numeric variables the durative actions of `task` read: durations, conditions and
+/// effect values (an engine that keeps them apart lists them in its task's read_outside).
+inline std::vector<sas::NumVarId> durative_num_reads(const sas::Task & task)
+{
+  Access acc;
+  for (const auto & da : task.durative_actions) {
+    for (const auto & d : da.duration) {
+      acc.read(d.value.tree);
+    }
+    acc.read(da.at_start);
+    acc.read(da.over_all);
+    acc.read(da.at_end);
+    for (const auto & e : da.effects) {
+      acc.effect(e);
+    }
+  }
+  std::sort(acc.num_reads.begin(), acc.num_reads.end());
+  acc.num_reads.erase(std::unique(acc.num_reads.begin(), acc.num_reads.end()),
+    acc.num_reads.end());
+  return acc.num_reads;
+}
+
 }  // namespace kairos::temporal
 
 #endif  // KAIROS__TEMPORAL__ACCESS_HPP_
