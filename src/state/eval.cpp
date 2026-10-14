@@ -150,7 +150,11 @@ bool holds(
     const auto & b = task.variables[vc.b];
     uint32_t x = values[vc.a], y = values[vc.b];
     if (x >= a.objects.size() || y >= b.objects.size()) {
-      return false;  // undefined compares false
+      // = with an undefined side is false; != is its negation (PDDL has no other)
+      if (vc.equal) {
+        return false;
+      }
+      continue;
     }
     if ((a.objects[x] == b.objects[y]) != vc.equal) {
       return false;

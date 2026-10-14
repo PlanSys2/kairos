@@ -316,10 +316,10 @@ private:
         }
         out.facts.push_back(Fact{v, *val});
       } else {
+        // The negation of =: also true while the fluent is undefined
         if (val) {
           out.not_facts.push_back(Fact{v, *val});
         }
-        out.not_facts.push_back(Fact{v, out_.variables[v].none()});  // undefined compares false
       }
     }
     std::sort(out.facts.begin(), out.facts.end());

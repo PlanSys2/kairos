@@ -1459,6 +1459,7 @@ TEST(PlannerApiTest, IncrementalGoalsAskedForSolvesAlsoFewGoals)
 {
   // As the only search, with fewer goals than auto needs: then improved to a proof
   SolveOptions o = quick();
+  o.timeout *= kSlowBuild;  // the proof takes 4 s under ASan, more on the CI runners
   o.search = "goals";
   auto [d, p] = patrol_grid(3, false);
   SolveResult r = Planner().solve(problem(d, p), o);
@@ -1603,6 +1604,51 @@ TEST(PlannerApiTest, ChangingObjectFluentsAsArgumentsOfAtoms)
   std::string heavy = problem_text;
   heavy.replace(heavy.find("(box-at b1 c)"), 13, "(box-at heavy a)");
   EXPECT_EQ(Planner().solve(problem(domain, heavy), quick()).status, Status::Unsolvable);
+}
+
+// (not (= f o)) holds while f is undefined, as the validator says: = with an undefined side
+// is false, and its negation true (it was compiled to != that was false too: "unsolvable")
+TEST(PlannerApiTest, NegatedEqualityHoldsWhileAnObjectFluentIsUndefined)
+{
+  auto delivery = [](const std::string & goal) {
+      return problem(
+        "(define (domain delivery) (:requirements :typing :object-fluents"
+        " :negative-preconditions)"
+        " (:types robot location package)"
+        " (:predicates (connected ?a ?b - location))"
+        " (:functions (loc ?r - robot) - location (pos ?p - package) - location"
+        "  (carrying ?r - robot) - package (owner ?p - package) - robot (twin ?r - robot) - robot)"
+        " (:action move :parameters (?r - robot ?from ?to - location)"
+        "  :precondition (and (= (loc ?r) ?from) (connected ?from ?to))"
+        "  :effect (assign (loc ?r) ?to))"
+        " (:action pick :parameters (?r - robot ?p - package ?l - location)"
+        "  :precondition (and (= (loc ?r) ?l) (= (pos ?p) ?l) (not (= (carrying ?r) ?p))"
+        "   (not (= (owner ?p) ?r)) (not (= (twin ?r) (owner ?p))))"
+        "  :effect (and (assign (carrying ?r) ?p) (assign (pos ?p) undefined)))"
+        " (:action drop :parameters (?r - robot ?p - package ?l - location)"
+        "  :precondition (and (= (loc ?r) ?l) (= (carrying ?r) ?p))"
+        "  :effect (and (assign (carrying ?r) undefined) (assign (pos ?p) ?l)))"
+        " (:action claim :parameters (?r - robot ?p - package)"
+        "  :precondition (= (owner ?p) ?r) :effect (assign (pos ?p) undefined)))",
+        "(define (problem deliver) (:domain delivery)"
+        " (:objects r1 - robot hall kitchen office - location box - package)"
+        " (:init (= (loc r1) hall) (= (pos box) kitchen) (connected hall kitchen)"
+        "  (connected kitchen hall) (connected hall office) (connected office hall))"
+        " (:goal " + goal + "))");
+    };
+  // carrying (changing), owner (static) and twin (static, both sides) start undefined
+  Problem p = delivery("(= (pos box) office)");
+  for (unsigned threads : {1u, 2u}) {
+    SolveOptions o = quick();
+    o.threads = threads;
+    SolveResult r = Planner().solve(p, o);
+    ASSERT_EQ(r.status, Status::Solved) << threads;
+    EXPECT_EQ(r.plan->steps.size(), 5u);
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+  }
+  // = with an undefined side is false: owner is never assigned, so no plan reaches the goal
+  Problem never = delivery("(and (= (pos box) kitchen) (= (owner box) r1))");
+  EXPECT_EQ(Planner().solve(never, quick()).status, Status::Unsolvable);
 }
 
 TEST(PlannerApiTest, NestedChangingObjectFluentsInTemporalPlans)
@@ -2237,6 +2283,48 @@ TEST(PlannerApiTest, UnknownSearchIsInvalidInput)
   SolveResult r = Planner().solve(problem(kRobots, kRobotsProblem), o);
   EXPECT_EQ(r.status, Status::InvalidInput);
   EXPECT_TRUE(has_code(r.diagnostics, "orchestrator.unknown_search"));
+}
+
+// Grounding five robots' worth of joins over a 60-room corridor is out of reach (60^5
+// actions); each real state has a single robot position, so searching it lifted is easy
+TEST(PlannerApiTest, TooLargeToGroundIsPlannedWithoutGrounding)
+{
+  // Rooms 0 to 59 linked in a row, the last link optional
+  auto corridor = [](bool last_link) {
+      std::string objects;
+      std::string init = "(at r0)";
+      for (int i = 0; i < 60; ++i) {
+        objects += " r" + std::to_string(i);
+        if (i > 0 && (i < 59 || last_link)) {
+          init += " (link r" + std::to_string(i - 1) + " r" + std::to_string(i) + ")";
+        }
+      }
+      return problem(
+        "(define (domain corridor) (:requirements :strips) (:predicates (at ?x) (link ?x ?y))"
+        " (:action go :parameters (?a ?b ?c ?d ?e ?n)"
+        "  :precondition (and (at ?a) (at ?b) (at ?c) (at ?d) (at ?e) (link ?a ?n))"
+        "  :effect (and (not (at ?a)) (at ?n))))",
+        "(define (problem p) (:domain corridor) (:objects" + objects + ") (:init " + init +
+        ") (:goal (at r59)))");
+    };
+  Problem p = corridor(true);
+  Problem cut = corridor(false);
+  // One thread: a short grounding, the lifted engine, then the whole grounding; more: the
+  // lifted engine beside the grounding
+  for (unsigned threads : {1u, 2u}) {
+    SolveOptions o;
+    o.timeout = std::chrono::seconds(3 * kSlowBuild);
+    o.memory_limit_mb = 512;  // grounding never takes more than this
+    o.anytime = false;
+    o.threads = threads;
+    SolveResult r = Planner().solve(p, o);
+    ASSERT_EQ(r.status, Status::Solved) << threads;
+    EXPECT_EQ(r.plan->steps.size(), 59u);
+    EXPECT_EQ(r.stats.atoms, 0u);  // nothing grounded
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+    // Without the last link: the lifted engine proves there is no plan
+    EXPECT_EQ(Planner().solve(cut, o).status, Status::Unsolvable) << threads;
+  }
 }
 
 TEST(PlannerApiTest, StatusNames)

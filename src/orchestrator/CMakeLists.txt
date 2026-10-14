@@ -17,6 +17,7 @@ kairos_add_module(kairos_orchestrator
     explain.cpp
     orchestrator.cpp
   DEPENDS
+    kairos_lift
     kairos_search
     kairos_temporal
     kairos_validate)

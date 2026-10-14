@@ -500,7 +500,7 @@ private:
         ch.test = [this, cmp](const uint32_t * b) {
             uint32_t x, y;
             if (!eval_term(cmp.lhs_term, b, x) || !eval_term(cmp.rhs_term, b, y)) {
-              return false;
+              return cmp.op == CompareOp::Ne;  // the negation of a false =
             }
             return (x == y) == (cmp.op == CompareOp::Eq);
           };
@@ -1085,10 +1085,13 @@ private:
     for (const auto & cmp : c.comparisons) {
       if (cmp.objects) {
         ObjectTerm x, y;
-        if (!gobj(cmp.lhs_term, b, x) || !gobj(cmp.rhs_term, b, y)) {
-          return false;
-        }
         bool eq = cmp.op == CompareOp::Eq;
+        if (!gobj(cmp.lhs_term, b, x) || !gobj(cmp.rhs_term, b, y)) {
+          if (eq) {
+            return false;  // = with an undefined side
+          }
+          continue;  // != is the negation of = (PDDL has no other)
+        }
         if (!x.is_fluent && !y.is_fluent) {
           if ((x.index == y.index) != eq) {
             return false;

@@ -20,7 +20,7 @@ NextFLAP, the satisficing IPC 2023 configurations) only show when they stopped: 
 
 | Planner | 100 ms | 1 s | whole limit |
 |---|---:|---:|---:|
-| **Kairos** | 67 | 103 | 153 |
+| **Kairos** | 67 | 103 | 156 |
 | LAMA (anytime) | - | - | 151 |
 | lama-first | 0 | 68 | 150 |
 | Scorpion Maidu | - | - | 145 |
@@ -147,7 +147,35 @@ action's duration gives a plan: a one-shot recharge inside a window that closes,
 sharing a charger before a deadline, drilling to a depth range. POPF's 8 other plans (drill,
 tank) are invalid; OPTIC and NextFLAP fail on the domains with continuous effects.
 
-- **Classical**: Kairos solves 153, more than LAMA (151) and than the winners of the IPC 2023
+### Hard to ground (287)
+
+| Planner | 100 ms | 1 s | whole limit |
+|---|---:|---:|---:|
+| **Kairos** | 48 | 155 | 215 |
+| Powerlifted (alt-bfws1, lifted FF) | 22 | 106 | 190 |
+
+By family (problems solved in 30 s):
+
+| Family | Problems | Kairos | Powerlifted |
+|---|---:|---:|---:|
+| blocksworld (large) | 20 | 19 | 11 |
+| childsnack | 60 | 43 | 43 |
+| genome edit distance | 15 | 11 | 10 |
+| Gnad et al. 2019 large instances | 30 | 7 | 6 |
+| labyrinth | 10 | 3 | 4 |
+| logistics | 22 | 22 | 22 |
+| organic synthesis | 15 | 13 | 13 |
+| pipesworld tankage | 5 | 4 | 5 |
+| rovers (large) | 20 | 20 | 18 |
+| visitall (multidimensional) | 90 | 73 | 58 |
+
+Tasks with millions of ground actions, the benchmarks of the lifted planning papers
+(htg-domains, 5 problems per folder). Kairos plans them without grounding when grounding does
+not fit (see [pddl-support.md](pddl-support.md)); every plan is validated. Powerlifted
+(Corrêa et al., commit `bf54e16`) runs its best satisficing configuration: BFWS alternating
+with lifted FF, Yannakakis joins, unit costs.
+
+- **Classical**: Kairos solves 156, more than LAMA (151) and than the winners of the IPC 2023
   satisficing track (Scorpion Maidu 145, Levitron 146, Fast Downward Stone Soup 2023 147) with
   the same 30 s, and the most within 100 ms (67; Dual-BFWS 51, the others none) and 1 s (103;
   the best of the others 78).
@@ -158,6 +186,8 @@ tank) are invalid; OPTIC and NextFLAP fail on the domains with continuous effect
   SMTPlan's generator benchmarks among them (the non-linear ones in 2 to 10 ms).
 - **Durations in between their bounds** (25): Kairos 25, all within 100 ms; POPF 17, OPTIC and
   NextFLAP 5.
+- **Hard to ground** (287): Kairos 215, Powerlifted 190; within 1 s, 155 against 106, and
+  within 100 ms, 48 against 22.
 - **PlanSys2 problems at scale** (B6): Kairos 92 of 144, the others at most 58. Kairos keeps the
   2 GB limit from the start of grounding: the largest patrol problems (537 680 actions) need
   more than that just to be prepared.
@@ -206,6 +236,7 @@ tank) are invalid; OPTIC and NextFLAP fail on the domains with continuous effect
 | B6 | 144 | PlanSys2 domains with problems scaled from 10 to 20 000 objects (below) |
 | PDDL3 | 125 | IPC 2006 domains with preferences (simple, qualitative, complex) and trajectory constraints, 5 instances each (`coverage.py` suite `prefs`) |
 | Durations | 25 | Problems that need a duration between its bounds (`bench/durations/gen.py`, `coverage.py` suite `durations`) |
+| Hard to ground | 287 | Tasks of the lifted planning papers that are too large to ground (https://github.com/abcorrea/htg-domains), 5 per folder (`coverage.py` suite `htg`) |
 | PDDL+ | 255 | The PDDL+ domains of hstairs (processes, events, ENHSP's global constraints), up to 10 instances each, and SMTPlan's benchmarks (PDDL+ and PDDL 2.1 with non-linear continuous effects) (`coverage.py` suite `pddlplus`) |
 
 The instances come from public collections (potassco pddl-instances, the IPC 2023 and 2026

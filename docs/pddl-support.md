@@ -67,6 +67,18 @@ and preferences are planned anywhere: compiled where the search sees their cost 
 `forall` included; the top of a precondition, four per action; over constraints), counted
 exactly elsewhere (more, nested under a `forall` of a precondition or inside an `or`).
 
+## Tasks too large to ground
+
+Kairos grounds tasks (instantiates every action) before searching, like most planners. Some
+tasks have millions of ground actions: they do not fit in memory, or preparing the search takes
+longer than solving. Classical tasks (types, equality, negative preconditions, action costs)
+are then searched as they are, without grounding, as Powerlifted does: successors come from
+joining the preconditions over the state, guided by novelty and a lifted FF heuristic with
+preferred operators. A short grounding (200 ms) tells whether the task is large; if it is, the
+lifted search runs beside the whole grounding (several threads, the first plan wins) or, with
+one thread, goes first for a moment. On the hard-to-ground benchmarks (287 problems) Kairos
+solves 215, Powerlifted 190.
+
 ## Kairos and imperfect PDDL
 
 An extra `)` after the end of a domain or problem is a warning, not an error

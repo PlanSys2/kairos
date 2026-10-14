@@ -52,7 +52,7 @@ enum class Status : uint8_t
   OutOfMemory,        // out of memory without a plan
   Unsupported,        // the task uses something Kairos cannot plan with yet (see diagnostics)
   InvalidInput,       // parse or semantic errors
-  GroundingTooLarge,  // grounding does not fit in memory: the lifted path (F5) would be needed
+  GroundingTooLarge,  // grounding does not fit in memory, and planning without it neither
   InternalError,      // a bug: every plan found failed validation, or an exception
 };
 

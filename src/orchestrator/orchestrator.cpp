@@ -14,6 +14,9 @@
 
 #include "orchestrator/orchestrator.hpp"
 
+#if defined(__GLIBC__)
+#include <malloc.h>
+#endif
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -36,6 +39,7 @@
 #include "core/memory_info.hpp"
 #include "ground/grounder.hpp"
 #include "heuristics/heuristic.hpp"
+#include "lift/lift.hpp"
 #include "normalize/normalizer.hpp"
 #include "orchestrator/explain.hpp"
 #include "pddl/printer.hpp"
@@ -407,11 +411,40 @@ public:
       if (auto done = build_task()) {
         return *done;
       }
+      if (lifted_task_ && (budget_->check(), budget_->memory_used() > bc_.memory_limit_bytes / 4)) {
+        // A search takes about three times its task: no room for it, the lifted engine plans
+        sas_ = nullptr;
+        fixed_ = {};
+        translated_.reset();
+        const char * why = "the grounded task takes over a quarter of the memory";
+        grounded_ = true;
+        return lifted_.joinable() ? wait_lifted(why) : plan_lifted(*lifted_task_, why);
+      }
       if (auto done = choose_engine()) {
         return *done;
       }
+      // One thread and a large task: the grounded search has half of the time left, the
+      // lifted engine the rest if it found no plan
+      auto deadline = *bc_.deadline;
+      bool split = large_ && !has_plan();
+      if (split) {
+        bc_.deadline = Clock::now() + (deadline - Clock::now()) / 2;
+        budget_.emplace(bc_);
+      }
       plan_phases();
       run_phases();
+      if (split) {
+        bc_.deadline = deadline;
+        budget_.emplace(bc_);
+        if (!has_plan() && !proof_ && !internal_.stop_requested()) {
+          grounded_ = true;
+          return plan_lifted(*lifted_task_, "no plan from the grounded search in its half");
+        }
+      }
+      if (lifted_.joinable() && !has_plan() && !proof_ && !m3_exhausted_) {
+        lifted_.join();  // the grounded search gave up: the lifted engine may still find one
+      }
+      stop_lifted();
       return conclude();
     } catch (const std::exception & e) {
       res_.diagnostics.push_back(Diagnostic::error("orchestrator.exception", e.what()));
@@ -457,7 +490,12 @@ private:
 
   std::pair<Status, StopReason> budget_status() const
   {
-    switch (budget_->state()) {
+    // The lifted engine's, when it ran out alone
+    auto state = budget_->state();
+    if (state == BudgetState::Ok && lifted_budget_) {
+      state = lifted_budget_->state();
+    }
+    switch (state) {
       case BudgetState::Timeout: return std::make_pair(Status::Timeout, StopReason::Timeout);
       case BudgetState::OutOfMemory:
         return std::make_pair(Status::OutOfMemory, StopReason::MemoryLimit);
@@ -512,8 +550,55 @@ private:
     t = Clock::now();
     ground::GroundOptions go;
     go.logger = log_;
-    auto grounded = ground::ground(task, go, & *budget_);
+    // A task the lifted engine can plan grounds with part of the time and memory: if that is
+    // not enough, it is planned without grounding
+    bool liftable = lift::unsupported(task).empty() && o_.engine == Engine::Auto;
+    std::optional<Budget> ground_budget;
+    if (liftable) {
+      BudgetConfig gc = bc_;
+      auto left = (bc_.deadline ? *bc_.deadline : t0_ + o_.timeout) - Clock::now();
+      gc.deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(left * 0.4);
+      gc.memory_limit_bytes = bc_.memory_limit_bytes / 10 * 6;
+      ground_budget.emplace(gc);
+      lifted_task_ = task;
+    }
+    using Grounded = decltype(ground::ground(task, go, nullptr));
+    std::optional<Grounded> attempt;
+    if (liftable) {
+      // A short grounding first: a task that grounds in it is planned as always. A larger one
+      // has the lifted engine beside the whole grounding (several threads) or, with one, for a
+      // slice of time before it
+      BudgetConfig pc = bc_;
+      pc.deadline = std::min(Clock::now() + kGroundProbe, *bc_.deadline);
+      pc.memory_limit_bytes = bc_.memory_limit_bytes / 10 * 6;
+      Budget probe(pc);
+      Grounded g = ground::ground(task, go, & probe);
+      if (g.ok() || g.diagnostics().front().code != "ground.budget" || budget_->exhausted()) {
+        attempt.emplace(std::move(g));
+      } else if (o_.threads > 1) {
+        start_lifted();
+      } else if (auto done = lifted_slice(task)) {
+        return done;
+      } else {
+        large_ = true;
+      }
+    }
+    if (!attempt) {
+      attempt.emplace(ground::ground(task, go, ground_budget ? & *ground_budget : & *budget_));
+    }
+    auto & grounded = *attempt;
     res_.stats.ground_ms = ms_since(t);
+    if (!grounded.ok() && liftable && grounded.diagnostics().front().code == "ground.budget") {
+      if (lifted_.joinable()) {
+        return wait_lifted(grounded.diagnostics().front().message);
+      }
+      if (has_plan()) {
+        return finish(Status::Solved, StopReason::Exhausted);  // the lifted slice's
+      }
+      if (!budget_->exhausted()) {
+        return plan_lifted(task, grounded.diagnostics().front().message);
+      }
+    }
     if (!grounded.ok()) {
       res_.diagnostics = grounded.take_diagnostics();
       if (res_.diagnostics.front().code == "ground.unsupported") {
@@ -585,6 +670,114 @@ private:
     dump(o_, "sas", "sas.txt", [&]() {return sas::to_string(*sas_);}, log_);
     return std::nullopt;
   }
+
+  // A task too large to ground: searched as it is (lift/lift.hpp)
+  SolveResult plan_lifted(const lifted::Task & task, const std::string & why)
+  {
+    log_.info(LogChannel::Orchestrator, "{}; planned without grounding", why);
+#if defined(__GLIBC__)
+    malloc_trim(0);  // what grounding freed, back to the system (the limit reads the RSS)
+#endif
+    lift::Stats ls;
+    auto t = Clock::now();
+    auto plan = lift::plan(task, &*budget_, log_, ls);
+    res_.stats.search_ms = ms_since(t);
+    res_.stats.expanded = ls.expanded;
+    res_.stats.evaluated = ls.generated;
+    res_.stats.states = ls.states;
+    if ((plan && offer(std::move(plan), {}, empty_task_)) || has_plan()) {
+      return finish(Status::Solved, StopReason::Exhausted);
+    }
+    if (budget_->check() == BudgetState::Ok) {
+      return finish(Status::Unsolvable, StopReason::Exhausted);  // its whole space
+    }
+    auto [s, r] = budget_status();
+    return finish(s == Status::OutOfMemory && !grounded_ ? Status::GroundingTooLarge : s, r);
+  }
+  sas::Task empty_task_;  // the task of plans the lifted engine finds (there is none)
+
+  // One thread, a large task: the lifted engine for a slice of the time. A result if that
+  // settles it (a plan without anytime, or its whole space without one)
+  std::optional<SolveResult> lifted_slice(const lifted::Task & task)
+  {
+    auto left = *bc_.deadline - Clock::now();
+    BudgetConfig sc = bc_;
+    sc.deadline = Clock::now() + std::min<Clock::duration>(kLiftedSlice,
+        std::chrono::duration_cast<Clock::duration>(left * 0.05));
+    Budget slice(sc);
+    lift::Stats ls;
+    auto plan = lift::plan(task, &slice, log_, ls);
+    if (plan) {
+      offer(std::move(plan), {}, empty_task_);
+    }
+    if (has_plan() && !o_.anytime) {
+      return finish(Status::Solved, StopReason::NoImprovement);
+    }
+    if (!plan && slice.check() == BudgetState::Ok) {
+      return finish(Status::Unsolvable, StopReason::Exhausted);  // its whole space
+    }
+    log_.info(LogChannel::Orchestrator, "lifted search first: {} expanded, {}", ls.expanded,
+      has_plan() ? "a plan" : "no plan");
+    return std::nullopt;
+  }
+  bool large_ = false;  // one thread: the short grounding did not fit
+  static constexpr auto kGroundProbe = std::chrono::milliseconds(200);
+  static constexpr auto kLiftedSlice = std::chrono::milliseconds(1000);
+
+  // The lifted engine in a thread of its own while the task grounds and the grounded search
+  // runs: its first plan is offered as any other
+  void start_lifted()
+  {
+    BudgetConfig lc = bc_;
+    lifted_budget_.emplace(lc);
+    lifted_ = std::jthread([this](std::stop_token st) {
+          auto plan = lift::plan(*lifted_task_, &*lifted_budget_, log_, lifted_stats_,
+          [&st]() {return st.stop_requested();});
+          if (plan) {
+            lifted_solved_ = offer(std::move(plan), {}, empty_task_);
+          } else if (lifted_budget_->check() == BudgetState::Ok && !st.stop_requested()) {
+            lifted_exhausted_ = true;  // its whole space: no plan
+          }
+        });
+  }
+
+  void stop_lifted()
+  {
+    if (lifted_.joinable()) {
+      lifted_.request_stop();
+      lifted_.join();
+    }
+  }
+
+  // Grounding did not fit: what the lifted engine (running already) finds
+  SolveResult wait_lifted(const std::string & why)
+  {
+    log_.info(LogChannel::Orchestrator, "{}; planned without grounding", why);
+#if defined(__GLIBC__)
+    malloc_trim(0);
+#endif
+    auto t = Clock::now();
+    lifted_.join();
+    res_.stats.search_ms = ms_since(t);
+    res_.stats.expanded = lifted_stats_.expanded;
+    res_.stats.evaluated = lifted_stats_.generated;
+    res_.stats.states = lifted_stats_.states;
+    if (lifted_solved_ || has_plan()) {
+      return finish(
+        Status::Solved, first_only_ ? StopReason::NoImprovement : StopReason::Exhausted);
+    }
+    if (lifted_exhausted_) {
+      return finish(Status::Unsolvable, StopReason::Exhausted);
+    }
+    auto [s, r] = budget_status();
+    return finish(s == Status::OutOfMemory && !grounded_ ? Status::GroundingTooLarge : s, r);
+  }
+  bool grounded_ = false;  // the task did ground (memory then ran out searching)
+  std::optional<lifted::Task> lifted_task_;
+  std::optional<Budget> lifted_budget_;
+  lift::Stats lifted_stats_;
+  std::atomic<bool> lifted_solved_{false};
+  std::atomic<bool> lifted_exhausted_{false};
 
   // Durations fixed to their bounds for M2 and M3, with steps of time beside: their spaces
   // running out proves nothing
@@ -1018,12 +1211,18 @@ private:
       (ph.kind == Kind::Snap ? snap_task_->task : (hy ? hy->task : *sas_));
     // Its own deadline, unless it is the last phase (then the global budget)
     std::optional<Budget> own;
-    if (ph.share < 1.0 && !last) {
+    if ((ph.share < 1.0 && !last) || lifted_.joinable()) {
       BudgetConfig pc = bc_;
-      auto left = (bc_.deadline ? *bc_.deadline : t0_ + o_.timeout) - Clock::now();
-      pc.deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(left * ph.share);
-      if (ph.share == 0.0) {
-        pc.deadline = bc_.deadline;  // until its first plan (it does not improve)
+      if (ph.share < 1.0 && !last) {
+        auto left = (bc_.deadline ? *bc_.deadline : t0_ + o_.timeout) - Clock::now();
+        pc.deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(left * ph.share);
+        if (ph.share == 0.0) {
+          pc.deadline = bc_.deadline;  // until its first plan (it does not improve)
+        }
+      }
+      if (lifted_.joinable()) {
+        // Beside the lifted engine: out of memory first, which then goes on alone
+        pc.memory_limit_bytes = bc_.memory_limit_bytes / 4 * 3;
       }
       own.emplace(pc);
     }
@@ -1310,7 +1509,7 @@ private:
           "orchestrator.invalid_plans", "every plan found failed validation (a bug in Kairos)"));
       return finish(Status::InternalError, StopReason::Exhausted);
     }
-    if (proof_) {
+    if (proof_ || lifted_exhausted_) {
       return finish(Status::Unsolvable, StopReason::Exhausted);
     }
     if (m3_exhausted_) {
@@ -1386,6 +1585,7 @@ private:
   double bytes_per_state_ = 0.0;
   std::atomic<bool> proof_{false};  // a complete phase exhausted its space without a plan
   std::atomic<bool> m3_exhausted_{false};
+  std::jthread lifted_;  // last: stopped and joined before the members it uses go
 };
 
 }  // namespace
