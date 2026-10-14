@@ -1451,6 +1451,10 @@ private:
       out_.goal = Condition{};
       out_.goal_unreachable = true;
     }
+    if (!gcond(t_.always, empty, out_.always)) {
+      out_.always = Condition{};
+      out_.goal_unreachable = true;  // no state keeps the global constraints
+    }
 
     // Timed events
     for (const auto & ev : t_.timed_events) {
@@ -1569,6 +1573,7 @@ private:
       reads(ax.body, read);
     }
     reads(out_.goal, read);
+    reads(out_.always, read);
     auto cost_only = [&](const Effect & e) {
         if (e.kind != Effect::Kind::Numeric || read[e.fluent]) {
           return false;

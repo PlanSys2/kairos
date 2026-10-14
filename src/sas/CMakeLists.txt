@@ -15,6 +15,7 @@
 kairos_add_module(kairos_sas
   SOURCES
     invariants.cpp
+    symmetry.cpp
     translate.cpp
   DEPENDS
     kairos_ground)

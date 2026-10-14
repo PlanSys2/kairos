@@ -178,11 +178,11 @@ double Plan::makespan() const
   if (!temporal) {
     return static_cast<double>(steps.size());
   }
-  double end = 0.0;
+  double last = end.value_or(0.0);
   for (const auto & s : steps) {
-    end = std::max(end, s.time + s.duration);
+    last = std::max(last, s.time + s.duration);
   }
-  return end;
+  return last;
 }
 
 std::string to_string(const Plan & plan, PlanFormat format, int precision)
@@ -199,6 +199,9 @@ std::string to_string(const Plan & plan, PlanFormat format, int precision)
         for (const auto & s : plan.steps) {
           out += fixed(s.time, precision) + ": " + s.action() + " [" +
             fixed(s.duration, precision) + "]\n";
+        }
+        if (plan.end) {
+          out += fixed(*plan.end, precision) + ": @PlanEND\n";
         }
       } else {
         for (const auto & s : plan.steps) {
@@ -223,6 +226,9 @@ std::string to_string(const Plan & plan, PlanFormat format, int precision)
         out += "{\"temporal\":" + std::string(plan.temporal ? "true" : "false");
         out += ",\"cost\":" + (plan.cost ? json_number(*plan.cost) : std::string("null"));
         out += ",\"makespan\":" + json_number(plan.makespan());
+        if (plan.end) {
+          out += ",\"end\":" + json_number(*plan.end);
+        }
         out += ",\"steps\":[";
         for (size_t i = 0; i < plan.steps.size(); ++i) {
           const auto & s = plan.steps[i];
@@ -289,6 +295,16 @@ Result<Plan> parse_plan(std::string_view text, std::string_view filename)
       }
       step.time = *t;
       timed = true;
+      if (r.peek() == '@') {
+        // "t: @PlanEND" (ENHSP, PDDL+): the plan lets time pass until t
+        r.consume();
+        if (lower(r.word()) != "planend" || !r.at_end()) {
+          errors.push_back(r.error("plan.syntax", "expected '@PlanEND'"));
+          continue;
+        }
+        plan.end = std::max(plan.end.value_or(0.0), *t);
+        continue;
+      }
     }
     if (r.peek() != '(') {
       errors.push_back(r.error("plan.syntax", "expected '(' starting an action"));
@@ -363,6 +379,7 @@ Result<Plan> parse_plan(std::string_view text, std::string_view filename)
     }
     plan.temporal = any_duration || !counting;
   }
+  plan.temporal = plan.temporal || plan.end.has_value();
   if (!plan.temporal) {
     for (size_t i = 0; i < plan.steps.size(); ++i) {
       plan.steps[i].time = static_cast<double>(i);

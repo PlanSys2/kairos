@@ -80,17 +80,23 @@ void substitute(sas::Effect & e, const ground::Expr & duration)
 }
 
 // A new variable with its own atoms (for printing): binary with one atom, a group with more
+// A variable of new atoms: predicates `names` (one per name) over `args`
 sas::VarId add_variable(
   sas::Task & t, const std::vector<std::string> & names, sas::Variable::Kind kind,
-  uint32_t initial)
+  uint32_t initial, const std::vector<sas::ObjectId> & args = {})
 {
   sas::Variable v;
   v.kind = kind;
   auto var = static_cast<sas::VarId>(t.variables.size());
   for (size_t i = 0; i < names.size(); ++i) {
-    t.predicate_names.push_back(names[i]);
+    auto p = std::find(t.predicate_names.begin(), t.predicate_names.end(), names[i]);
+    if (p == t.predicate_names.end()) {
+      t.predicate_names.push_back(names[i]);
+      p = t.predicate_names.end() - 1;
+    }
     ground::AtomInfo atom;
-    atom.predicate = ground::PredicateId(static_cast<uint32_t>(t.predicate_names.size() - 1));
+    atom.predicate = ground::PredicateId(static_cast<uint32_t>(p - t.predicate_names.begin()));
+    atom.args = args;
     t.atoms.push_back(atom);
     v.atoms.push_back(ground::AtomId(static_cast<uint32_t>(t.atoms.size() - 1)));
     t.atom_fact.emplace_back(var, static_cast<uint32_t>(i));
@@ -151,8 +157,10 @@ SnapTask snap(const sas::Task & task)
   }
   for (const auto & da : task.durative_actions) {
     std::string name = sas::instance_name(task, da);
+    // Per schema, over the arguments: symmetric objects map running instances to each other
     sas::VarId run = add_variable(
-      s.task, {"kairos-running " + name}, sas::Variable::Kind::Binary, 1);
+      s.task, {"kairos-running " + task.durative_action_names[da.schema]},
+      sas::Variable::Kind::Binary, 1, da.args);
     s.running.push_back(run);
     // ?duration: only a fixed duration that no action changes can replace it
     bool fixed = da.duration.size() == 1 && da.duration[0].op == sas::CompareOp::Eq;

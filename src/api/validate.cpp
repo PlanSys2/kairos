@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "pddl/dialect.hpp"
 #include "pddl/parser.hpp"
 #include "semantic/analyzer.hpp"
 #include "validate/validator.hpp"
@@ -56,6 +57,8 @@ ValidationReport validate_plan(
     append(problem.take_diagnostics());
     return bad;
   }
+  (void)pddl::repair_domain(*domain);
+  (void)pddl::repair_problem(*problem, *domain);
   auto dm = sem::analyze_domain(*domain);
   if (!dm.ok()) {
     append(dm.take_diagnostics());

@@ -55,8 +55,12 @@ struct Plan
   std::vector<PlanStep> steps;  // sorted by time (stable for equal times)
   bool temporal = false;        // steps have times and durations
   std::optional<double> cost;   // value of the problem metric, when known
+  /// @brief PDDL+: the plan ends here ("t: @PlanEND"), after letting time pass since its last
+  /// step (processes and events act meanwhile); the goal is checked then.
+  std::optional<double> end;
 
-  /// @brief End of the last action (0 for an empty plan; the number of steps if sequential).
+  /// @brief End of the last action, or `end` if later (0 for an empty plan; the number of
+  /// steps if sequential).
   KAIROS_API double makespan() const;
 
   bool operator==(const Plan &) const = default;

@@ -14,6 +14,10 @@
 
 #include <gtest/gtest.h>
 
+#include <chrono>
+
+#include <cmath>
+
 #include <string>
 #include <vector>
 
@@ -473,26 +477,32 @@ TEST(ValidateTemporalTest, ContinuousEffects)
   EXPECT_EQ(error_code(r), "validate.invariant_failed") << dump(r);
 }
 
-TEST(ValidateTemporalTest, NonLinearContinuousIsUnsupported)
+TEST(ValidateTemporalTest, NonLinearContinuousEffectsAreIntegrated)
 {
+  // v grows at 1, x at v: x = t^2 / 2, 0.5 after 1 s (numerically, as PDDL+)
   const char * domain =
     "(define (domain c) (:requirements :durative-actions :fluents :continuous-effects)"
     " (:functions (x) (v))"
     " (:durative-action fall :parameters () :duration (= ?duration 1)"
     "  :effect (and (increase (v) (* #t 1)) (increase (x) (* #t (v))))))";
-  const char * problem = "(define (problem p) (:domain c) (:init (= (x) 0) (= (v) 0))"
-    " (:goal (>= (x) 0)))";
-  auto r = check(domain, problem, "0.000: (fall) [1.000]\n");
-  EXPECT_EQ(r.status, ValidationStatus::Unsupported) << dump(r);
+  auto in = [&](const std::string & goal) {
+      return check(domain, "(define (problem p) (:domain c) (:init (= (x) 0) (= (v) 0))"
+               " (:goal " + goal + "))", "0.000: (fall) [1.000]\n");
+    };
+  EXPECT_EQ(in("(and (>= (x) 0.4999) (<= (x) 0.5001))").status, ValidationStatus::Valid);
+  EXPECT_EQ(in("(>= (x) 0.6)").status, ValidationStatus::Invalid);
 }
 
-TEST(ValidateTemporalTest, ProcessesAreUnsupported)
+TEST(ValidateTemporalTest, ProcessesThatNeverRun)
 {
+  // A process whose condition never holds changes nothing: the empty plan reaches the goal,
+  // and waiting does not change it
   const char * domain = "(define (domain p) (:requirements :time :fluents)"
     " (:predicates (on)) (:functions (t))"
     " (:process tick :parameters () :precondition (on) :effect (increase (t) (* #t 1))))";
-  const char * problem = "(define (problem p) (:domain p) (:init (= (t) 0)) (:goal (>= (t) 0)))";
-  EXPECT_EQ(check(domain, problem, "").status, ValidationStatus::Unsupported);
+  const char * problem = "(define (problem p) (:domain p) (:init (= (t) 0)) (:goal (<= (t) 0)))";
+  EXPECT_EQ(check(domain, problem, "").status, ValidationStatus::Valid);
+  EXPECT_EQ(check(domain, problem, "5: @PlanEND\n").status, ValidationStatus::Valid);
 }
 
 TEST(ValidateTemporalTest, ConditionalEffectAcrossStartAndEnd)
@@ -597,12 +607,239 @@ TEST(ValidateConstraintsTest, EnhspGlobalConstraints)
 
 // --- Bad input -------------------------------------------------------------------------------
 
+// --- PDDL+: processes, events, global constraints ---------------------------------------------
+
+const char * kCar =
+  "(define (domain car) (:requirements :fluents :time :negative-preconditions)"
+  " (:predicates (running) (stopped))"
+  " (:functions (d) (v) (a) (max_speed))"
+  " (:constraint speed_limit :parameters () :condition (<= (v) (max_speed)))"
+  " (:process displacement :parameters () :precondition (running)"
+  "  :effect (increase (d) (* #t (v))))"
+  " (:process moving :parameters () :precondition (running) :effect (increase (v) (* #t (a))))"
+  " (:action accelerate :parameters () :precondition (running) :effect (increase (a) 1))"
+  " (:action decelerate :parameters () :precondition (running) :effect (decrease (a) 1))"
+  " (:action start :parameters () :precondition (stopped)"
+  "  :effect (and (running) (not (stopped))))"
+  " (:action stop :parameters () :precondition (and (running) (< (v) 0.1) (> (v) -0.1))"
+  "  :effect (and (stopped) (not (running)) (assign (v) 0))))";
+
+std::string car_problem(double goal_low, double goal_high, double max_speed = 10)
+{
+  return "(define (problem p) (:domain car) (:init (stopped) (= (d) 0) (= (v) 0) (= (a) 0)"
+         " (= (max_speed) " + std::to_string(max_speed) + ")) (:goal (and (stopped) (>= (d) " +
+         std::to_string(goal_low) + ") (<= (d) " + std::to_string(goal_high) + "))))";
+}
+
+TEST(ValidatePddlPlusTest, ProcessesChangeFluentsBetweenActions)
+{
+  // Accelerate for 2 s (v = 2, d = 2), cruise for 3 s (d = 8), brake for 2 s (v = 0, d = 10):
+  // d is quadratic while accelerating, exact with Runge-Kutta 4
+  const char * plan =
+    "0: (start)\n0: (accelerate)\n2: (decelerate)\n5: (decelerate)\n7: (accelerate)\n"
+    "7: (stop)\n7: @PlanEND\n";
+  auto r = check(kCar, car_problem(9.999, 10.001), plan);
+  EXPECT_EQ(r.status, ValidationStatus::Valid) << dump(r);
+  EXPECT_NEAR(r.makespan, 7.0, 1e-9);
+  // Short of the distance: braking a second earlier
+  auto early = check(kCar, car_problem(9.999, 10.001),
+      "0: (start)\n0: (accelerate)\n2: (decelerate)\n4: (decelerate)\n6: (accelerate)\n"
+      "6: (stop)\n6: @PlanEND\n");
+  EXPECT_EQ(error_code(early), "validate.goal_not_reached");
+  // Steps of one instant apply in plan order (start, then accelerate): reversed, accelerate
+  // finds the engine stopped
+  auto reversed = check(kCar, car_problem(9.999, 10.001),
+      "0: (accelerate)\n0: (start)\n2: (decelerate)\n5: (decelerate)\n7: (accelerate)\n"
+      "7: (stop)\n7: @PlanEND\n");
+  EXPECT_EQ(error_code(reversed), "validate.precondition_failed");
+}
+
+TEST(ValidatePddlPlusTest, GlobalConstraintsHoldBetweenActions)
+{
+  // At most 3 m/s: accelerating for 4 s breaks it at 3 s, between the steps at 0 and 4
+  auto r = check(kCar, car_problem(0, 100, 3),
+      "0: (start)\n0: (accelerate)\n4: (decelerate)\n4: @PlanEND\n");
+  EXPECT_EQ(error_code(r), "validate.global_constraint");
+  ASSERT_FALSE(r.diagnostics.empty());
+  EXPECT_NE(r.diagnostics[0].message.find("at 3.0"), std::string::npos) << dump(r);
+}
+
+const char * kTank =
+  "(define (domain tank) (:requirements :fluents :time :negative-preconditions)"
+  " (:predicates (open) (flooded) (alarm))"
+  " (:functions (level) (rate))"
+  " (:process filling :parameters () :precondition (open)"
+  "  :effect (increase (level) (* #t (rate))))"
+  " (:event overflow :parameters () :precondition (and (>= (level) 10) (not (flooded)))"
+  "  :effect (flooded))"
+  " (:event siren :parameters () :precondition (and (flooded) (not (alarm))) :effect (alarm))"
+  " (:action open-valve :parameters () :precondition (not (open)) :effect (open))"
+  " (:action close-valve :parameters () :precondition (open) :effect (not (open))))";
+
+std::string tank(const std::string & goal)
+{
+  return "(define (problem p) (:domain tank) (:init (= (level) 0) (= (rate) 2)) (:goal " + goal +
+         "))";
+}
+
+TEST(ValidatePddlPlusTest, EventsFireWhenTheirConditionBecomesTrue)
+{
+  // 2 per second: closed at 4 s, level 8, no overflow
+  auto ok = check(kTank, tank("(and (>= (level) 7.99) (not (flooded)))"),
+      "0: (open-valve)\n4: (close-valve)\n4: @PlanEND\n");
+  EXPECT_EQ(ok.status, ValidationStatus::Valid) << dump(ok);
+  // Closed at 6 s: at 5 s the level reaches 10, the overflow fires, and the siren after it (a
+  // cascade at the same instant)
+  auto flooded = check(kTank, tank("(and (flooded) (alarm) (>= (level) 11.99))"),
+      "0: (open-valve)\n6: (close-valve)\n6: @PlanEND\n");
+  EXPECT_EQ(flooded.status, ValidationStatus::Valid) << dump(flooded);
+  EXPECT_EQ(error_code(check(kTank, tank("(not (flooded))"),
+      "0: (open-valve)\n6: (close-valve)\n6: @PlanEND\n")), "validate.goal_not_reached");
+  // Time passes after the last step: open at 0, the plan ends at 7
+  auto waits = check(kTank, tank("(flooded)"), "0: (open-valve)\n7: @PlanEND\n");
+  EXPECT_EQ(waits.status, ValidationStatus::Valid) << dump(waits);
+  // Without the end marker, the goal is checked at the last step
+  EXPECT_EQ(error_code(check(kTank, tank("(flooded)"), "0: (open-valve)\n")),
+    "validate.goal_not_reached");
+}
+
+TEST(ValidatePddlPlusTest, EventsThatKeepFiringAreAnError)
+{
+  auto r = check(
+    "(define (domain loop) (:requirements :fluents :time) (:predicates (p)) (:functions (x))"
+    " (:event bump :parameters () :precondition (p) :effect (increase (x) 1))"
+    " (:action go :parameters () :precondition () :effect (p)))",
+    "(define (problem q) (:domain loop) (:init (= (x) 0)) (:goal (p)))", "0: (go)\n");
+  EXPECT_EQ(error_code(r), "validate.event_loop");
+}
+
+TEST(ValidatePddlPlusTest, NonLinearDynamics)
+{
+  // x' = y, y' = x: from x = 1, y = 0, x = cosh(t); at t = 1, 1.5431 (RK4 within 1e-9 with
+  // 0.01 steps)
+  const char * domain =
+    "(define (domain osc) (:requirements :fluents :time) (:predicates (on))"
+    " (:functions (x) (y))"
+    " (:process grow :parameters () :precondition (on)"
+    "  :effect (and (increase (x) (* #t (y))) (increase (y) (* #t (x)))))"
+    " (:action go :parameters () :precondition () :effect (on)))";
+  auto in = [&](double lo, double hi) {
+      return check(domain, "(define (problem q) (:domain osc) (:init (= (x) 1) (= (y) 0))"
+               " (:goal (and (>= (x) " + std::to_string(lo) + ") (<= (x) " + std::to_string(hi) +
+               "))))", "0: (go)\n1: @PlanEND\n");
+    };
+  double cosh1 = std::cosh(1.0);
+  EXPECT_EQ(in(cosh1 - 1e-6, cosh1 + 1e-6).status, ValidationStatus::Valid);
+  EXPECT_EQ(in(cosh1 + 1e-4, cosh1 + 1).status, ValidationStatus::Invalid);
+}
+
+TEST(ValidatePddlPlusTest, ConditionsOnUndefinedValuesAreFalse)
+{
+  // (clock) has no value until (go): the process that reads it is off, the one that changes it
+  // leaves it without a value (as ENHSP), and (not (= ...)) with it holds
+  const char * domain =
+    "(define (domain c) (:requirements :fluents :time :negative-preconditions)"
+    " (:predicates (on) (seen)) (:functions (clock) (x))"
+    " (:process tick :parameters () :precondition () :effect (increase (clock) (* #t 1)))"
+    " (:process grow :parameters () :precondition (< (clock) 100)"
+    "  :effect (increase (x) (* #t 1)))"
+    " (:event look :parameters () :precondition (and (not (seen)) (not (= (clock) 5)))"
+    "  :effect (seen))"
+    " (:action go :parameters () :precondition () :effect (assign (clock) 0)))";
+  auto in = [&](const std::string & goal, const std::string & plan) {
+      return check(domain, "(define (problem q) (:domain c) (:init (= (x) 0)) (:goal " + goal +
+               "))", plan);
+    };
+  // x grows only once the clock has a value: from 2 to 3
+  auto r = in("(and (seen) (>= (x) 0.999) (<= (x) 1.001) (>= (clock) 0.999))",
+      "2: (go)\n3: @PlanEND\n");
+  EXPECT_EQ(r.status, ValidationStatus::Valid) << dump(r);
+}
+
+TEST(ValidatePddlPlusTest, EventConditionsAreExact)
+{
+  // Two events on the two sides of x = 1 (>= and <): x stops just below 1, where only fall
+  // holds; with the tolerance of action preconditions rise would too, and they would keep
+  // undoing each other
+  const char * domain =
+    "(define (domain side) (:requirements :fluents :time :negative-preconditions)"
+    " (:predicates (on) (high)) (:functions (x))"
+    " (:process up :parameters () :precondition (on) :effect (increase (x) (* #t 1)))"
+    " (:event rise :parameters () :precondition (and (not (high)) (>= (x) 1)) :effect (high))"
+    " (:event fall :parameters () :precondition (and (high) (< (x) 1)) :effect (not (high)))"
+    " (:action go :parameters () :precondition () :effect (on))"
+    " (:action halt :parameters () :precondition (on) :effect (not (on))))";
+  auto r = check(domain,
+      "(define (problem q) (:domain side) (:init (= (x) 0)) (:goal (not (high))))",
+      "0: (go)\n0.9999999995: (halt)\n2: @PlanEND\n");
+  EXPECT_EQ(r.status, ValidationStatus::Valid) << dump(r);
+  // Past 1: rise, once
+  auto past = check(domain,
+      "(define (problem q) (:domain side) (:init (= (x) 0)) (:goal (high)))",
+      "0: (go)\n1.5: (halt)\n2: @PlanEND\n");
+  EXPECT_EQ(past.status, ValidationStatus::Valid) << dump(past);
+}
+
+TEST(ValidatePddlPlusTest, ChatteringConditionsEnd)
+{
+  // Friction around 0: each process pushes v to the other side, the conditions flip with ever
+  // shorter steps (Zeno); the validator samples them and finishes
+  const char * domain =
+    "(define (domain friction) (:requirements :fluents :time) (:predicates (on))"
+    " (:functions (v) (t))"
+    " (:process clock :parameters () :precondition (on) :effect (increase (t) (* #t 1)))"
+    " (:process pos :parameters () :precondition (> (v) 0) :effect (decrease (v) (* #t 1)))"
+    " (:process neg :parameters () :precondition (< (v) 0) :effect (increase (v) (* #t 1)))"
+    " (:action go :parameters () :precondition () :effect (on)))";
+  auto start = std::chrono::steady_clock::now();
+  auto r = check(domain,
+      "(define (problem q) (:domain friction) (:init (= (v) 0.5) (= (t) 0))"
+      " (:goal (and (>= (t) 9.99) (<= (v) 0.01) (>= (v) -0.01))))",
+      "0: (go)\n10: @PlanEND\n");
+  EXPECT_EQ(r.status, ValidationStatus::Valid) << dump(r);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+}
+
+TEST(ValidatePddlPlusTest, EventLoopNamesTheEvents)
+{
+  auto r = check(
+    "(define (domain loop) (:requirements :fluents :time) (:predicates (p)) (:functions (x))"
+    " (:event bump :parameters () :precondition (p) :effect (increase (x) 1))"
+    " (:action go :parameters () :precondition () :effect (p)))",
+    "(define (problem q) (:domain loop) (:init (= (x) 0)) (:goal (p)))", "0: (go)\n");
+  ASSERT_FALSE(r.diagnostics.empty());
+  EXPECT_NE(r.diagnostics[0].message.find("(bump)"), std::string::npos) << dump(r);
+}
+
+TEST(ValidatePddlPlusTest, GroundingsOfStaticFactsThatNeverHoldAreLeftOut)
+{
+  // 200 x 200 pairs, one link: the process runs for that one only (and the plan validates
+  // quickly)
+  std::string objects;
+  for (int i = 0; i < 200; ++i) {
+    objects += " n" + std::to_string(i);
+  }
+  const char * domain =
+    "(define (domain links) (:requirements :fluents :time :typing) (:types node)"
+    " (:predicates (link ?a ?b - node) (on)) (:functions (flow ?a ?b - node))"
+    " (:process pump :parameters (?a ?b - node) :precondition (and (on) (link ?a ?b))"
+    "  :effect (increase (flow ?a ?b) (* #t 1)))"
+    " (:action go :parameters () :precondition () :effect (on)))";
+  auto start = std::chrono::steady_clock::now();
+  auto r = check(domain,
+      "(define (problem q) (:domain links) (:objects" + objects + " - node)"
+      " (:init (link n1 n2) (= (flow n1 n2) 0)) (:goal (>= (flow n1 n2) 4.99)))",
+      "0: (go)\n5: @PlanEND\n");
+  EXPECT_EQ(r.status, ValidationStatus::Valid) << dump(r);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+}
+
 TEST(ValidateInputTest, BrokenDomainOrProblem)
 {
   auto r = check("(define (domain d", kRobotsProblem, "");
   EXPECT_EQ(r.status, ValidationStatus::BadInput);
   EXPECT_FALSE(r.diagnostics.empty());
-  auto p = check(kRobots, "(define (problem p) (:domain robots) (:init (nope)))", "");
+  auto p = check(kRobots, "(define (problem p) (:domain robots) (:init (free nobody)))", "");
   EXPECT_EQ(p.status, ValidationStatus::BadInput);
 }
 

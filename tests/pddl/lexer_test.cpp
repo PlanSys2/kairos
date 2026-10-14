@@ -278,6 +278,28 @@ TEST(LexerTest, EmptyPrefixes)
   EXPECT_EQ(kinds("(?)"), (std::vector<K>{K::LParen, K::Error, K::RParen}));
 }
 
+TEST(LexerTest, SpacedVariablesAreJoined)
+{
+  // SMTPlan's benchmarks write "? g": the variable ?g, on the same line only
+  auto tokens = tokenize("(? g ?h)");
+  ASSERT_EQ(tokens.size(), 5u);
+  EXPECT_EQ(tokens[1].kind, K::Variable);
+  EXPECT_EQ(tokens[1].text, "?g");
+  EXPECT_TRUE(tokens[1].joined);
+  EXPECT_EQ(tokens[1].column, 2u);
+  EXPECT_EQ(tokens[2].text, "?h");
+  EXPECT_FALSE(tokens[2].joined);
+  EXPECT_EQ(tokens[2].column, 6u);
+  EXPECT_EQ(single("?\tduration").text, "?duration");
+  EXPECT_EQ(kinds("? \nx"), (std::vector<K>{K::Error, K::Name}));
+  EXPECT_EQ(kinds("? ?x"), (std::vector<K>{K::Error, K::Variable}));
+  EXPECT_EQ(kinds("? :k"), (std::vector<K>{K::Error, K::Keyword}));
+  EXPECT_EQ(kinds("? )"), (std::vector<K>{K::Error, K::RParen}));
+  // The joined text outlives the lexer
+  std::vector<Token> kept = tokenize("? zz");
+  EXPECT_EQ(kept[0].text, "?zz");
+}
+
 TEST(LexerTest, LexingContinuesAfterErrors)
 {
   EXPECT_EQ(kinds("(a{ b)"), (std::vector<K>{K::LParen, K::Error, K::Name, K::RParen}));

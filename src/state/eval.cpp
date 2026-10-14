@@ -105,7 +105,7 @@ bool compare(sas::CompareOp op, double a, double b)
 {
   switch (op) {
     case sas::CompareOp::Eq: return a == b;
-    case sas::CompareOp::Ne: return a != b && !std::isnan(a) && !std::isnan(b);
+    case sas::CompareOp::Ne: return a != b;  // an undefined value equals nothing (as ENHSP)
     case sas::CompareOp::Lt: return a < b;
     case sas::CompareOp::Le: return a <= b;
     case sas::CompareOp::Gt: return a > b;

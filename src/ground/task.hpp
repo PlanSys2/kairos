@@ -222,6 +222,7 @@ struct Task
   std::vector<TimedEvent> timed_events;
 
   Condition goal;
+  Condition always;  // global constraints: hold in every state
   bool goal_unreachable = false;  // the goal needs an atom that no action can reach
   Metric metric;
 

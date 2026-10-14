@@ -43,6 +43,7 @@
 #include "search/goals.hpp"
 #include "search/search.hpp"
 #include "temporal/compress.hpp"
+#include "temporal/hybrid.hpp"
 #include "temporal/durations.hpp"
 #include "temporal/profile.hpp"
 #include "temporal/snap.hpp"
@@ -88,21 +89,25 @@ const std::vector<Support> & support_table()
     {F::VariableDuration, Support::Full, "", ""},
     {F::DurationInEffects, Support::Full, "", ""},
     {F::ContinuousEffects, Support::Partial,
-      "linear ones, as discrete changes at the most pessimistic instant: every plan valid, "
-      "some plans not found", ""},
+      "linear ones as discrete changes at the most pessimistic instant, the others in steps of "
+      "0.1 s (as PDDL+): every plan valid, some plans not found", ""},
     {F::DerivedPredicates, Support::Full, "recursive ones included", ""},
     {F::TimedInitialLiterals, Support::Full, "", ""},
     {F::TimedInitialFluents, Support::Full, "", ""},
-    {F::Preferences, Support::Partial,
-      "in goals (also under forall), at the top of preconditions and over constraints; "
-      "elsewhere soft, ignored",
+    {F::Preferences, Support::Full,
+      "compiled in goals (also under forall), at the top of preconditions (four per action) "
+      "and over constraints; counted elsewhere (more, or nested), where only improving plans "
+      "sees their cost",
       ""},
     {F::TrajectoryConstraints, Support::Partial,
-      "all, hard or as preferences, but always-within in temporal plans; in temporal plans "
-      "the timed ones are read at the happenings: every plan valid, some not found", ""},
-    {F::Processes, Support::None, "PDDL+, phase F5", "unsupported.processes"},
-    {F::Events, Support::None, "PDDL+, phase F5", "unsupported.events"},
-    {F::GlobalConstraints, Support::None, "phase F5", "unsupported.global_constraints"},
+      "all, hard or as preferences; in temporal plans the timed ones are read at the "
+      "happenings, always-within with a clock (as PDDL+): every plan valid, some not found", ""},
+    {F::Processes, Support::Partial,
+      "planned in steps of 0.1 s (or until a condition changes), integrated with Runge-Kutta; "
+      "every plan validated in continuous time; some plans not found", ""},
+    {F::Events, Support::Partial, "fired between the steps; every plan validated in continuous "
+      "time (events fire when their condition crosses)", ""},
+    {F::GlobalConstraints, Support::Full, "", ""},
     {F::Metric, Support::Full, "", ""},
     {F::MetricTotalTime, Support::Full, "alone or added to numeric fluents", ""},
     {F::MetricFluents, Support::Full, "", ""},
@@ -368,6 +373,7 @@ struct Phase
   bool improve;
   bool makespan_g;   // g is the makespan of the partial plan (M3)
   bool only_without_plan = false;  // skipped once an earlier phase found a plan
+  temporal::Waits waits = temporal::Waits::Both;  // PDDL+: how time passes
 };
 
 // Forwards the caller's stop request to the run's own stop source
@@ -544,13 +550,27 @@ private:
       return finish(s, r);
     }
     translated_.emplace(std::move(translated).value());
+    // PDDL+ plans with durations and continuous effects as they are (clocks and processes)
+    if (!translated_->processes.empty() || !translated_->events.empty()) {
+      sas_ = &*translated_;
+      res_.stats.variables = sas_->variables.size();
+      res_.stats.mutex_groups = sst.group_variables;
+      dump(o_, "sas", "sas.txt", [&]() {return sas::to_string(*sas_);}, log_);
+      return std::nullopt;
+    }
     // Durations the engines can plan with: one action per bound of a duration inequality used
     // by its effects, continuous effects as discrete ones (sound, not complete)
     fixed_ = temporal::fix_durations(*translated_);
     if (!fixed_.unsupported.empty()) {
-      res_.diagnostics.push_back(Diagnostic::error(
-          "unsupported.durations", "durations Kairos cannot plan with yet: " + fixed_.unsupported));
-      return finish(Status::Unsupported, StopReason::Exhausted);
+      // What M2 and M3 cannot plan (a continuous change read other than as a bound): time in
+      // steps, as PDDL+
+      log_.info(LogChannel::Orchestrator, "durations: {}; planned as PDDL+", fixed_.unsupported);
+      continuous_steps_ = true;
+      sas_ = &*translated_;
+      res_.stats.variables = sas_->variables.size();
+      res_.stats.mutex_groups = sst.group_variables;
+      dump(o_, "sas", "sas.txt", [&]() {return sas::to_string(*sas_);}, log_);
+      return std::nullopt;
     }
     if (fixed_.changed) {
       log_.info(
@@ -569,6 +589,27 @@ private:
   std::optional<SolveResult> choose_engine()
   {
     const sas::Task & task = *sas_;
+    if (!task.processes.empty() || !task.events.empty() || continuous_steps_) {
+      // PDDL+: discrete time steps, the plans validated with continuous time
+      hybrid_ = temporal::hybrid(task, kHybridDelta, temporal::Waits::Both, o_.epsilon);
+      hybrid_short_ = temporal::hybrid(task, kHybridDelta, temporal::Waits::Short, o_.epsilon,
+          false);
+      hybrid_crossing_ = temporal::hybrid(task, kHybridDelta, temporal::Waits::Crossing,
+          o_.epsilon, false);
+      // The same symmetries (the variants differ in the waits, which name no object)
+      hybrid_short_->task.symmetries = hybrid_->task.symmetries;
+      hybrid_crossing_->task.symmetries = hybrid_->task.symmetries;
+      if (!hybrid_->unsupported.empty()) {
+        res_.diagnostics.push_back(Diagnostic::error(
+            "unsupported.pddl_plus", "Kairos cannot plan yet with " + hybrid_->unsupported));
+        return finish(Status::Unsupported, StopReason::Exhausted);
+      }
+      log_.info(
+        LogChannel::Orchestrator, "PDDL+: {} processes and {} events, steps of {} s, {} pairs "
+        "of symmetric objects", task.processes.size(), task.events.size(), kHybridDelta,
+        hybrid_->task.symmetries.size());
+      return std::nullopt;
+    }
     temporal_task_ = !task.durative_actions.empty() || !task.timed_events.empty();
     if (temporal_task_) {
       if (o_.engine == Engine::M1) {
@@ -621,6 +662,9 @@ private:
 
   const sas::Task & search_task() const
   {
+    if (hybrid_) {
+      return hybrid_->task;
+    }
     return compressed_ ? compressed_->task : (snapped_ ? snapped_->task : *sas_);
   }
 
@@ -694,6 +738,28 @@ private:
     }
   }
 
+  ValidationReport validate(const Plan & plan)
+  {
+    ValidateOptions vo;
+    vo.epsilon = o_.epsilon;
+    auto tv = Clock::now();
+    auto report = val::validate(in_.domain, in_.domain_model, in_.problem, in_.problem_model,
+      plan, vo);
+    log_.debug(LogChannel::Orchestrator, "plan of {} steps, makespan {}: {} in {:.1f} ms",
+      plan.steps.size(), plan.makespan(), report.valid() ? "valid" : "invalid",
+      std::chrono::duration<double, std::milli>(Clock::now() - tv).count());
+    if (!report.valid()) {
+      log_.debug(LogChannel::Orchestrator, "{}\n{}",
+        report.diagnostics.empty() ? std::string("?") : to_string(report.diagnostics[0]),
+        to_string(plan, PlanFormat::Ipc, 6));
+    }
+    return report;
+  }
+
+  // The last plan check_plan validated, in this thread (the search's: offer reuses it)
+  static thread_local inline std::optional<std::pair<std::vector<uint32_t>, ValidationReport>>
+  checked_;
+
   // A plan of a phase: validated against the original task; only better ones (by the metric,
   // or the makespan or length) are kept and handed over
   // Tentative: an invalid plan is not an error (false: the caller has another one). True
@@ -710,10 +776,8 @@ private:
       return false;
     }
     strip_preference_steps(*plan);
-    ValidateOptions vo;
-    vo.epsilon = o_.epsilon;
-    auto report = val::validate(in_.domain, in_.domain_model, in_.problem, in_.problem_model,
-      *plan, vo);
+    // PDDL+: check_plan validated it already
+    auto report = checked_ && checked_->first == actions ? checked_->second : validate(*plan);
     if (!report.valid()) {
       if (tentative) {
         return false;
@@ -797,7 +861,8 @@ private:
       Kind kind = compressed_ ? Kind::Compressed : Kind::Plain;
       double share = improver_ ? 0.0 : 1.0;  // M2 before M3: until its first plan
       bool improve = o_.anytime && !improver_;
-      const sas::Task & first_task = compressed_ ? compressed_->task : *sas_;
+      const sas::Task & first_task = compressed_ ? compressed_->task :
+        (hybrid_ ? hybrid_->task : *sas_);
       if (portfolio && search::goals_apply(first_task)) {
         // Many goal facts (patrolling, visiting, delivering): one at a time first, where one
         // search for all meets plateaus that grow with the agents (B6 patrol L: no plan in
@@ -805,7 +870,31 @@ private:
         log_.info(LogChannel::Orchestrator, "search: incremental goals first (auto)");
         phases_.push_back({kind, "goals", 0.5, improve, false});
       }
-      if (portfolio && compressed_ && resolve_auto(first_task, false) == "lama") {
+      if (portfolio && hybrid_) {
+        // PDDL+: novelty crosses the plateaus of waiting (car: 40 ms, lazy LAMA 0.5 s), lazy
+        // LAMA finds others at once (agile robot, intercept); waits until a condition changes
+        // cross long stretches (a generator that runs for 1000 s) but mislead elsewhere
+        // (agile robot): short turns of each
+        using W = temporal::Waits;
+        if (hybrid_->durative > 0) {
+          // Durative actions (a generator that runs for 1000 s): long waits first, and short
+          // ones only to cross a change
+          log_.info(LogChannel::Orchestrator, "search: lama with long waits, lama-novelty, lama, "
+            "lama-novelty with long waits (auto)");
+          phases_.push_back({kind, "lama", 0.1, improve, false, false, W::Crossing});
+          phases_.push_back({kind, "lama-novelty", 0.2, improve, false, true, W::Crossing});
+          phases_.push_back({kind, "lama-novelty", 0.02, improve, false, true, W::Short});
+        } else {
+          log_.info(LogChannel::Orchestrator, "search: lama-novelty, lama, then both with long "
+            "waits (auto)");
+          phases_.push_back({kind, "lama-novelty", 0.02, improve, false, false, W::Short});
+        }
+        phases_.push_back({kind, "lama", 0.05, improve, false, true, W::Short});
+        if (hybrid_->durative == 0) {
+          phases_.push_back({kind, "lama", 0.1, improve, false, true, W::Both});
+        }
+        phases_.push_back({kind, "lama-novelty", share, improve, false, true, W::Both});
+      } else if (portfolio && compressed_ && resolve_auto(first_task, false) == "lama") {
         // Temporal without numeric conditions: when lmcount misleads (airport: lazy LAMA finds
         // nothing in 30 s, FF alone a plan in 1.4 s), FF after a quarter of the time
         log_.info(LogChannel::Orchestrator, "search: lama, then ff (auto)");
@@ -877,8 +966,11 @@ private:
   // One phase: its task, budget, costs and search configuration, and the anytime search
   search::AnytimeResult run_phase(const Phase & ph, bool last)
   {
+    const temporal::Hybrid * hy = !hybrid_ ? nullptr :
+      (ph.waits == temporal::Waits::Both ? &*hybrid_ :
+      (ph.waits == temporal::Waits::Short ? &*hybrid_short_ : &*hybrid_crossing_));
     const sas::Task & task_k = ph.kind == Kind::Compressed ? compressed_->task :
-      (ph.kind == Kind::Snap ? snap_task_->task : *sas_);
+      (ph.kind == Kind::Snap ? snap_task_->task : (hy ? hy->task : *sas_));
     // Its own deadline, unless it is the last phase (then the global budget)
     std::optional<Budget> own;
     if (ph.share < 1.0 && !last) {
@@ -930,6 +1022,8 @@ private:
           }
         } else if (filter) {
           offer(filter->plan(e.actions), e.actions, task_k);
+        } else if (hy) {
+          offer(hy->plan(e.actions, space), e.actions, task_k);
         } else {
           offer(search::to_plan(*sas_, e.actions), e.actions, task_k);
         }
@@ -951,6 +1045,29 @@ private:
             partial->reach(p, a, c);
           };
       }
+    }
+    if (hy && hy->has_guide) {
+      ctx.heuristic_task = &hy->guide;
+    }
+    if (hy) {
+      // Events first; the global constraints in every state
+      ctx.accept = [hy, &space](state::StateId, uint32_t, state::StateId c) {
+          return hy->accept(space.values(c).data(), space.numbers(c).data());
+        };
+      // The discrete semantics may reach a goal the continuous one does not: search on
+      ctx.check_plan = [this, hy, &space](const std::vector<uint32_t> & actions) {
+          Plan p = hy->plan(actions, space);
+          strip_preference_steps(p);
+          auto report = validate(p);
+          bool ok = report.valid();
+          checked_ = std::make_pair(actions, std::move(report));
+          return ok;
+        };
+    } else if (!task_k.always.empty()) {
+      ctx.accept = [&task_k, &space](state::StateId, uint32_t, state::StateId c) {
+          return state::holds(task_k.always, task_k, space.values(c).data(),
+                 space.numbers(c).data());
+        };
     }
     if (filter) {
       ctx.accept = [&filter](state::StateId p, uint32_t a, state::StateId c) {
@@ -1192,6 +1309,12 @@ private:
   const temporal::SnapTask * snap_task_ = nullptr;
   bool m2_complete_ = true;  // exhausting the compressed task proves there is no plan
   bool temporal_task_ = false;
+  // PDDL+: processes and events as discrete steps
+  std::optional<temporal::Hybrid> hybrid_;
+  std::optional<temporal::Hybrid> hybrid_short_;  // the same without long waits
+  std::optional<temporal::Hybrid> hybrid_crossing_;  // short waits only to cross a change
+  bool continuous_steps_ = false;  // continuous effects M2 and M3 cannot plan: as PDDL+
+  static constexpr double kHybridDelta = 0.1;
   bool length_metric_ = false;
   bool time_metric_ = false;
   std::vector<double> initial_numbers_;

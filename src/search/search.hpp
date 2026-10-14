@@ -121,6 +121,9 @@ struct SearchContext
   /// step in a schedule of the partial plan, so the work goes to the agent that is free first)
   std::function<double(state::StateId parent, uint32_t action)> tie_key;
   std::function<void(state::StateId parent, uint32_t action, state::StateId child)> on_reach;
+  /// @brief Optional: whether the path to a goal state is a plan (PDDL+: the continuous
+  /// semantics may reject what the discrete one reached); if not, the search goes on
+  std::function<bool(const std::vector<uint32_t> & actions)> check_plan;
   SearchStats stats;
 };
 

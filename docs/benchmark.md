@@ -95,12 +95,52 @@ NextFLAP, the satisficing IPC 2023 configurations) only show when they stopped: 
 | TAMER (unified-planning) | 0 | 0 | 21 |
 | Aries (unified-planning) | - | - | 9 |
 
+### PDDL+: hstairs and SMTPlan benchmarks (255)
+
+| Planner | 100 ms | 1 s | whole limit |
+|---|---:|---:|---:|
+| **Kairos** | 53 | 92 | 142 |
+| SMTPlan+ | 25 | 31 | 35 |
+| ENHSP (sat-hadd, steps of 0.1 s) | 0 | 18 | 23 |
+
+By family (problems solved in 30 s):
+
+| Family | Problems | Kairos | ENHSP | SMTPlan+ |
+|---|---:|---:|---:|---:|
+| 1D powered descent | 10 | 10 | 0 | 0 |
+| agile robot | 10 | 10 | 0 | 0 |
+| automatic transmission | 72 | 15 | 0 | 0 |
+| car | 8 | 8 | 8 | 0 |
+| car (non-linear) | 8 | 8 | 8 | 0 |
+| chasing cars | 42 | 15 | 5 | 0 |
+| convoys | 6 | 6 | 2 | 0 |
+| generator | 8 | 8 | 0 | 0 |
+| generator (non-linear) | 8 | 4 | 0 | 0 |
+| hasp | 10 | 0 | 0 | 0 |
+| hvac | 10 | 8 | 0 | 0 |
+| intercept | 10 | 1 | 0 | 0 |
+| SMTPlan car without drag | 10 | 10 | 0 | 10 |
+| SMTPlan generator with events | 8 | 8 | 0 | 3 |
+| SMTPlan linear generator | 8 | 8 | 0 | 8 |
+| SMTPlan non-linear generator | 8 | 8 | 0 | 8 |
+| SMTPlan Torricelli generator | 9 | 9 | 0 | 6 |
+| zermelo navigation | 10 | 6 | 0 | 0 |
+
+Every plan is validated in continuous time (exact integration, events at the instant their
+condition crosses). ENHSP plans with Euler steps of 0.1 s, and some of its plans (hvac, the
+powered descent, chasing cars) hold only with them: they count as invalid. ENHSP has no
+durative actions (SMTPlan's generators are a syntax error for it). SMTPlan+ runs from
+planutils, whose packaging costs it 0.185 s per problem (subtracted, see Method).
+
 - **Classical**: Kairos solves 153, more than LAMA (151) and than the winners of the IPC 2023
   satisficing track (Scorpion Maidu 145, Levitron 146, Fast Downward Stone Soup 2023 147) with
   the same 30 s, and the most within 100 ms (67; Dual-BFWS 51, the others none) and 1 s (103;
   the best of the others 78).
 - **Numeric** (B3): Kairos 289, the current ENHSP 208 and LNM-Plan (IPC 2023 numeric winner) 117.
 - **Temporal** (B1, B2, robotics, PDDL3): Kairos solves the most at every limit.
+- **PDDL+** (processes, events, continuous effects): Kairos 142 of 255, SMTPlan+ 35 and ENHSP 23;
+  within 100 ms, 53 against 25 and 0. Kairos solves the most in every family, all 33 of
+  SMTPlan's generator benchmarks among them (the non-linear ones in 2 to 10 ms).
 - **PlanSys2 problems at scale** (B6): Kairos 92 of 144, the others at most 58. Kairos keeps the
   2 GB limit from the start of grounding: the largest patrol problems (537 680 actions) need
   more than that just to be prepared.
@@ -124,9 +164,10 @@ NextFLAP, the satisficing IPC 2023 configurations) only show when they stopped: 
   (IPC 2023 numeric winner), the current ENHSP and NextFLAP. Their time is measured inside the
   container, without Docker's start-up. Their last plan is taken (anytime planners keep
   improving until the timeout).
-- **Packaging is not the planner's**: planutils runs POPF and ENHSP-2020 in Apptainer, started
-  cold for each problem; their times lose 0.189 s (POPF's whole time on a one-action problem,
-  the most favourable reading) and 0.084 s (Apptainer's cold start; the JVM is ENHSP's). Kairos's
+- **Packaging is not the planner's**: planutils runs POPF, SMTPlan+ and ENHSP-2020 in
+  Apptainer, started cold for each problem; their times lose 0.189 s and 0.185 s (POPF's and
+  SMTPlan+'s whole time on a one-action problem, the most favourable reading) and 0.084 s
+  (Apptainer's cold start; the JVM is ENHSP's). Kairos's
   first-plan time leaves out its process start (about 5 ms).
 - **Validation**: every plan of every planner is checked by `kairos validate` against the
   original domain and problem; an invalid plan counts as not solved and is listed.
@@ -147,6 +188,7 @@ NextFLAP, the satisficing IPC 2023 configurations) only show when they stopped: 
 | Classical | 220 | Classical domains of the IPC 1998 to 2023, 10 instances per domain |
 | B6 | 144 | PlanSys2 domains with problems scaled from 10 to 20 000 objects (below) |
 | PDDL3 | 125 | IPC 2006 domains with preferences (simple, qualitative, complex) and trajectory constraints, 5 instances each (`coverage.py` suite `prefs`) |
+| PDDL+ | 255 | The PDDL+ domains of hstairs (processes, events, ENHSP's global constraints), up to 10 instances each, and SMTPlan's benchmarks (PDDL+ and PDDL 2.1 with non-linear continuous effects) (`coverage.py` suite `pddlplus`) |
 
 The instances come from public collections (potassco pddl-instances, the IPC 2023 and 2026
 datasets, time2processes), fetched at pinned commits by `tools/fetch_corpus.sh`.

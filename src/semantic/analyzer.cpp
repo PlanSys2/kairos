@@ -1304,8 +1304,9 @@ Result<ProblemModel> analyze_problem(
     if (item.kind == ast::InitItem::Kind::Fact) {
       auto pred = dm.predicates.find(n);
       if (!pred) {
-        err("semantic.unknown_predicate", "in the initial state: unknown predicate '" + n + "'" +
-          did_you_mean(n, Checker::names_of(dm.predicates)), item.loc);
+        // Nothing reads it (ENHSP's instances of other versions of a domain do this)
+        warn("semantic.unknown_predicate", "in the initial state: unknown predicate '" + n +
+          "'; the fact is ignored" + did_you_mean(n, Checker::names_of(dm.predicates)), item.loc);
         continue;
       }
       const PredicateInfo & info = dm.predicates.items[*pred];

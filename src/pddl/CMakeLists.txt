@@ -14,6 +14,7 @@
 
 kairos_add_module(kairos_pddl
   SOURCES
+    dialect.cpp
     lexer.cpp
     parser.cpp
     printer.cpp

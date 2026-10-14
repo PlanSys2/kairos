@@ -480,6 +480,12 @@ private:
 
   bool pruned(double g) const {return ctx_.prune_with_bound && g >= ctx_.sink.bound();}
 
+  // A goal state whose path is a plan
+  bool goal(StateId s)
+  {
+    return ctx_.space.is_goal(s) && (!ctx_.check_plan || ctx_.check_plan(space_.path(s)));
+  }
+
   Outcome found(StateId goal)
   {
     // The cost of the path itself: after a reopening, parents may lead there more cheaply than
@@ -650,7 +656,7 @@ private:
       if (n.status != kOpen) {
         continue;  // stale: expanded through a better entry (pushed later, popped first)
       }
-      if (ctx_.space.is_goal(e.state)) {
+      if (goal(e.state)) {
         return found(e.state);
       }
       n.status = kClosed;
@@ -763,7 +769,7 @@ private:
     std::vector<double> current_h = r.h;
     std::vector<uint32_t> preferred = std::move(r.preferred);
     while (true) {
-      if (ctx_.space.is_goal(current)) {
+      if (goal(current)) {
         return found(current);
       }
       // Expand: one entry per operator, keyed by the parent's h
@@ -844,7 +850,7 @@ private:
     double h = r.h[0];
     std::vector<uint32_t> helpful = std::move(r.preferred);
     while (true) {
-      if (ctx_.space.is_goal(s)) {
+      if (goal(s)) {
         return found(s);
       }
       std::deque<StateId> queue{s};

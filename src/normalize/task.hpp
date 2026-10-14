@@ -250,6 +250,7 @@ struct Task
   std::vector<TimedEvent> timed_events;
 
   Condition goal;
+  Condition always;  // global constraints (ENHSP's :constraint): hold in every state
   Metric metric;
 
   sem::FeatureSet features;

@@ -1162,6 +1162,57 @@ private:
     return f;
   }
 
+  // Preferences of a precondition not compiled into copies (more than four, under a forall,
+  // nested elsewhere): each counts its violations, when it does not hold as the action happens
+  void soft_counters(
+    const Source & s, FormulaId id, Timing timing, std::vector<uint32_t> vars,
+    std::vector<Variable> & owner, Scope & scope, std::vector<Effect> & out)
+  {
+    if (!id.valid()) {
+      return;
+    }
+    const ast::Formula & f = s.nodes.formulas[id];
+    switch (f.kind) {
+      case ast::FormulaKind::And:
+      case ast::FormulaKind::Or:
+      case ast::FormulaKind::Not:
+      case ast::FormulaKind::Imply:
+        for (FormulaId c : f.children) {
+          soft_counters(s, c, timing, vars, owner, scope, out);
+        }
+        return;
+      case ast::FormulaKind::Forall:
+      case ast::FormulaKind::Exists: {
+          size_t mark = scope.size();
+          auto bound = declare(s, f.params, owner, scope);
+          vars.insert(vars.end(), bound.begin(), bound.end());
+          soft_counters(s, f.children.at(0), timing, vars, owner, scope, out);
+          scope.resize(mark);
+          return;
+        }
+      case ast::FormulaKind::AtStart:
+        soft_counters(s, f.children.at(0), Timing::Start, vars, owner, scope, out);
+        return;
+      case ast::FormulaKind::AtEnd:
+      case ast::FormulaKind::OverAll:
+        soft_counters(s, f.children.at(0), Timing::End, vars, owner, scope, out);
+        return;
+      case ast::FormulaKind::Preference: {
+          if (!f.name.valid() || pref_mode_.count(id)) {
+            return;  // unnamed: no metric reads it; compiled: its copy counts
+          }
+          Effect e = count_violation(str(s, f.name), timing);
+          e.variables = vars;
+          NF violated = to_nf(s, f.children.at(0), false, TimeTag::None, owner, scope);
+          e.condition = single(violated, owner);
+          out.push_back(std::move(e));
+          return;
+        }
+      default:
+        return;
+    }
+  }
+
   void instant_action(const ast::Action & a, std::vector<Action> & out)
   {
     Source s{d_.nodes, d_.symbols};
@@ -1190,6 +1241,7 @@ private:
       flatten(s, a.effect, EffectContext{}, owner, scope, effects);
     }
     effects.insert(effects.end(), extra.begin(), extra.end());
+    soft_counters(s, a.precondition, Timing::Instant, {}, owner, scope, effects);
     Clauses clauses = dnf(pre, owner);
     for (const auto & cl : clauses) {
       VarMap m = copy_order(params, cl.exist, owner.size());
@@ -1291,6 +1343,7 @@ private:
       flatten(s, a.effect, EffectContext{}, owner, scope, effects);
     }
     effects.insert(effects.end(), extra.begin(), extra.end());
+    soft_counters(s, a.condition, Timing::Start, {}, owner, scope, effects);
     Clauses clauses = dnf(cond, owner);
     for (const auto & cl : clauses) {
       VarMap m = copy_order(params, cl.exist, owner.size());
@@ -1345,6 +1398,39 @@ private:
         task_.axioms.push_back(make_rule(pred, owner, arity, cl));
       }
       in_axiom_ = in_rule_ = false;
+    }
+  }
+
+  // ENHSP's global constraints, (:constraint name :parameters ... :condition ...): one closed
+  // condition that holds in every state (an auxiliary atom when it is not a plain conjunction)
+  void global_constraints()
+  {
+    if (d_.global_constraints.empty()) {
+      return;
+    }
+    Source s{d_.nodes, d_.symbols};
+    std::vector<Variable> owner;
+    NF all;
+    all.kind = NF::Kind::And;
+    for (const auto & gc : d_.global_constraints) {
+      Scope scope;
+      auto vars = declare(s, gc.params, owner, scope);
+      NF body = to_nf(s, gc.condition, true, TimeTag::None, owner, scope);
+      if (vars.empty()) {
+        all.children.push_back(std::move(body));
+        continue;
+      }
+      NF each;
+      each.kind = NF::Kind::Forall;
+      each.vars = vars;
+      each.children.push_back(std::move(body));
+      all.children.push_back(std::move(each));
+    }
+    Clauses cs = dnf(all, owner);
+    if (cs.size() == 1 && cs[0].exist.empty() && owner.empty()) {
+      task_.always = to_condition(cs[0].items);
+    } else {
+      task_.always = to_condition({make_aux(all, owner)});
     }
   }
 
@@ -1776,12 +1862,6 @@ private:
             break;
           }
         case ast::ModalOp::AlwaysWithin: {
-            if (!sequential()) {
-              // A deadline from each time phi holds: needs the time of states (not yet)
-              task_.has_timed_constraints = true;
-              return;
-            }
-            // After phi, psi within t steps: pending, with the steps left
             Literal phi = atom_of(s, f.children.at(0), owner, scope);
             Literal psi = atom_of(s, f.children.at(1), owner, scope);
             Literal pending{monitor("pending", owner, k), true};
@@ -1789,6 +1869,54 @@ private:
             for (size_t v = 0; v < k; ++v) {
               types.push_back(owner[v].types);
             }
+            if (!sequential()) {
+              // After phi, psi within t time units: pending, with a clock a process advances
+              // while it is (planned as PDDL+)
+              std::string name = "kairos-monitor-" + std::to_string(monitor_counter_++);
+              FunctionId since(static_cast<uint32_t>(task_.function_names.size()));
+              task_.function_names.push_back(name + "-since");
+              task_.numeric.push_back(true);
+              task_.function_params.push_back(types);
+              NF late_cmp;
+              late_cmp.kind = NF::Kind::Cmp;
+              late_cmp.cmp.lhs.op = ExprOp::Fluent;
+              late_cmp.cmp.lhs.function = since;
+              for (uint32_t v = 0; v < k; ++v) {
+                late_cmp.cmp.lhs.args.push_back(Term::variable(v));
+              }
+              late_cmp.cmp.rhs.op = ExprOp::Constant;
+              late_cmp.cmp.rhs.value = f.times.at(0);
+              late_cmp.cmp.op = CompareOp::Gt;
+              Literal late = make_aux(nf_of(NF::Kind::And, {lit(pending), late_cmp}), owner).lit;
+              Update start = update({phi, opposite(psi), opposite(pending)}, pending);
+              updates.push_back(start);
+              start.fluent = since;
+              start.value = 0.0;
+              updates.push_back(start);
+              updates.push_back(update({psi}, opposite(pending)));
+              Action clock;
+              clock.name = name + "-clock";
+              clock.variables.assign(owner.begin(), owner.begin() + static_cast<std::ptrdiff_t>(k));
+              clock.parameters = static_cast<uint32_t>(k);
+              clock.precondition.literals = {pending};
+              Effect tick;
+              tick.kind = Effect::Kind::Numeric;
+              tick.function = since;
+              for (uint32_t v = 0; v < k; ++v) {
+                tick.args.push_back(Term::variable(v));
+              }
+              tick.op = ast::AssignOp::Increase;
+              tick.value.op = ExprOp::ContinuousT;
+              tick.continuous = true;
+              clock.effects.push_back(std::move(tick));
+              task_.processes.push_back(std::move(clock));
+              forbidden = late;
+              final = nf_of(NF::Kind::Or, {
+                  nf_of(NF::Kind::And, {lit(psi), lit(opposite(late))}),
+                  nf_of(NF::Kind::And, {lit(opposite(pending)), lit(opposite(phi))})});
+              break;
+            }
+            // After phi, psi within t steps: pending, with the steps left
             FunctionId left(static_cast<uint32_t>(task_.function_names.size()));
             task_.function_names.push_back(
               "kairos-monitor-" + std::to_string(monitor_counter_++) + "-left");
@@ -2235,6 +2363,7 @@ private:
     }
     std::stable_sort(task_.timed_events.begin(), task_.timed_events.end(),
       [](const TimedEvent & a, const TimedEvent & b) {return a.time < b.time;});
+    global_constraints();
     // Action costs: (total-cost) starts at 0 when the problem does not say (as FD and the IPC do)
     if (auto tc = dm_.functions.find("total-cost");
       tc && dm_.functions.items[*tc].params.empty() && dm_.functions.items[*tc].numeric &&

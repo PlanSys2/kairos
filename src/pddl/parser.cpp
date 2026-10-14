@@ -298,6 +298,11 @@ private:
       add(to_diagnostic(t, file_));
       throw ParseError{};
     }
+    if (t.joined && !warned_joined_) {
+      warning("parse.spaced_variable", "'? " + std::string(t.text.substr(1)) + "' read as '" +
+        std::string(t.text) + "'", t);
+      warned_joined_ = true;
+    }
     if (t.kind == TokenKind::LParen && depth_ > options_.max_depth) {
       error("parse.nesting_too_deep",
         "nesting deeper than " + std::to_string(options_.max_depth) + " levels", t);
@@ -1303,6 +1308,7 @@ private:
   ast::Problem * problem_ = nullptr;
   std::vector<Diagnostic> diagnostics_;
   std::set<std::string> seen_sections_;
+  bool warned_joined_ = false;
   uint32_t depth_ = 0;
   uint32_t errors_ = 0;
   uint64_t consumed_ = 0;  // tokens consumed so far, to detect progress

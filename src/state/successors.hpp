@@ -106,6 +106,9 @@ public:
 
   bool is_goal(StateId s);
 
+  /// @brief PDDL+: how long the last time passing successor let pass.
+  double last_wait() const {return last_wait_;}
+
   /// @brief All variable values and numbers of a state (valid until another state is loaded).
   const std::vector<uint32_t> & values(StateId s)
   {
@@ -120,6 +123,13 @@ public:
 
 private:
   void load(StateId s);
+  bool integrate(double max_dt, bool long_wait);
+  bool holds_numeric(const sas::NumericCondition & c, const double * numbers) const;
+
+  static constexpr double kClockStep = 0.1;  // Runge-Kutta step of PDDL+ time passing
+  static constexpr double kDeadlineSlack = 1e-9;  // a deadline this close: reached
+  static constexpr int64_t kLongSteps = 20000;  // a long wait: at most this many steps
+  double last_wait_ = 0.0;
 
   const sas::Task & task_;
   StateRegistry & registry_;

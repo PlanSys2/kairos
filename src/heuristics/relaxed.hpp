@@ -72,6 +72,7 @@ public:
   // --- The graph, read-only (for landmarks) ---
 
   static constexpr uint32_t kNone = UINT32_MAX;
+  static constexpr uint32_t kStalled = 1000000;  // repetitions of a clock that moves nothing now
 
   struct Op
   {
@@ -112,13 +113,23 @@ private:
   {
     sas::LinearExpr e;
     bool strict = false;
-    std::vector<uint32_t> contributors;  // actions changing a variable of e
+    std::vector<uint32_t> contributors;  // contributors changing a variable of e
   };
   struct NumEffect
   {
     sas::NumVarId var;
     ast::AssignOp op;
     sas::NumericExpr value;
+    uint32_t id = 0;  // index into the per-evaluation cache of values
+  };
+  // Numeric effects of an action under one condition, reached at `node`: the action's node
+  // (no condition), or a node of its own that also needs the condition (as FD's unary
+  // operators: PDDL+ waits move a fluent only while the process that changes it runs)
+  struct Contributor
+  {
+    uint32_t action;
+    uint32_t node;
+    std::vector<NumEffect> effects;
   };
 
   uint32_t add_node();
@@ -128,9 +139,9 @@ private:
   void condition(const sas::Condition & c, std::vector<uint32_t> & out);
   void add_op(std::vector<uint32_t> pre, uint32_t effect, double base, uint32_t action);
   void simplify();
-  double change(uint32_t action, const NumNode & n, const EvalContext & ctx) const;
+  double change(uint32_t contributor, const NumNode & n, const EvalContext & ctx) const;
   double missing(const NumNode & n, const EvalContext & ctx) const;
-  bool state_dependent(uint32_t action, const NumNode & n) const;
+  bool state_dependent(uint32_t contributor, const NumNode & n) const;
   uint32_t repetitions(const NumNode & n, double missing, double change) const;
   void relax(uint32_t node, double cost, uint32_t supporter, uint32_t repeat);
   void expand(uint32_t node, double cost);
@@ -155,8 +166,9 @@ private:
   std::vector<uint32_t> num_node_id_;          // per numeric node: its node id
   std::vector<int32_t> node_num_;              // per node: numeric node index or -1
   std::vector<int32_t> node_action_;           // per node: action of an action node or -1
-  std::vector<std::vector<NumEffect>> num_effects_;     // per action
-  std::vector<std::vector<uint32_t>> action_num_;       // per action: numeric nodes it changes
+  std::vector<Contributor> contrib_;
+  std::vector<std::vector<uint32_t>> contrib_num_;  // per contributor: numeric nodes it changes
+  std::vector<int32_t> node_contrib_;               // per node: its contributor or -1
   uint32_t goal_ = 0;
   uint32_t goal_op_ = 0;
   uint32_t goal_trigger_ = kNone;
@@ -173,7 +185,7 @@ private:
   {
     double cost;
     uint32_t stamp = 0;
-    uint32_t supporter;  // op (or action, for numeric nodes)
+    uint32_t supporter;  // op (or contributor, for numeric nodes)
     uint32_t repeat;     // numeric nodes: repetitions of the supporter
     uint8_t initial;     // true in the state itself
   };
@@ -210,6 +222,10 @@ private:
   }
   bool fresh(uint32_t n) const {return node_[n].stamp == epoch_;}
   std::vector<double> missing_;       // per numeric node
+  // The value of each numeric effect in the state of this evaluation, computed once
+  mutable std::vector<double> effect_value_;
+  mutable std::vector<uint32_t> effect_stamp_;
+  uint32_t effects_ = 0;
   std::vector<double> best_ratio_;    // per numeric node: least cost per unit (hmax)
   // As FD's bucket queue: whole costs in buckets, last in first out within a cost (ties in the
   // best supporters, and so the relaxed plans, follow FD's); other costs in a heap
@@ -225,7 +241,7 @@ private:
   };
   void push(double cost, uint32_t node);
   bool pop(double & cost, uint32_t & node);
-  static constexpr size_t kMaxBucket = 1 << 20;
+  static constexpr size_t kMaxBucket = 1 << 14;  // larger costs go to the heap: no sparse scans
   std::vector<std::vector<uint32_t>> buckets_;
   size_t bucket_ = 0;       // lowest bucket that may hold entries
   size_t in_buckets_ = 0;

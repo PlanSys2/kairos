@@ -49,6 +49,10 @@ struct ValidateOptions
   // asks for the separation, but VAL does not enforce it; false keeps VAL's verdicts.
   bool strict_epsilon = false;
   bool check_goal = true;            // false: only check that the plan is executable
+  // PDDL+: the longest step of the integration of continuous change (Runge-Kutta 4, exact for
+  // polynomials up to degree 4); a process or event condition that changes within a step is
+  // found by bisection
+  double continuous_step = 0.01;
   std::string plan_filename = "plan";
 };
 

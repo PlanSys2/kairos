@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
 #include <set>
 #include <unordered_map>
@@ -38,18 +39,7 @@ RelaxedGraph::RelaxedGraph(
   }
   node_num_.assign(nodes_, -1);
   node_action_.assign(nodes_, -1);
-  num_effects_.resize(task.actions.size());
-  action_num_.resize(task.actions.size());
-  for (uint32_t a = 0; a < task.actions.size(); ++a) {
-    for (const auto & e : task.actions[a].effects) {
-      if (e.kind == sas::Effect::Kind::Numeric && !e.continuous) {
-        num_effects_[a].push_back(NumEffect{e.num, e.op, e.value});
-        bool constant = (e.op == ast::AssignOp::Increase || e.op == ast::AssignOp::Decrease) &&
-          e.value.linear && e.value.linear->terms.empty() && e.condition.empty();
-        simple_numeric_ = simple_numeric_ && constant;
-      }
-    }
-  }
+  node_contrib_.assign(nodes_, -1);
   // Action nodes and their precondition ops
   act_node_.resize(task.actions.size());
   act_op_.resize(task.actions.size());
@@ -75,6 +65,40 @@ RelaxedGraph::RelaxedGraph(
       add_op(std::move(p), fact_offset_[e.fact.var] + e.fact.value, costs_[a], a);
     }
   }
+  // Numeric effects, by action and condition
+  for (uint32_t a = 0; a < task.actions.size(); ++a) {
+    std::vector<std::pair<const sas::Condition *, std::vector<NumEffect>>> groups;
+    for (const auto & e : task.actions[a].effects) {
+      if (e.kind != sas::Effect::Kind::Numeric || e.continuous) {
+        continue;
+      }
+      bool constant = (e.op == ast::AssignOp::Increase || e.op == ast::AssignOp::Decrease) &&
+        e.value.linear && e.value.linear->terms.empty() && e.condition.empty();
+      simple_numeric_ = simple_numeric_ && constant;
+      auto g = std::find_if(groups.begin(), groups.end(), [&](const auto & x) {
+            return *x.first == e.condition;
+          });
+      if (g == groups.end()) {
+        groups.emplace_back(&e.condition, std::vector<NumEffect>{});
+        g = groups.end() - 1;
+      }
+      g->second.push_back(NumEffect{e.num, e.op, e.value, effects_++});
+    }
+    for (auto & [cond, effects] : groups) {
+      uint32_t node = act_node_[a];
+      if (!cond->empty()) {
+        node = add_node();
+        std::vector<uint32_t> pre{act_node_[a]};
+        condition(*cond, pre);
+        add_op(std::move(pre), node, 0.0, kNone);
+      }
+      node_contrib_[node] = static_cast<int32_t>(contrib_.size());
+      contrib_.push_back(Contributor{a, node, std::move(effects)});
+    }
+  }
+  contrib_num_.resize(contrib_.size());
+  effect_value_.assign(effects_, 0.0);
+  effect_stamp_.assign(effects_, 0);
   for (const auto & ax : task.axioms) {
     std::vector<uint32_t> pre;
     condition(ax.body, pre);
@@ -96,13 +120,13 @@ RelaxedGraph::RelaxedGraph(
       }
     }
   }
-  // Which numeric nodes each action can move (through the actions that change each variable)
+  // Which numeric nodes each contributor can move (through those that change each variable)
   std::map<sas::NumVarId, std::vector<uint32_t>> changers;
-  for (uint32_t a = 0; a < task.actions.size(); ++a) {
-    for (const auto & e : num_effects_[a]) {
+  for (uint32_t ci = 0; ci < contrib_.size(); ++ci) {
+    for (const auto & e : contrib_[ci].effects) {
       auto & list = changers[e.var];
-      if (list.empty() || list.back() != a) {
-        list.push_back(a);
+      if (list.empty() || list.back() != ci) {
+        list.push_back(ci);
       }
     }
   }
@@ -115,9 +139,9 @@ RelaxedGraph::RelaxedGraph(
     }
     std::sort(actions.begin(), actions.end());
     actions.erase(std::unique(actions.begin(), actions.end()), actions.end());
-    for (uint32_t a : actions) {
-      num_[n].contributors.push_back(a);
-      action_num_[a].push_back(n);
+    for (uint32_t ci : actions) {
+      num_[n].contributors.push_back(ci);
+      contrib_num_[ci].push_back(n);
     }
   }
   if (simplify_ops && num_.empty()) {
@@ -168,6 +192,7 @@ uint32_t RelaxedGraph::add_node()
 {
   node_num_.push_back(-1);
   node_action_.push_back(-1);
+  node_contrib_.push_back(-1);
   return nodes_++;
 }
 
@@ -409,11 +434,11 @@ void RelaxedGraph::simplify()
   std::fill(act_op_.begin(), act_op_.end(), kNone);
 }
 
-// How much the action moves e up in this state
-double RelaxedGraph::change(uint32_t action, const NumNode & n, const EvalContext & ctx) const
+// How much the contributor moves e up in this state
+double RelaxedGraph::change(uint32_t contributor, const NumNode & n, const EvalContext & ctx) const
 {
   double total = 0.0;
-  for (const auto & eff : num_effects_[action]) {
+  for (const auto & eff : contrib_[contributor].effects) {
     double coef = 0.0;
     for (const auto & [v, c] : n.e.terms) {
       if (v == eff.var) {
@@ -423,7 +448,11 @@ double RelaxedGraph::change(uint32_t action, const NumNode & n, const EvalContex
     if (coef == 0.0) {
       continue;
     }
-    double value = state::evaluate(eff.value, ctx.numbers);
+    if (effect_stamp_[eff.id] != epoch_) {
+      effect_stamp_[eff.id] = epoch_;
+      effect_value_[eff.id] = state::evaluate(eff.value, ctx.numbers);
+    }
+    double value = effect_value_[eff.id];
     double old = ctx.numbers[eff.var];
     double d = 0.0;
     switch (eff.op) {
@@ -443,9 +472,9 @@ double RelaxedGraph::change(uint32_t action, const NumNode & n, const EvalContex
 
 // Some change of a variable of e depends on the state: its effect in this state says nothing
 // about later states
-bool RelaxedGraph::state_dependent(uint32_t action, const NumNode & n) const
+bool RelaxedGraph::state_dependent(uint32_t contributor, const NumNode & n) const
 {
-  for (const auto & eff : num_effects_[action]) {
+  for (const auto & eff : contrib_[contributor].effects) {
     bool used = std::any_of(
       n.e.terms.begin(), n.e.terms.end(), [&](const auto & t) {return t.first == eff.var;});
     if (!used) {
@@ -472,7 +501,10 @@ double RelaxedGraph::missing(const NumNode & n, const EvalContext & ctx) const
     return kInfinity;
   }
   bool holds = n.strict ? v > 0.0 : v >= 0.0;
-  return holds ? 0.0 : -v;
+  if (holds) {
+    return 0.0;
+  }
+  return std::max(-v, std::numeric_limits<double>::min());  // strict at 0: still missing
 }
 
 uint32_t RelaxedGraph::repetitions(const NumNode & n, double gap, double step) const
@@ -529,7 +561,7 @@ void RelaxedGraph::relax(uint32_t node, double cost, uint32_t supporter, uint32_
     x.cost = cost;
     x.supporter = supporter;
     x.repeat = repeat;
-    if (node_action_[node] >= 0) {
+    if (node_action_[node] >= 0 || node_contrib_[node] >= 0) {
       expand(node, cost);  // an action fires its effects right away, as FD's unary operators
     } else {
       push(cost, node);
@@ -553,34 +585,38 @@ void RelaxedGraph::expand(uint32_t n, double c)
       relax(ops_[o].effect, x.cost + ops_[o].base, o, 0);
     }
   }
-  int32_t a = node_action_[n];
-  if (a < 0) {
+  int32_t ci = node_contrib_[n];
+  if (ci < 0) {
     return;
   }
-  // An action reached: the numeric conditions it moves the right way
-  for (uint32_t k : action_num_[static_cast<size_t>(a)]) {
+  auto cu = static_cast<uint32_t>(ci);
+  uint32_t a = contrib_[cu].action;
+  // Numeric effects reached: the numeric conditions they move the right way
+  for (uint32_t k : contrib_num_[cu]) {
     if (missing_[k] == 0.0) {
       continue;
     }
-    double d = change(static_cast<uint32_t>(a), num_[k], *ctx_);
+    double d = change(cu, num_[k], *ctx_);
     uint32_t times = 1;
     if (d > 0.0) {
       times = repetitions(num_[k], missing_[k], d);
-    } else if (!state_dependent(static_cast<uint32_t>(a), num_[k]) && !std::isinf(missing_[k])) {
+    } else if (!state_dependent(cu, num_[k]) && !std::isinf(missing_[k])) {
       continue;  // a constant change that does not help
+    } else if ((a == task_.clock || a == task_.long_clock) && !std::isinf(missing_[k])) {
+      times = kStalled;  // time passing that moves nothing now: far, not a dead end
     }
     // Otherwise the change depends on values that may grow (or the expression is undefined
     // now): optimistic, once; never a false dead end
     double cand;
     if (mode_ == Mode::Add) {
-      cand = c + costs_[static_cast<size_t>(a)] * times;
+      cand = c + costs_[a] * times;
     } else {
       // The contributor needs its precondition and itself at least once; all contributors
       // together cover what is missing at the best cost per unit
       double bound = std::isinf(missing_[k]) ? 0.0 : missing_[k] * best_ratio_[k];
-      cand = std::max(c + costs_[static_cast<size_t>(a)], bound);
+      cand = std::max(c + costs_[a], bound);
     }
-    relax(num_node_id_[k], cand, static_cast<uint32_t>(a), times);
+    relax(num_node_id_[k], cand, cu, times);
   }
 }
 
@@ -611,6 +647,7 @@ void RelaxedGraph::explore(const EvalContext & ctx, bool stop_at_goal)
     for (auto & x : op_) {
       x.stamp = 0;
     }
+    std::fill(effect_stamp_.begin(), effect_stamp_.end(), 0);
     epoch_ = 1;
   }
   for (auto & bucket : buckets_) {
@@ -625,12 +662,12 @@ void RelaxedGraph::explore(const EvalContext & ctx, bool stop_at_goal)
   for (uint32_t n = 0; n < num_.size(); ++n) {
     missing_[n] = missing(num_[n], ctx);
     if (mode_ == Mode::Max && missing_[n] != 0.0 && !std::isinf(missing_[n])) {
-      for (uint32_t a : num_[n].contributors) {
-        double d = change(a, num_[n], ctx);
-        if (state_dependent(a, num_[n])) {
+      for (uint32_t ci : num_[n].contributors) {
+        double d = change(ci, num_[n], ctx);
+        if (state_dependent(ci, num_[n])) {
           best_ratio_[n] = 0.0;  // no bound from what it does now
         } else if (d > 0.0) {
-          best_ratio_[n] = std::min(best_ratio_[n], costs_[a] / d);
+          best_ratio_[n] = std::min(best_ratio_[n], costs_[contrib_[ci].action] / d);
         }
       }
     }
@@ -724,10 +761,11 @@ double RelaxedGraph::relaxed_plan(std::vector<uint32_t> * preferred)
       continue;
     }
     if (node_num_[n] >= 0) {
-      auto & t = times[s];
+      const Contributor & ct = contrib_[s];
+      auto & t = times[ct.action];
       t = std::max(t, node_[n].repeat);
-      firing.insert(s);
-      stack.push_back(act_node_[s]);
+      firing.insert(ct.action);
+      stack.push_back(ct.node);
       continue;
     }
     const Op & op = ops_[s];

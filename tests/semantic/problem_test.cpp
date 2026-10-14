@@ -161,7 +161,9 @@ TEST(ProblemAnalysisTest, InitFacts)
         "semantic.init_not_ground@3:12", "semantic.unbound_variable@3:12"}));
   Analysis typo = analyze(problem("(:init (conected kitchen hall))"));
   EXPECT_EQ(message(typo.diagnostics, "semantic.unknown_predicate"),
-    "in the initial state: unknown predicate 'conected' (did you mean 'connected'?)");
+    "in the initial state: unknown predicate 'conected'; the fact is ignored "
+    "(did you mean 'connected'?)");
+  EXPECT_EQ(typo.diagnostics.at(0).severity, Severity::Warning);
 }
 
 TEST(ProblemAnalysisTest, InitValues)

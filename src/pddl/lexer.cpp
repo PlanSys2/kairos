@@ -17,14 +17,28 @@
 #include <array>
 #include <charconv>
 #include <cmath>
+#include <functional>
 #include <limits>
+#include <mutex>
+#include <set>
 #include <string>
+#include <utility>
 
 namespace kairos::pddl
 {
 
 namespace
 {
+
+// "?" + name, kept for the whole run (tokens outlive their lexer in tokenize())
+std::string_view joined_text(std::string_view name)
+{
+  static std::mutex mutex;
+  static std::set<std::string, std::less<>> texts;
+  std::string text = "?" + std::string(name);
+  std::lock_guard<std::mutex> lock(mutex);
+  return *texts.insert(std::move(text)).first;
+}
 
 enum CharClass : uint8_t
 {
@@ -227,6 +241,25 @@ Token Lexer::scan()
   }
   if (word.front() == '?' || word.front() == ':') {
     std::string_view rest = word.substr(1);
+    if (rest.empty() && word.front() == '?') {
+      // "? x": the variable ?x, if a name follows on the same line
+      size_t at = pos_;
+      while (at < source_.size() && (source_[at] == ' ' || source_[at] == '\t')) {
+        ++at;
+      }
+      size_t stop = at;
+      while (stop < source_.size() && !(cls(source_[stop]) & (kSpace | kDelimiter))) {
+        ++stop;
+      }
+      std::string_view name = source_.substr(at, stop - at);
+      if (!name.empty() && name.front() != '?' && name.front() != ':' && all_name_chars(name)) {
+        advance(stop - pos_);
+        t.text = joined_text(name);
+        t.kind = TokenKind::Variable;
+        t.joined = true;
+        return t;
+      }
+    }
     if (rest.empty()) {
       return error(LexError::EmptyPrefix);
     }

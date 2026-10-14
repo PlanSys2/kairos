@@ -342,6 +342,7 @@ public:
     std::optional<double> total_time;
     std::optional<double> t;        // value of #t
     bool duration_check = false;    // comparing ?duration: use the duration tolerance
+    bool exact = false;             // processes and events: a tolerance for rounding only
     Tracking * reads = nullptr;
     std::map<std::string, uint32_t> * prefs = nullptr;
   };
@@ -364,6 +365,7 @@ public:
 
   // Lookups by symbol, cached: the model tables search by name
   std::optional<sem::PredicateId> predicate(Symbol s) const;
+  std::optional<sem::FunctionId> function(Symbol s) const;
   std::optional<ObjectId> object(Symbol s) const;
 
   // Iterates over all bindings of typed variables
@@ -389,6 +391,7 @@ public:
 
 private:
   mutable std::vector<int64_t> predicate_cache_;  // per symbol: -2 not looked up, -1 none
+  mutable std::vector<int64_t> function_cache_;
   mutable std::vector<int64_t> object_cache_;
 
   Key atom_key(Symbol pred, const std::vector<TermId> & args, const Ctx & c, Bindings & b);
@@ -670,6 +673,22 @@ private:
 };
 
 // --- Evaluator -------------------------------------------------------------------------------
+
+std::optional<sem::FunctionId> Evaluator::function(Symbol s) const
+{
+  if (function_cache_.size() <= s.index()) {
+    function_cache_.resize(s.index() + 1, -2);
+  }
+  int64_t & slot = function_cache_[s.index()];
+  if (slot == -2) {
+    auto f = world_.dm.functions.find(symbols_.name(s));
+    slot = f ? static_cast<int64_t>(f->value()) : -1;
+  }
+  if (slot < 0) {
+    return std::nullopt;
+  }
+  return sem::FunctionId(static_cast<uint32_t>(slot));
+}
 
 std::optional<sem::PredicateId> Evaluator::predicate(Symbol s) const
 {
@@ -1093,7 +1112,7 @@ Key Evaluator::atom_key(
 Key Evaluator::fluent_key(
   Symbol fn, const std::vector<TermId> & args, const Ctx & c, Bindings & b)
 {
-  auto f = world_.dm.functions.find(symbols_.name(fn));
+  auto f = function(fn);
   if (!f) {
     throw EvalError{"unknown function " + name(fn)};
   }
@@ -1111,7 +1130,7 @@ bool Evaluator::is_object_expr(ExprId id) const
     return true;
   }
   if (e.kind == ast::ExprKind::Function) {
-    auto f = world_.dm.functions.find(symbols_.name(e.name));
+    auto f = function(e.name);
     return f && !world_.dm.functions.items[*f].numeric;
   }
   return false;
@@ -1220,7 +1239,10 @@ bool Evaluator::compare(const ast::Formula & f, const Ctx & c, Bindings & b)
   }
   double l = number(f.lhs, c, b);
   double r = number(f.rhs, c, b);
-  double tol = c.duration_check ? world_.options.duration_tolerance : world_.options.tolerance;
+  // Processes and events: only rounding (two events on the two sides of a value would both hold
+  // with the tolerance of actions, and undo each other)
+  double tol = c.exact ? 1e-12 * std::max({1.0, std::fabs(l), std::fabs(r)}) :
+    (c.duration_check ? world_.options.duration_tolerance : world_.options.tolerance);
   switch (f.compare) {
     case ast::CompareOp::Eq: return std::fabs(l - r) <= tol;
     case ast::CompareOp::Le: return l <= r + tol;
@@ -1249,7 +1271,17 @@ bool Evaluator::holds(FormulaId id, const Ctx & c, Bindings & b)
         }
       }
       return false;
-    case ast::FormulaKind::Not: return !holds(f.children.at(0), c, b);
+    case ast::FormulaKind::Not: {
+        const ast::Formula & ch = nodes_.formulas[f.children.at(0)];
+        if (ch.kind == ast::FormulaKind::Compare && ch.compare == ast::CompareOp::Eq) {
+          try {
+            return !holds(f.children.at(0), c, b);
+          } catch (const EvalError &) {
+            return true;  // an undefined value equals nothing (as ENHSP)
+          }
+        }
+        return !holds(f.children.at(0), c, b);
+      }
     case ast::FormulaKind::Imply:
       return !holds(f.children.at(0), c, b) || holds(f.children.at(1), c, b);
     case ast::FormulaKind::Exists: {
@@ -1440,7 +1472,7 @@ void Evaluator::effects(EffectId id, const Ctx & c, Bindings & b, bool active, C
         }
         const ast::Expr & target = nodes_.exprs[e.target];
         Key key = fluent_key(target.name, target.args, c, b);
-        auto f = world_.dm.functions.find(symbols_.name(target.name));
+        auto f = function(target.name);
         if (f && !world_.dm.functions.items[*f].numeric) {
           const ast::Expr & v = nodes_.exprs[e.value];
           std::optional<uint32_t> value;
@@ -1591,6 +1623,32 @@ private:
   void check_global_constraints(const State & s, const std::string & when);
   bool interfere(const EventInfo & a, const EventInfo & b) const;
   bool integrate(double from, double to);  // true if some fluent changed
+  bool nonlinear_ = false;  // continuous effects whose rates change: evolve, not integrate
+  // PDDL+: processes and events
+  struct Grounded
+  {
+    size_t index;
+    Bindings bindings;
+  };
+  void ground_processes_and_events();
+  void derivative(const State & s, std::unordered_map<Key, double, KeyHash> & out);
+  bool active(const ast::Action & a, const State & s, Bindings b);
+  using Numbers = std::unordered_map<Key, double, KeyHash>;
+  void step_numbers(double h, const Numbers & k1, Numbers & to, const Numbers * over = nullptr);
+  // state_ with some numbers changed: copied only after a discrete change, then patched
+  struct Scratch
+  {
+    State state;
+    uint64_t version = UINT64_MAX;
+    std::vector<Key> written;
+  };
+  const State & patched(Scratch & s, const Numbers & values);
+  void commit(const Numbers & values);
+  Scratch stage_, probe_;
+  std::vector<uint8_t> watch(const State & s);
+  void evolve(double from, double to);
+  void fire_events(double t);
+  void apply_changes(const std::vector<Changes> & all, uint32_t line);
   void check_invariants(const State & s, const std::string & when);
   void record_trajectory();
   void finish();
@@ -1606,6 +1664,15 @@ private:
   std::vector<std::pair<double, State>> trajectory_;
   bool record_ = false;
   double makespan_ = 0.0;
+  bool pddl_plus_ = false;
+  std::vector<Grounded> processes_, events_;
+  // The atoms of each process and event condition (they only change at happenings and
+  // events): the groundings whose atoms hold are the only ones to look at while time passes
+  std::vector<std::vector<ast::FormulaId>> process_atoms_, event_atoms_;
+  std::vector<uint8_t> live_processes_, live_events_;
+  uint64_t atoms_version_ = 0;
+  uint64_t live_version_ = UINT64_MAX;
+  void refresh_live();
 };
 
 void Validator::resolve_steps()
@@ -1873,13 +1940,15 @@ void Validator::record_trajectory()
 
 void Validator::run()
 {
-  if (!w_.domain.processes.empty() || !w_.domain.events.empty()) {
-    throw Unsupported{"processes and events (PDDL+) cannot be validated yet"};
-  }
+  pddl_plus_ = !w_.domain.processes.empty() || !w_.domain.events.empty();
   record_ = w_.domain.constraints.valid() || w_.problem.constraints.valid();
   resolve_steps();
   current_.reset();
   initial_state();
+  if (pddl_plus_) {
+    ground_processes_and_events();
+    fire_events(0.0);
+  }
   record_trajectory();
   check_global_constraints(state_, "in the initial state");
 
@@ -1914,8 +1983,23 @@ void Validator::run()
     while (j < events.size() && events[j].time - events[i].time <= tol) {
       ++j;
     }
+    if (pddl_plus_) {
+      // PDDL+ plans (ENHSP's) apply the steps of an instant one after another, in plan order
+      j = i + 1;
+    }
     double t = events[i].time;
-    bool changed = integrate(clock, t);
+    bool changed = false;
+    if (pddl_plus_ || nonlinear_) {
+      evolve(clock, t);
+    } else {
+      try {
+        changed = integrate(clock, t);
+      } catch (const Unsupported &) {
+        // A rate that changes with time: numerically, as PDDL+ (integrate changed nothing)
+        nonlinear_ = true;
+        evolve(clock, t);
+      }
+    }
     clock = t;
     state_.time = t;
     if (changed) {
@@ -2035,7 +2119,7 @@ void Validator::run()
         }
       }
     }
-    if (have_previous && t - previous_time < w_.options.epsilon - tol) {
+    if (!pddl_plus_ && have_previous && t - previous_time < w_.options.epsilon - tol) {
       for (const auto & pv : previous) {
         for (const auto & ev : group) {
           if (!interfere(pv, ev)) {
@@ -2073,6 +2157,7 @@ void Validator::run()
     State before;
     before.numbers = state_.numbers;
     bool axioms = false;  // whether the changes touch what the axioms read
+    ++atoms_version_;
     for (const auto & ev : group) {
       for (const auto & k : ev.changes.dels) {
         axioms = axioms || w_.axioms_read(k[0]);
@@ -2131,6 +2216,9 @@ void Validator::run()
         makespan_ = std::max(makespan_, t);
       }
     }
+    if (pddl_plus_) {
+      fire_events(t);
+    }
     check_invariants(state_, "after the happening at " + std::to_string(t));
     check_global_constraints(state_, "at " + std::to_string(t));
     // In sequential plans the state after step k (at position k) is state k+1
@@ -2142,11 +2230,499 @@ void Validator::run()
     have_previous = true;
     i = j;
   }
+  // PDDL+: time passes until the end of the plan, then the goal is checked
+  if (pddl_plus_ && plan_.end && *plan_.end > clock) {
+    current_.reset();
+    evolve(clock, *plan_.end);
+    state_.time = *plan_.end;
+    record_trajectory();
+  }
+  if (plan_.end) {
+    makespan_ = std::max(makespan_, *plan_.end);
+  }
   // Sequential plans: one time unit per step
   if (!plan_.temporal) {
     makespan_ = static_cast<double>(plan_.steps.size());
   }
   finish();
+}
+
+// --- PDDL+ -------------------------------------------------------------------------------------
+
+void Validator::ground_processes_and_events()
+{
+  // Static predicates (no effect or timed literal changes them): false in the initial state,
+  // false forever; groundings that need one never run
+  const auto & nodes = w_.domain.nodes;
+  std::set<std::string> changing;
+  for (uint32_t i = 0; i < nodes.effects.size(); ++i) {
+    const auto & e = nodes.effects[ast::EffectId(i)];
+    if (e.kind == ast::EffectKind::Add || e.kind == ast::EffectKind::Delete) {
+      changing.insert(std::string(w_.domain.symbols.name(e.name)));
+    }
+  }
+  for (const auto & item : w_.problem.init) {
+    if (item.time) {
+      changing.insert(std::string(w_.problem.symbols.name(item.name)));
+    }
+  }
+  for (const auto & d : w_.domain.derived) {
+    changing.insert(std::string(w_.domain.symbols.name(d.head.name)));
+  }
+  std::function<void(ast::FormulaId, std::vector<ast::FormulaId> &)> statics =
+    [&](ast::FormulaId id, std::vector<ast::FormulaId> & out) {
+      const auto & f = nodes.formulas[id];
+      if (f.kind == ast::FormulaKind::And) {
+        for (auto ch : f.children) {
+          statics(ch, out);
+        }
+        return;
+      }
+      if (f.kind == ast::FormulaKind::Atom &&
+        !changing.count(std::string(w_.domain.symbols.name(f.name))))
+      {
+        out.push_back(id);
+      }
+    };
+  auto ground = [&](const std::vector<ast::Action> & list, std::vector<Grounded> & out) {
+      for (size_t i = 0; i < list.size(); ++i) {
+        std::vector<ast::FormulaId> fixed;
+        if (list[i].precondition.valid()) {
+          statics(list[i].precondition, fixed);
+        }
+        Bindings b;
+        w_.domain_eval.for_each_binding(list[i].params, b, [&]() {
+            Evaluator::Ctx c{state_};
+            for (auto f : fixed) {
+              Bindings fb = b;
+              if (!w_.domain_eval.holds(f, c, fb)) {
+                return true;
+              }
+            }
+            out.push_back({i, b});
+            return true;
+          });
+      }
+    };
+  ground(w_.domain.processes, processes_);
+  ground(w_.domain.events, events_);
+  std::set<std::string> derived;
+  for (const auto & d : w_.domain.derived) {
+    derived.insert(std::string(w_.domain.symbols.name(d.head.name)));
+  }
+  std::function<void(ast::FormulaId, std::vector<ast::FormulaId> &)> atoms =
+    [&](ast::FormulaId id, std::vector<ast::FormulaId> & out) {
+      const auto & f = nodes.formulas[id];
+      const ast::Formula * a = &f;
+      if (f.kind == ast::FormulaKind::And) {
+        for (auto ch : f.children) {
+          atoms(ch, out);
+        }
+        return;
+      }
+      if (f.kind == ast::FormulaKind::Not) {
+        a = &nodes.formulas[f.children.at(0)];
+      }
+      if (a->kind == ast::FormulaKind::Atom &&
+        !derived.count(std::string(w_.domain.symbols.name(a->name))))
+      {
+        out.push_back(id);
+      }
+    };
+  auto collect = [&](const std::vector<ast::Action> & list, auto & out) {
+      out.resize(list.size());
+      for (size_t i = 0; i < list.size(); ++i) {
+        if (list[i].precondition.valid()) {
+          atoms(list[i].precondition, out[i]);
+        }
+      }
+    };
+  collect(w_.domain.processes, process_atoms_);
+  collect(w_.domain.events, event_atoms_);
+}
+
+void Validator::refresh_live()
+{
+  if (live_version_ == atoms_version_) {
+    return;
+  }
+  live_version_ = atoms_version_;
+  auto mark = [&](const std::vector<Grounded> & gs, const auto & atoms, auto & live) {
+      live.assign(gs.size(), 1);
+      Evaluator::Ctx c{state_};
+      for (size_t i = 0; i < gs.size(); ++i) {
+        for (auto f : atoms[gs[i].index]) {
+          Bindings b = gs[i].bindings;
+          if (!w_.domain_eval.holds(f, c, b)) {
+            live[i] = 0;
+            break;
+          }
+        }
+      }
+    };
+  mark(processes_, process_atoms_, live_processes_);
+  mark(events_, event_atoms_, live_events_);
+}
+
+// Whether a process or event runs in `s`: a condition on an undefined value is false
+bool Validator::active(const ast::Action & a, const State & s, Bindings b)
+{
+  if (!a.precondition.valid()) {
+    return true;
+  }
+  Evaluator::Ctx c{s};
+  c.exact = true;
+  try {
+    return w_.domain_eval.holds(a.precondition, c, b);
+  } catch (const EvalError &) {
+    return false;
+  }
+}
+
+// The rate of change of each fluent in `s`: active processes and running durative actions
+void Validator::derivative(const State & s, std::unordered_map<Key, double, KeyHash> & out)
+{
+  out.clear();
+  std::vector<std::pair<Key, double>> contributions;
+  for (size_t i = 0; i < processes_.size(); ++i) {
+    const auto & g = processes_[i];
+    const auto & a = w_.domain.processes[g.index];
+    if (!live_processes_[i] || !active(a, s, g.bindings)) {
+      continue;
+    }
+    Evaluator::Ctx c{s};
+    Bindings b = g.bindings;
+    if (a.effect.valid()) {
+      w_.domain_eval.rates(a.effect, c, b, contributions);
+    }
+  }
+  for (size_t r : running_) {
+    StepInfo & st = steps_[r];
+    const auto & a = w_.domain.durative_actions[st.action];
+    if (!a.effect.valid()) {
+      continue;
+    }
+    Bindings b = st.bindings;
+    Evaluator::Ctx c{s, nullptr, Phase::Invariant, st.step->duration};
+    w_.domain_eval.rates(a.effect, c, b, contributions);
+  }
+  for (const auto & [k, rate] : contributions) {
+    out[k] += rate;
+  }
+}
+
+// One Runge-Kutta 4 step of length h from `from` (k1: its derivative)
+const State & Validator::patched(Scratch & s, const Numbers & values)
+{
+  if (s.version != atoms_version_) {
+    s.state.atoms = state_.atoms;
+    s.state.objects = state_.objects;
+    s.state.numbers = state_.numbers;
+    s.version = atoms_version_;
+  } else {
+    for (const auto & k : s.written) {
+      s.state.numbers[k] = state_.numbers.at(k);
+    }
+  }
+  s.written.clear();
+  for (const auto & [k, v] : values) {
+    s.state.numbers[k] = v;
+    s.written.push_back(k);
+  }
+  s.state.changed(true);
+  return s.state;
+}
+
+// The numbers changed as time passes, in state_ and in the copies
+void Validator::commit(const Numbers & values)
+{
+  for (Scratch * s : {&stage_, &probe_}) {
+    if (s->version == atoms_version_) {
+      for (const auto & [k, v] : values) {
+        s->state.numbers[k] = v;
+      }
+    }
+  }
+  for (const auto & [k, v] : values) {
+    state_.numbers[k] = v;
+  }
+  state_.changed(w_.axioms_read_fluents);
+}
+
+// One Runge-Kutta 4 step of length h from state_ (k1: its derivative): the numbers it changes
+void Validator::step_numbers(double h, const Numbers & k1, Numbers & to, const Numbers * over)
+{
+  // From state_, or state_ with `over` changed
+  auto value = [&](const Key & key) {
+      if (over) {
+        if (auto it = over->find(key); it != over->end()) {
+          return it->second;
+        }
+      }
+      return state_.numbers.at(key);
+    };
+  // A fluent without a value stays without one (as ENHSP): only the defined ones change
+  auto defined = [&](const Key & key) {return state_.numbers.count(key) > 0;};
+  Numbers mixed;
+  auto shifted = [&](const Numbers & k, double f) -> const State & {
+      mixed = over ? *over : Numbers{};
+      for (const auto & [key, rate] : k) {
+        if (defined(key)) {
+          mixed[key] = value(key) + f * rate;
+        }
+      }
+      return patched(stage_, mixed);
+    };
+  Numbers k2, k3, k4;
+  derivative(shifted(k1, h / 2), k2);
+  derivative(shifted(k2, h / 2), k3);
+  derivative(shifted(k3, h), k4);
+  to.clear();
+  auto rate = [](const Numbers & k, const Key & key) {
+      auto it = k.find(key);
+      return it == k.end() ? 0.0 : it->second;
+    };
+  std::unordered_set<Key, KeyHash> keys;
+  for (const Numbers * k : std::array<const Numbers *, 4>{&k1, &k2, &k3, &k4}) {
+    for (const auto & [key, r] : *k) {
+      keys.insert(key);
+    }
+  }
+  if (over) {
+    to = *over;
+  }
+  for (const auto & key : keys) {
+    if (defined(key)) {
+      to[key] = value(key) + h / 6.0 * (rate(k1, key) + 2.0 * rate(k2, key) +
+        2.0 * rate(k3, key) + rate(k4, key));
+    }
+  }
+}
+
+// What decides when something happens: process and event conditions, global constraints and
+// the over-all conditions of the running actions, true or false in `s`
+std::vector<uint8_t> Validator::watch(const State & s)
+{
+  std::vector<uint8_t> out;
+  auto holds = [&](const ast::Action & a, Bindings b) {return active(a, s, std::move(b));};
+  for (size_t i = 0; i < processes_.size(); ++i) {
+    const auto & g = processes_[i];
+    out.push_back(live_processes_[i] && holds(w_.domain.processes[g.index], g.bindings));
+  }
+  for (size_t i = 0; i < events_.size(); ++i) {
+    const auto & g = events_[i];
+    out.push_back(live_events_[i] && holds(w_.domain.events[g.index], g.bindings));
+  }
+  for (const auto & gc : w_.domain.global_constraints) {
+    bool all = true;
+    Bindings b;
+    w_.domain_eval.for_each_binding(gc.params, b, [&]() {
+        Evaluator::Ctx c{s};
+        all = all && w_.domain_eval.holds(gc.condition, c, b);
+        return all;
+      });
+    out.push_back(all);
+  }
+  for (size_t r : running_) {
+    StepInfo & st = steps_[r];
+    const auto & a = w_.domain.durative_actions[st.action];
+    Bindings b = st.bindings;
+    Evaluator::Ctx c{s, nullptr, Phase::Invariant, st.step->duration};
+    out.push_back(!a.condition.valid() || w_.domain_eval.holds(a.condition, c, b));
+  }
+  return out;
+}
+
+// Time passes from `from` to `to`: continuous change under the active processes and running
+// actions, stopping where some watched condition changes (an event fires, a process starts or
+// stops, a constraint breaks)
+void Validator::evolve(double from, double to)
+{
+  const double tol = w_.options.tolerance;
+  const double max_step = std::max(1e-6, w_.options.continuous_step);
+  double grow = max_step;
+  double t = from;
+  Numbers k1, next, probe;
+  size_t guard = 0;
+  // Conditions that keep flipping with almost no time between (friction around 0): from then on
+  // sampled at each step, not located
+  std::vector<uint8_t> flips, chattering;
+  int tiny = 0;
+  constexpr int kChatter = 8;
+  auto differ = [&](const std::vector<uint8_t> & a, const std::vector<uint8_t> & b) {
+      for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i] != b[i] && (i >= chattering.size() || !chattering[i])) {
+          return true;
+        }
+      }
+      return false;
+    };
+  try {
+    while (t < to - tol) {
+      refresh_live();
+      derivative(state_, k1);
+      if (k1.empty()) {
+        // Nothing changes until the next happening: nor do the conditions
+        break;
+      }
+      auto before = watch(state_);
+      // Steps that grow while two halves agree with one (polynomial changes of low degree are
+      // exact with any step) and shrink otherwise
+      double h = std::min(grow, to - t);
+      step_numbers(h, k1, next);
+      if (h > max_step) {
+        Numbers mid, twice, k_mid;
+        step_numbers(h / 2, k1, mid);
+        derivative(patched(probe_, mid), k_mid);
+        step_numbers(h / 2, k_mid, twice, &mid);
+        double err = 0.0;
+        for (const auto & [key, v] : twice) {
+          auto it = next.find(key);
+          double w = it == next.end() ? state_.numbers.at(key) : it->second;
+          err = std::max(err, std::fabs(v - w) / (1.0 + std::fabs(v)));
+        }
+        if (err > 1e-10) {
+          grow = std::max(max_step, grow / 4);
+          continue;
+        }
+        next.swap(twice);
+      }
+      if (differ(before, watch(patched(probe_, next)))) {
+        // Bisection on the length of the step: the first instant the conditions change
+        double lo = 0.0, hi = h;
+        for (int it = 0; it < 60 && hi - lo > tol * 1e-3; ++it) {
+          double mid = (lo + hi) / 2;
+          step_numbers(mid, k1, probe);
+          if (differ(before, watch(patched(probe_, probe)))) {
+            hi = mid;
+          } else {
+            lo = mid;
+          }
+        }
+        step_numbers(hi, k1, next);
+        if (hi < max_step * 0.01) {
+          auto now = watch(patched(probe_, next));
+          flips.resize(now.size(), 0);
+          for (size_t i = 0; i < now.size(); ++i) {
+            flips[i] |= now[i] != before[i];
+          }
+          if (++tiny >= kChatter) {
+            chattering = flips;
+          }
+        } else {
+          tiny = 0;
+          std::fill(flips.begin(), flips.end(), 0);
+        }
+        h = hi;
+      }
+      commit(next);
+      t += h;
+      state_.time = t;
+      grow = std::min(grow * 2, 100.0);
+      std::string when = "at " + std::to_string(t);
+      check_global_constraints(state_, when);
+      check_invariants(state_, when);
+      fire_events(t);
+      if (++guard > 50'000'000) {
+        fail("validate.evaluation", "continuous change takes too many steps", 0);
+      }
+    }
+  } catch (const EvalError & e) {
+    fail("validate.evaluation", "continuous change: " + e.message, 0);
+  }
+  state_.time = to;
+}
+
+// Events whose condition holds fire, at once, again while some does (bounded)
+void Validator::fire_events(double t)
+{
+  std::string fired;
+  for (int round = 0; round < 1000; ++round) {
+    std::vector<Changes> all;
+    fired.clear();
+    refresh_live();
+    for (size_t i = 0; i < events_.size(); ++i) {
+      if (!live_events_[i]) {
+        continue;
+      }
+      const auto & g = events_[i];
+      const auto & e = w_.domain.events[g.index];
+      Bindings b = g.bindings;
+      Evaluator::Ctx c{state_};
+      if (!active(e, state_, b)) {
+        continue;
+      }
+      try {
+        Changes ch;
+        if (e.effect.valid()) {
+          w_.domain_eval.effects(e.effect, c, b, true, ch);
+        }
+        all.push_back(std::move(ch));
+        if (fired.size() < 200) {
+          fired += (fired.empty() ? "" : ", ") + w_.domain_eval.name(e.name);
+          for (const auto & [var, obj] : g.bindings) {
+            fired += " " + w_.object_name(obj);
+          }
+        }
+      } catch (const EvalError & err) {
+        fail("validate.evaluation", "event " + w_.domain_eval.name(e.name) + ": " + err.message,
+          0);
+      }
+    }
+    if (all.empty()) {
+      return;
+    }
+    apply_changes(all, 0);
+  }
+  fail("validate.event_loop", "events keep firing at " + std::to_string(t) + " (" + fired +
+    "): an event must make its own condition false", 0);
+}
+
+void Validator::apply_changes(const std::vector<Changes> & all, uint32_t line)
+{
+  State before;
+  before.numbers = state_.numbers;
+  ++atoms_version_;
+  for (const auto & ch : all) {
+    for (const auto & k : ch.dels) {
+      state_.atoms.erase(k);
+    }
+  }
+  for (const auto & ch : all) {
+    for (const auto & k : ch.adds) {
+      state_.atoms.insert(k);
+    }
+  }
+  for (const auto & ch : all) {
+    for (const auto & n : ch.nums) {
+      auto old = before.numbers.find(n.key);
+      auto & slot = state_.numbers[n.key];
+      if (n.op != ast::AssignOp::Assign && old == before.numbers.end()) {
+        fail("validate.undefined_fluent", w_.key_text(n.key, false) +
+          " is changed but has no value", line);
+      }
+      switch (n.op) {
+        case ast::AssignOp::Assign: slot = n.value; break;
+        case ast::AssignOp::Increase: slot += n.value; break;
+        case ast::AssignOp::Decrease: slot -= n.value; break;
+        case ast::AssignOp::ScaleUp: slot *= n.value; break;
+        case ast::AssignOp::ScaleDown:
+          if (n.value == 0.0) {
+            fail("validate.evaluation", "scale-down by zero", line);
+          }
+          slot /= n.value;
+          break;
+      }
+    }
+    for (const auto & o : ch.objs) {
+      if (o.value) {
+        state_.objects[o.key] = *o.value;
+      } else {
+        state_.objects.erase(o.key);
+      }
+    }
+  }
+  state_.changed(true);
 }
 
 bool Validator::constraint(FormulaId id, Evaluator & ev, Bindings & b)

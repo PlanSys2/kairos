@@ -59,7 +59,7 @@ const char * kTimed =
 
 const char * kTimedProblem = "(define (problem x) (:domain timed) (:init (p)) (:goal (q)))\n";
 
-// PDDL+ (a process): not plannable until phase F5
+// PDDL+: a process fills, an action stops when full
 const char * kProcess =
   "(define (domain flow) (:requirements :fluents :time) (:predicates (on) (done))"
   " (:functions (level))"
@@ -68,6 +68,19 @@ const char * kProcess =
 
 const char * kProcessProblem =
   "(define (problem x) (:domain flow) (:init (on) (= (level) 0)) (:goal (done)))\n";
+
+// PDDL+ with a continuous effect that reads ?duration: not plannable yet (found when planning,
+// not from the features)
+const char * kProcessDurative =
+  "(define (domain mixed) (:requirements :fluents :time :durative-actions)"
+  " (:predicates (on) (done)) (:functions (level))"
+  " (:process fill :parameters () :precondition (on) :effect (increase (level) (* #t 2)))"
+  " (:durative-action stop :parameters () :duration (= ?duration 1)"
+  "  :condition (at start (>= (level) 10))"
+  "  :effect (and (at end (done)) (decrease (level) (* #t ?duration)))))\n";
+
+const char * kProcessDurativeProblem =
+  "(define (problem x) (:domain mixed) (:init (on) (= (level) 0)) (:goal (done)))\n";
 
 
 const char * kBroken = "(define (domain robots)\n (:predicates (at ?r)\n";
@@ -422,14 +435,24 @@ TEST_F(CliTest, GroundingStaysWithinTheMemoryLimit)
 
 TEST_F(CliTest, UnsupportedExitsThirteen)
 {
-  write("c.pddl", kProcess);
-  write("cp.pddl", kProcessProblem);
+  write("c.pddl", kProcessDurative);
+  write("cp.pddl", kProcessDurativeProblem);
   Outcome r = run("'" + path("c.pddl") + "' '" + path("cp.pddl") + "'");
   EXPECT_EQ(r.code, 13);
   EXPECT_TRUE(contains(r.err, "unsupported"));
   write("t.pddl", kTimed);
   write("tp.pddl", kTimedProblem);
   EXPECT_EQ(run("'" + path("t.pddl") + "' '" + path("tp.pddl") + "' --engine m1").code, 13);
+}
+
+TEST_F(CliTest, PddlPlusPlansEndWithPlanEnd)
+{
+  write("f.pddl", kProcess);
+  write("fp.pddl", kProcessProblem);
+  Outcome r = run("'" + path("f.pddl") + "' '" + path("fp.pddl") + "' --no-anytime");
+  EXPECT_EQ(r.code, 0) << r.err;
+  EXPECT_TRUE(contains(r.out, "5.000: (stop)")) << r.out;
+  EXPECT_TRUE(contains(r.out, "5.000: @PlanEND")) << r.out;
 }
 
 TEST_F(CliTest, InvalidInputExitsTwo)
@@ -487,7 +510,6 @@ TEST_F(CliTest, FeaturesTableAndJson)
   EXPECT_TRUE(contains(t.out, "kairos " + std::string(kairos::version())));
   EXPECT_TRUE(contains(t.out, "durative-actions"));
   EXPECT_TRUE(contains(t.out, "processes"));
-  EXPECT_TRUE(contains(t.out, " none "));
   EXPECT_TRUE(contains(t.out, " partial "));
   for (size_t at = 0; (at = t.out.find(" \n", at)) != std::string::npos; ++at) {
     ADD_FAILURE() << "a line ends with blanks";
@@ -496,7 +518,7 @@ TEST_F(CliTest, FeaturesTableAndJson)
   EXPECT_EQ(j.code, 0);
   EXPECT_EQ(j.out.rfind("{\"version\": ", 0), 0u) << j.out;
   EXPECT_TRUE(contains(j.out, "{\"feature\": \"processes\", \"requirements\": [\":time\"], "
-    "\"support\": \"none\""));
+    "\"support\": \"partial\""));
   // One entry per feature in both
   size_t rows = 0;
   for (size_t at = 0; (at = j.out.find("\"feature\": ", at)) != std::string::npos; ++at) {
@@ -729,8 +751,7 @@ TEST_F(CliTest, CheckVariants)
   write("c.pddl", kProcess);
   Outcome c = run("check '" + path("c.pddl") + "'");
   EXPECT_EQ(c.code, 0);
-  EXPECT_TRUE(contains(c.err, "warning"));
-  EXPECT_TRUE(contains(c.err, "valid, not plannable yet"));
+  EXPECT_TRUE(contains(c.err, "valid, plannable"));
 
   write("broken.pddl", kBroken);
   Outcome b = run("check '" + path("broken.pddl") + "'");

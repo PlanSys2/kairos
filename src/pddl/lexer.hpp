@@ -63,6 +63,7 @@ struct Token
   uint32_t column = 0;
   double number = 0.0;           // value of a Number token
   LexError error = LexError::None;
+  bool joined = false;           // "? x" read as "?x" (SMTPlan's benchmarks): text kept apart
 };
 
 /**
@@ -74,7 +75,8 @@ struct Token
  *
  * Lenient on purpose, because real domains do these things: names may start with a digit or
  * contain '.', '@' and '_'; a UTF-8 BOM at the start is skipped; "\r\n" and a lone "\r" end
- * lines. Bad input never throws: it yields Error tokens.
+ * lines; "? x" is the variable "?x" (marked `joined`). Bad input never throws: it yields Error
+ * tokens.
  */
 class Lexer
 {

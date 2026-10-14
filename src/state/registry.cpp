@@ -108,6 +108,17 @@ std::vector<uint8_t> unread_numbers(const sas::Task & t)
     effects(ev.effects);
   }
   cond(t.goal);
+  cond(t.always);
+  effects(t.clock_rates);
+  for (const auto & r : t.clock_rates) {
+    read[r.num] = 1;  // what time changes tells states apart (the time itself, for the plan)
+  }
+  for (const auto & d : t.clock_deadlines) {
+    read[d.clock] = 1;
+    if (d.bound) {
+      read[*d.bound] = 1;
+    }
+  }
   std::vector<uint8_t> unread(read.size());
   for (size_t v = 0; v < read.size(); ++v) {
     unread[v] = !read[v];

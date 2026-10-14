@@ -19,6 +19,7 @@
 #define KAIROS__SAS__TASK_HPP_
 
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <string>
 #include <utility>
@@ -188,6 +189,28 @@ struct TimedEvent
   std::vector<Effect> effects;
 };
 
+/// @brief PDDL+: while `when` holds, time passing stops where `clock` reaches the bound (a
+/// numeric variable, or `at`): hard, it may not pass it; soft, it only stops there once.
+struct ClockDeadline
+{
+  Fact when;
+  NumVarId clock = 0;
+  std::optional<NumVarId> bound;
+  double at = 0.0;
+  bool hard = true;
+};
+
+/// @brief Swapping objects a and b maps the task to itself (sas/symmetry.hpp): the facts and
+/// numeric variables it moves (each pair once) and the image of each action.
+struct Symmetry
+{
+  ObjectId a;
+  ObjectId b;
+  std::vector<std::pair<Fact, Fact>> facts;
+  std::vector<std::pair<NumVarId, NumVarId>> numbers;
+  std::vector<uint32_t> image;  // per action
+};
+
 struct Metric
 {
   bool minimize = true;
@@ -226,6 +249,20 @@ struct Task
   std::vector<TimedEvent> timed_events;
 
   Condition goal;
+  Condition always;  // global constraints: hold in every state
+  uint32_t clock = UINT32_MAX;  // PDDL+: the action that lets time pass, if any
+  uint32_t long_clock = UINT32_MAX;  // and the one that lets it pass until something changes
+  uint32_t epsilon_clock = UINT32_MAX;  // and the one that lets clock_epsilon pass (happenings
+  double clock_epsilon = 0.0;           // that interfere must be that far apart)
+  double clock_delta = 0.0;     // how long the first lets pass (the step of the second)
+  std::vector<NumericCondition> clock_watch;  // what the second watches
+  bool short_only_at_change = false;  // the first only to cross a change of clock_watch
+  // Of two actions a symmetry maps to each other in a state it leaves the same, only the first
+  // is applicable (sas/symmetry.hpp)
+  std::vector<Symmetry> symmetries;
+  std::vector<Effect> clock_rates;  // the rate of each process effect, integrated by the clock
+  uint32_t first_event = UINT32_MAX;  // PDDL+: actions from here on are events (forced)
+  std::vector<ClockDeadline> clock_deadlines;  // PDDL+: ends of durative actions, timed literals
   bool goal_unreachable = false;
   Metric metric;
 

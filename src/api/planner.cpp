@@ -28,6 +28,7 @@
 
 #include "core/logger.hpp"
 #include "orchestrator/orchestrator.hpp"
+#include "pddl/dialect.hpp"
 #include "pddl/parser.hpp"
 #include "semantic/analyzer.hpp"
 #include "validate/validator.hpp"
@@ -107,6 +108,7 @@ Result<Domain> parse_domain(std::string_view text, std::string_view filename)
     return Result<Domain>::failure(std::move(diagnostics));
   }
   impl->ast = std::move(parsed).value();
+  append(diagnostics, pddl::repair_domain(impl->ast));
   auto model = sem::analyze_domain(impl->ast);
   append(diagnostics, model.take_diagnostics());
   if (!model.ok()) {
@@ -130,6 +132,7 @@ Result<Problem> parse_problem(
     return Result<Problem>::failure(std::move(diagnostics));
   }
   impl->ast = std::move(parsed).value();
+  append(diagnostics, pddl::repair_problem(impl->ast, domain.impl().ast));
   auto model = sem::analyze_problem(impl->ast, domain.impl().ast, domain.impl().model);
   append(diagnostics, model.take_diagnostics());
   if (!model.ok()) {

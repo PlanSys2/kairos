@@ -101,7 +101,7 @@ const char * kDurative =
   " (:durative-action a :parameters () :duration (= ?duration 1)\n"
   "  :condition (at start (p)) :effect (at end (q))))\n";
 
-// PDDL+ (a process): not plannable until phase F5
+// PDDL+: a process fills, an action stops when full
 const char * kProcess =
   "(define (domain flow) (:requirements :fluents :time) (:predicates (on) (done))"
   " (:functions (level))"
@@ -110,6 +110,19 @@ const char * kProcess =
 
 const char * kProcessProblem =
   "(define (problem x) (:domain flow) (:init (on) (= (level) 0)) (:goal (done)))\n";
+
+// PDDL+ with a continuous effect that reads ?duration: not plannable yet (found when planning,
+// not from the features)
+const char * kProcessDurative =
+  "(define (domain mixed) (:requirements :fluents :time :durative-actions)"
+  " (:predicates (on) (done)) (:functions (level))"
+  " (:process fill :parameters () :precondition (on) :effect (increase (level) (* #t 2)))"
+  " (:durative-action stop :parameters () :duration (= ?duration 1)"
+  "  :condition (at start (>= (level) 10))"
+  "  :effect (and (at end (done)) (decrease (level) (* #t ?duration)))))\n";
+
+const char * kProcessDurativeProblem =
+  "(define (problem x) (:domain mixed) (:init (on) (= (level) 0)) (:goal (done)))\n";
 
 const char * kDurativeProblem =
   "(define (problem x) (:domain timed) (:init (p)) (:goal (q)))";
@@ -256,8 +269,8 @@ TEST(PlannerApiTest, ChecksProblemsAgainstAParsedDomain)
   ASSERT_TRUE(flow.ok());
   CheckReport t = check_problem(kProcessProblem, *flow);
   EXPECT_TRUE(t.valid);
-  EXPECT_FALSE(t.plannable);
-  EXPECT_TRUE(has_code(t.diagnostics, "unsupported."));
+  EXPECT_TRUE(t.plannable);
+  EXPECT_FALSE(has_code(t.diagnostics, "unsupported."));
 }
 
 // --- solve() ----------------------------------------------------------------------------------
@@ -471,10 +484,234 @@ TEST(PlannerApiTest, ExplanationsStayShort)
 
 TEST(PlannerApiTest, UnsupportedFeaturesAreReported)
 {
-  Problem p = problem(kProcess, kProcessProblem);
+  Problem p = problem(kProcessDurative, kProcessDurativeProblem);
   SolveResult r = Planner().solve(p, quick());
   EXPECT_EQ(r.status, Status::Unsupported);
   EXPECT_TRUE(has_code(r.diagnostics, "unsupported."));
+}
+
+TEST(PlannerApiTest, PlansWithProcesses)
+{
+  // The level reaches 10 at 5 s: the plan waits until then, stops, and ends there
+  Problem p = problem(kProcess, kProcessProblem);
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_TRUE(r.plan);
+  ASSERT_EQ(r.plan->steps.size(), 1u);
+  EXPECT_EQ(r.plan->steps[0].name, "stop");
+  EXPECT_NEAR(r.plan->steps[0].time, 5.0, 1e-6);
+  ASSERT_TRUE(r.plan->end);
+  EXPECT_NEAR(*r.plan->end, 5.0, 1e-6);
+  EXPECT_NEAR(r.plan->makespan(), 5.0, 1e-6);
+}
+
+TEST(PlannerApiTest, PddlPlusEventsFireOnTheirOwn)
+{
+  // The overflow at level 10 (5 s) floods, and the siren follows at once: no action does it
+  const char * domain =
+    "(define (domain tank) (:requirements :fluents :time :negative-preconditions)"
+    " (:predicates (open) (flooded) (alarm)) (:functions (level))"
+    " (:process filling :parameters () :precondition (open)"
+    "  :effect (increase (level) (* #t 2)))"
+    " (:event overflow :parameters () :precondition (and (>= (level) 10) (not (flooded)))"
+    "  :effect (flooded))"
+    " (:event siren :parameters () :precondition (and (flooded) (not (alarm))) :effect (alarm))"
+    " (:action open-valve :parameters () :precondition (not (open)) :effect (open)))";
+  Problem p = problem(domain,
+      "(define (problem q) (:domain tank) (:init (= (level) 0)) (:goal (alarm)))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_EQ(r.plan->steps.size(), 1u);
+  EXPECT_EQ(r.plan->steps[0].name, "open-valve");
+  ASSERT_TRUE(r.plan->end);
+  EXPECT_NEAR(*r.plan->end, 5.0, 1e-6);
+}
+
+TEST(PlannerApiTest, PddlPlusPlansKeepTheGlobalConstraints)
+{
+  // At most 2 m/s: the car must stop accelerating in time, and still cover 10 m and stop
+  const char * domain =
+    "(define (domain car) (:requirements :fluents :time :negative-preconditions)"
+    " (:predicates (running) (stopped)) (:functions (d) (v) (a))"
+    " (:constraint limit :parameters () :condition (<= (v) 2))"
+    " (:process move :parameters () :precondition (running)"
+    "  :effect (and (increase (d) (* #t (v))) (increase (v) (* #t (a)))))"
+    " (:action accelerate :parameters () :precondition (and (running) (< (a) 1))"
+    "  :effect (increase (a) 1))"
+    " (:action decelerate :parameters () :precondition (and (running) (> (a) -1))"
+    "  :effect (decrease (a) 1))"
+    " (:action stop :parameters () :precondition (and (running) (< (v) 0.1) (> (v) -0.1)"
+    "  (= (a) 0)) :effect (and (not (running)) (stopped) (assign (v) 0))))";
+  Problem p = problem(domain,
+      "(define (problem q) (:domain car) (:init (running) (= (d) 0) (= (v) 0) (= (a) 0))"
+      " (:goal (and (stopped) (>= (d) 10))))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);  // solve validates: v never above 2
+  EXPECT_GT(r.plan->makespan(), 5.0);  // 10 m at no more than 2 m/s
+}
+
+TEST(PlannerApiTest, PddlPlusIntegratesNonLinearDynamics)
+{
+  // Heating towards 30 degrees, faster the further: 20 -> 29 takes ln(10) / 0.5 = 4.6 s. Euler
+  // steps of 0.1 s would say 4.5 s (too early: the continuous check rejects it)
+  const char * domain =
+    "(define (domain room) (:requirements :fluents :time) (:predicates (heating) (warm))"
+    " (:functions (temp))"
+    " (:process heat :parameters () :precondition (heating)"
+    "  :effect (increase (temp) (* #t (* 0.5 (- 30 (temp))))))"
+    " (:action on :parameters () :precondition () :effect (heating))"
+    " (:action done :parameters () :precondition (>= (temp) 29) :effect (warm)))";
+  Problem p = problem(domain,
+      "(define (problem q) (:domain room) (:init (= (temp) 20)) (:goal (warm)))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_EQ(r.plan->steps.size(), 2u);
+  EXPECT_NEAR(r.plan->steps[1].time, 4.7, 1e-6);  // the first step of 0.1 s past 4.605 s
+}
+
+TEST(PlannerApiTest, PddlPlusFluentsWithoutValueWaitForOne)
+{
+  // (clock) is increased by a process from the start, but has no value until reset
+  const char * domain =
+    "(define (domain timer) (:requirements :fluents :time) (:predicates (rang))"
+    " (:functions (clock))"
+    " (:process tick :parameters () :precondition () :effect (increase (clock) (* #t 1)))"
+    " (:action reset :parameters () :precondition () :effect (assign (clock) 0))"
+    " (:action ring :parameters () :precondition (>= (clock) 1) :effect (rang)))";
+  Problem p = problem(domain,
+      "(define (problem q) (:domain timer) (:init) (:goal (rang)))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_EQ(r.plan->steps.size(), 2u);
+  EXPECT_EQ(r.plan->steps[0].name, "reset");
+  EXPECT_NEAR(r.plan->steps[1].time - r.plan->steps[0].time, 1.0, 1e-6);
+}
+
+TEST(PlannerApiTest, PddlPlusWithDurativeActions)
+{
+  // The tank fills at 2 per second; closing takes 1 s and needs 10: from 5 s to 6 s
+  Problem p = problem(
+    "(define (domain mixed) (:requirements :fluents :time :durative-actions)"
+    " (:predicates (on) (done)) (:functions (level))"
+    " (:process fill :parameters () :precondition (on) :effect (increase (level) (* #t 2)))"
+    " (:durative-action close :parameters () :duration (= ?duration 1)"
+    "  :condition (at start (>= (level) 10)) :effect (and (at start (not (on))) (at end (done)))))",
+    "(define (problem x) (:domain mixed) (:init (on) (= (level) 0)) (:goal (done)))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_EQ(r.plan->steps.size(), 1u);
+  EXPECT_NEAR(r.plan->steps[0].time, 5.0, 1e-6);
+  EXPECT_NEAR(r.plan->steps[0].duration, 1.0, 1e-6);
+  EXPECT_NEAR(r.plan->makespan(), 6.0, 1e-6);
+}
+
+TEST(PlannerApiTest, PddlPlusDurativeActionsWithContinuousEffectsAndBounds)
+{
+  // Pumping adds 1 per second, for 2 to 4 s: 3 needs 3 s. The over all condition (the valve
+  // open) holds throughout
+  Problem p = problem(
+    "(define (domain pump) (:requirements :fluents :time :durative-actions"
+    " :duration-inequalities) (:predicates (valve) (watching)) (:functions (level) (t))"
+    " (:process clock :parameters () :precondition (watching) :effect (increase (t) (* #t 1)))"
+    " (:durative-action pump :parameters () :duration (and (>= ?duration 2) (<= ?duration 4))"
+    "  :condition (over all (valve)) :effect (increase (level) (* #t 1))))",
+    "(define (problem x) (:domain pump) (:init (valve) (watching) (= (level) 0) (= (t) 0))"
+    " (:goal (>= (level) 3)))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_EQ(r.plan->steps.size(), 1u);
+  EXPECT_GE(r.plan->steps[0].duration, 3.0 - 1e-6);
+  EXPECT_LE(r.plan->steps[0].duration, 4.0 + 1e-6);
+}
+
+// SMTPlan's linear generator: it runs for 1000 s, burning 1 per second; each tank refuels it at
+// 2 per second for 10 s
+std::string generator_domain()
+{
+  return "(define (domain gen) (:requirements :fluents :durative-actions :typing)"
+         " (:types generator tank)"
+         " (:predicates (ran) (available ?t - tank) (refueling ?g - generator))"
+         " (:functions (fuel ?g - generator) (capacity ?g - generator))"
+         " (:durative-action generate :parameters (?g - generator) :duration (= ?duration 1000)"
+         "  :condition (over all (>= (fuel ?g) 0))"
+         "  :effect (and (decrease (fuel ?g) (* #t 1)) (at end (ran))))"
+         " (:durative-action refuel :parameters (?g - generator ?t - tank)"
+         "  :duration (= ?duration 10)"
+         "  :condition (and (at start (available ?t)) (over all (< (fuel ?g) (capacity ?g))))"
+         "  :effect (and (at start (refueling ?g)) (increase (fuel ?g) (* #t 2))"
+         "   (at start (not (available ?t))) (at end (not (refueling ?g))))))";
+}
+
+std::string generator_problem(int tanks, int fuel)
+{
+  std::string objects, init;
+  for (int i = 1; i <= tanks; ++i) {
+    objects += " t" + std::to_string(i);
+    init += " (available t" + std::to_string(i) + ")";
+  }
+  return "(define (problem p) (:domain gen) (:objects g - generator" + objects + " - tank)"
+         " (:init (= (fuel g) " + std::to_string(fuel) + ") (= (capacity g) 1000)" + init + ")"
+         " (:goal (ran)))";
+}
+
+TEST(PlannerApiTest, PddlPlusSymmetricObjectsAreTriedInOneOrder)
+{
+  // Eight tanks the task does not tell apart, four refuels needed (950 + 4 * 20 - 1000 > 0):
+  // one order of the tanks, not 8 * 7 * 6 * 5. The plan is found at once and is valid
+  Problem p = problem(generator_domain(), generator_problem(8, 950));
+  auto start = std::chrono::steady_clock::now();
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+  int refuels = 0;
+  for (const auto & s : r.plan->steps) {
+    refuels += s.name == "refuel";
+  }
+  EXPECT_GE(refuels, 3);
+}
+
+TEST(PlannerApiTest, PddlPlusObjectsThatDifferAreNotSymmetric)
+{
+  // One tank was already used: the others are interchangeable, not that one
+  std::string prob = generator_problem(3, 980);
+  prob.replace(prob.find(" (available t1)"), std::string(" (available t1)").size(), "");
+  Problem p = problem(generator_domain(), prob);
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_TRUE(validate(p, *r.plan).valid());
+  for (const auto & s : r.plan->steps) {
+    if (s.name == "refuel") {
+      EXPECT_NE(s.args.at(1), "t1");
+    }
+  }
+}
+
+TEST(PlannerApiTest, PddlPlusWithTimedInitialLiterals)
+{
+  // The gate opens at 3; the level (1 per second) must reach 3.5 too: through at 3.5
+  Problem p = problem(
+    "(define (domain gate) (:requirements :fluents :time :timed-initial-literals)"
+    " (:predicates (gate) (through) (on)) (:functions (level))"
+    " (:process fill :parameters () :precondition (on) :effect (increase (level) (* #t 1)))"
+    " (:action pass :parameters () :precondition (and (gate) (>= (level) 3.5))"
+    "  :effect (through)))",
+    "(define (problem x) (:domain gate) (:init (on) (= (level) 0) (at 3 (gate)))"
+    " (:goal (through)))");
+  SolveResult r = Planner().solve(p, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_EQ(r.plan->steps.size(), 1u);
+  EXPECT_NEAR(r.plan->steps[0].time, 3.5, 1e-6);
+  // Before the gate opens: unsolvable at 2 (the literal at 3 comes too late)
+  Problem late = problem(
+    "(define (domain gate) (:requirements :fluents :time :timed-initial-literals)"
+    " (:predicates (gate) (through) (on) (closed)) (:functions (level))"
+    " (:process fill :parameters () :precondition (on) :effect (increase (level) (* #t 1)))"
+    " (:action pass :parameters () :precondition (and (gate) (not (closed)))"
+    "  :effect (through)))",
+    "(define (problem x) (:domain gate) (:init (on) (= (level) 0) (at 3 (gate))"
+    " (at 2 (closed))) (:goal (through)))");
+  EXPECT_NE(Planner().solve(late, quick()).status, Status::Solved);
 }
 
 // --- Temporal planning (engine M2) -----------------------------------------------------------
@@ -1804,18 +2041,68 @@ TEST(PlannerApiTest, TimedLiteralsAtTheSameInstant)
   }
 }
 
-TEST(PlannerApiTest, AlwaysWithinInTemporalPlansIsNotPlannedYet)
+TEST(PlannerApiTest, PreferencesAnywhereInPreconditionsCountTheirViolations)
 {
+  // Under a forall: one violation per dirty cell when go happens (2); five at the top of a
+  // precondition (more than the copies compiled): those that do not hold (p2 and p4)
   Problem p = problem(
-    "(define (domain t) (:requirements :durative-actions :constraints)"
-    " (:predicates (a) (b))"
-    " (:durative-action go :parameters () :duration (= ?duration 2)"
-    "  :condition (and) :effect (and (at end (a)) (at end (b)))))",
-    "(define (problem p) (:domain t) (:goal (a)) (:constraints (always-within 3 (a) (b))))");
+    "(define (domain c) (:requirements :preferences :typing :quantified-preconditions)"
+    " (:types cell) (:predicates (dirty ?c - cell) (done) (q1) (q2) (q3) (q4) (q5) (ready))"
+    " (:action go :parameters ()"
+    "  :precondition (forall (?c - cell) (preference clean (not (dirty ?c))))"
+    "  :effect (ready))"
+    " (:action finish :parameters ()"
+    "  :precondition (and (ready) (preference p1 (q1)) (preference p2 (q2))"
+    "   (preference p3 (q3)) (preference p4 (q4)) (preference p5 (q5)))"
+    "  :effect (done)))",
+    "(define (problem x) (:domain c) (:objects a b k - cell)"
+    " (:init (dirty a) (dirty b) (q1) (q3) (q5)) (:goal (done))"
+    " (:metric minimize (+ (* 10 (is-violated clean)) (is-violated p1) (* 2 (is-violated p2))"
+    "  (is-violated p3) (* 3 (is-violated p4)) (is-violated p5))))");
   SolveResult r = Planner().solve(p, quick());
-  EXPECT_EQ(r.status, Status::Unsupported);
-  ASSERT_FALSE(r.diagnostics.empty());
-  EXPECT_EQ(r.diagnostics[0].code, "unsupported.timed_constraints");
+  ASSERT_EQ(r.status, Status::Solved);
+  ASSERT_TRUE(r.plan->cost);
+  EXPECT_NEAR(*r.plan->cost, 10 * 2 + 2 + 3, 1e-9);
+  auto v = validate(p, *r.plan);
+  ASSERT_TRUE(v.valid());
+  ASSERT_TRUE(v.metric);
+  EXPECT_NEAR(*v.metric, *r.plan->cost, 1e-9);
+}
+
+TEST(PlannerApiTest, AlwaysWithinInTemporalPlans)
+{
+  // Holding from the end of pick (1 s); delivered at the end of deliver: within 3 s if it takes
+  // 2, not if it takes 5
+  auto domain = [](int deliver) {
+      return "(define (domain t) (:requirements :durative-actions :constraints)"
+             " (:predicates (holding) (delivered))"
+             " (:durative-action pick :parameters () :duration (= ?duration 1)"
+             "  :condition (and) :effect (at end (holding)))"
+             " (:durative-action deliver :parameters () :duration (= ?duration " +
+             std::to_string(deliver) + ")"
+             "  :condition (at start (holding))"
+             "  :effect (and (at end (delivered)) (at end (not (holding))))))";
+    };
+  const char * hard = "(define (problem p) (:domain t) (:goal (delivered))"
+    " (:constraints (always-within 3 (holding) (delivered))))";
+  Problem fast = problem(domain(2), hard);
+  SolveResult r = Planner().solve(fast, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_TRUE(validate(fast, *r.plan).valid());
+  // Deliver after pick, early enough: holding at most 3 s
+  EXPECT_GE(r.plan->makespan(), 3.0 - 1e-6);
+  EXPECT_LE(r.plan->makespan(), 4.0 + 1e-6);
+  Problem slow = problem(domain(5), hard);
+  EXPECT_NE(Planner().solve(slow, quick()).status, Status::Solved);
+  // As a preference: planned, and paid for
+  Problem soft = problem(domain(5),
+      "(define (problem p) (:domain t) (:goal (delivered))"
+      " (:constraints (preference fast (always-within 3 (holding) (delivered))))"
+      " (:metric minimize (* 10 (is-violated fast))))");
+  SolveResult s = Planner().solve(soft, quick());
+  ASSERT_EQ(s.status, Status::Solved);
+  ASSERT_TRUE(s.plan->cost);
+  EXPECT_NEAR(*s.plan->cost, 10.0, 1e-6);
 }
 
 TEST(PlannerApiTest, RequiredConcurrencyThenActionsThatNeedItsResult)

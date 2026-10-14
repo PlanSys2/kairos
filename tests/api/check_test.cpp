@@ -59,7 +59,7 @@ TEST(CheckApiTest, ValidDomain)
   EXPECT_TRUE(has(r.features, "typing"));
 }
 
-// PDDL+ (a process): not plannable until phase F5
+// PDDL+: a process fills, an action stops when full
 const char * kProcess =
   "(define (domain flow) (:requirements :fluents :time) (:predicates (on) (done))"
   " (:functions (level))"
@@ -69,20 +69,17 @@ const char * kProcess =
 const char * kProcessProblem =
   "(define (problem x) (:domain flow) (:init (on) (= (level) 0)) (:goal (done)))\n";
 
-TEST(CheckApiTest, NotPlannableYet)
+TEST(CheckApiTest, ProcessesArePlannable)
 {
-  // Correct PDDL Kairos cannot plan with yet: warnings, not errors
   CheckReport r = check_domain(kProcess);
   EXPECT_TRUE(r.valid);
-  EXPECT_FALSE(r.plannable);
-  ASSERT_FALSE(r.diagnostics.empty());
+  EXPECT_TRUE(r.plannable);
   for (const auto & d : r.diagnostics) {
-    EXPECT_EQ(d.severity, Severity::Warning) << d.message;
+    EXPECT_NE(d.code.rfind("unsupported.", 0), 0u) << d.message;
   }
-  EXPECT_EQ(r.diagnostics[0].code, "unsupported.processes");
   CheckReport p = check_problem(kProcessProblem, kProcess, "problem.pddl");
   EXPECT_TRUE(p.valid);
-  EXPECT_FALSE(p.plannable);
+  EXPECT_TRUE(p.plannable);
 }
 
 TEST(CheckApiTest, ClassicalDomainIsPlannable)
@@ -131,19 +128,21 @@ TEST(CheckApiTest, SupportOfEveryFeature)
     };
   EXPECT_EQ(level("durative-actions"), SupportLevel::Full);
   EXPECT_EQ(level("continuous-effects"), SupportLevel::Partial);
-  EXPECT_EQ(level("processes"), SupportLevel::None);
-  EXPECT_EQ(level("preferences"), SupportLevel::Partial);
+  EXPECT_EQ(level("processes"), SupportLevel::Partial);
+  EXPECT_EQ(level("events"), SupportLevel::Partial);
+  EXPECT_EQ(level("global-constraints"), SupportLevel::Full);
+  EXPECT_EQ(level("preferences"), SupportLevel::Full);
   EXPECT_EQ(level("trajectory-constraints"), SupportLevel::Partial);
   EXPECT_EQ(to_string(SupportLevel::Partial), "partial");
 }
 
 TEST(CheckApiTest, TheReportGivesTheSupportOfWhatTheDomainUses)
 {
-  // A process: none, and that is what makes it not plannable
+  // A process: partial
   CheckReport r = check_domain(kProcess);
   bool process = false;
   for (const auto & f : r.support) {
-    process = process || (f.feature == "processes" && f.level == SupportLevel::None);
+    process = process || (f.feature == "processes" && f.level == SupportLevel::Partial);
     // Only features it uses
     EXPECT_NE(std::find(r.features.begin(), r.features.end(), f.feature), r.features.end());
   }

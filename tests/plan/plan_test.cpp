@@ -71,9 +71,9 @@ TEST(PlanTest, Makespan)
 {
   Plan empty;
   EXPECT_EQ(empty.makespan(), 0.0);
-  Plan temporal{{step(0, 5, "a", {}), step(1, 10, "b", {}), step(5.001, 2, "c", {})}, true, {}};
+  Plan temporal{{step(0, 5, "a", {}), step(1, 10, "b", {}), step(5.001, 2, "c", {})}, true, {}, {}};
   EXPECT_DOUBLE_EQ(temporal.makespan(), 11.0);  // not the start of the last step
-  Plan sequential{{step(0, 0, "a", {}), step(1, 0, "b", {})}, false, {}};
+  Plan sequential{{step(0, 0, "a", {}), step(1, 0, "b", {})}, false, {}, {}};
   EXPECT_EQ(sequential.makespan(), 2.0);
 }
 
@@ -232,7 +232,7 @@ TEST(PlanReadTest, SeveralErrorsAreReported)
 Plan sample_temporal()
 {
   return Plan{{step(0, 5, "move", {"r1", "kitchen", "hall"}),
-    step(5.001, 2, "pick", {"r1", "cup", "hall"})}, true, 7.001};
+    step(5.001, 2, "pick", {"r1", "cup", "hall"})}, true, 7.001, {}};
 }
 
 TEST(PlanWriteTest, IpcTemporal)
@@ -246,17 +246,17 @@ TEST(PlanWriteTest, IpcTemporal)
 
 TEST(PlanWriteTest, IpcSequential)
 {
-  Plan p{{step(0, 0, "pick-up", {"a"}), step(1, 0, "stack", {"a", "b"})}, false, 2.0};
+  Plan p{{step(0, 0, "pick-up", {"a"}), step(1, 0, "stack", {"a", "b"})}, false, 2.0, {}};
   EXPECT_EQ(to_string(p, PlanFormat::Ipc), "; cost = 2\n(pick-up a)\n(stack a b)\n");
 }
 
 TEST(PlanWriteTest, Precision)
 {
-  Plan p{{step(1.23456789, 2, "a", {})}, true, {}};
+  Plan p{{step(1.23456789, 2, "a", {})}, true, {}, {}};
   EXPECT_EQ(to_string(p, PlanFormat::Ipc, 0), "; makespan = 3\n1: (a) [2]\n");
   EXPECT_EQ(to_string(p, PlanFormat::Ipc, 5), "; makespan = 3.23457\n1.23457: (a) [2.00000]\n");
   // Tiny negative values from arithmetic do not print as -0.000
-  Plan tiny{{step(-1e-12, 1, "a", {})}, true, {}};
+  Plan tiny{{step(-1e-12, 1, "a", {})}, true, {}, {}};
   EXPECT_EQ(to_string(tiny, PlanFormat::Ipc).find("-0"), std::string::npos);
 }
 
@@ -271,7 +271,7 @@ TEST(PlanWriteTest, PopfFormatIsWhatThePlanSys2PluginParses)
   // The plugin breaks on blank lines (line.front() on an empty string)
   EXPECT_EQ(text.find("\n\n"), std::string::npos);
   // Sequential plans get one time unit per step
-  Plan seq{{step(0, 0, "a", {}), step(1, 0, "b", {})}, false, {}};
+  Plan seq{{step(0, 0, "a", {}), step(1, 0, "b", {})}, false, {}, {}};
   EXPECT_EQ(to_string(seq, PlanFormat::Popf),
     ";;;; Solution Found\n0.000: (a)  [0.000]\n1.000: (b)  [0.000]\n");
 }
@@ -369,6 +369,33 @@ TEST(PlanPropertyTest, MutatedPlansKeepTheRoundTripInvariant)
     }
   }
   EXPECT_GT(parsed, 100);
+}
+
+TEST(PlanReadTest, PlanEndOfPddlPlusPlans)
+{
+  // ENHSP: instantaneous steps, then the instant the plan ends (time passes meanwhile)
+  auto r = parse_plan("0: (start_car)\n0: (accelerate)\n0.1: (decelerate)\n295.2: @PlanEND\n");
+  ASSERT_TRUE(r.ok());
+  EXPECT_TRUE(r->temporal);
+  ASSERT_EQ(r->steps.size(), 3u);
+  ASSERT_TRUE(r->end.has_value());
+  EXPECT_DOUBLE_EQ(*r->end, 295.2);
+  EXPECT_DOUBLE_EQ(r->makespan(), 295.2);
+  // Written back and read again
+  std::string text = to_string(*r, PlanFormat::Ipc);
+  EXPECT_NE(text.find("295.200: @PlanEND"), std::string::npos) << text;
+  auto again = parse_plan(text);
+  ASSERT_TRUE(again.ok());
+  EXPECT_EQ(again->end, r->end);
+  EXPECT_NE(to_string(*r, PlanFormat::Json).find("\"end\":295.2"), std::string::npos);
+  // Only the marker: an empty plan that waits
+  auto wait = parse_plan("12.5: @PlanEND\n");
+  ASSERT_TRUE(wait.ok());
+  EXPECT_TRUE(wait->steps.empty());
+  EXPECT_DOUBLE_EQ(wait->makespan(), 12.5);
+  // Anything else after '@' is an error
+  EXPECT_FALSE(parse_plan("1: @Planned\n").ok());
+  EXPECT_FALSE(parse_plan("1: @PlanEND extra\n").ok());
 }
 
 TEST(PlanReadTest, LargePlan)

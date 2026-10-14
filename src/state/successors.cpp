@@ -16,8 +16,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <string>
 #include <utility>
 #include <vector>
+
+#include "sas/symmetry.hpp"
 
 namespace kairos::state
 {
@@ -314,11 +318,256 @@ void StateSpace::applicable(StateId s, std::vector<uint32_t> & out)
 {
   load(s);
   generator_.applicable(values_.data(), numbers_.data(), out);
+  // Symmetric objects that look the same here: of an action and its image, only the first
+  if (!task_.symmetries.empty() && out.size() > 1) {
+    thread_local std::vector<uint32_t> stamp;
+    thread_local uint32_t epoch = 0;
+    if (stamp.size() < task_.actions.size()) {
+      stamp.assign(task_.actions.size(), 0);
+    }
+    if (++epoch == 0) {
+      std::fill(stamp.begin(), stamp.end(), 0);
+      epoch = 1;
+    }
+    for (uint32_t a : out) {
+      stamp[a] = epoch;
+    }
+    for (const auto & sym : task_.symmetries) {
+      if (!sas::invariant(sym, values_.data(), numbers_.data())) {
+        continue;
+      }
+      std::erase_if(out, [&](uint32_t a) {
+          uint32_t b = sym.image[a];
+          return b < a && stamp[b] == epoch;
+        });
+    }
+  }
+  // PDDL+: an event that can happen does, before anything else
+  if (task_.first_event != UINT32_MAX &&
+    std::any_of(out.begin(), out.end(), [&](uint32_t a) {return a >= task_.first_event;}))
+  {
+    std::erase_if(out, [&](uint32_t a) {return a < task_.first_event;});
+  }
+}
+
+// PDDL+ time passing: steps of clock_delta (the processes active at the start of each, with
+// Runge-Kutta 4), one, or (long) the most before a numeric condition changes (a short wait
+// crosses it then: what becomes true is reached, what becomes false can be acted on before);
+// never past a hard deadline
+bool StateSpace::integrate(double max_dt, bool long_wait)
+{
+  next_values_ = values_;
+  next_numbers_ = numbers_;
+  last_wait_ = 0.0;
+  thread_local std::vector<const sas::Effect *> active;
+  thread_local std::vector<uint8_t> watched, now;
+  thread_local std::vector<double> before;
+  auto watch = [&](const std::vector<double> & x, std::vector<uint8_t> & out) {
+      out.clear();
+      for (const auto & c : task_.clock_watch) {
+        out.push_back(holds_numeric(c, x.data()) ? 1 : 0);
+      }
+    };
+  auto derivative = [&](const std::vector<double> & x, std::vector<double> & k) {
+      k.assign(x.size(), 0.0);
+      for (const sas::Effect * pr : active) {
+        const auto & r = *pr;
+        if (std::isnan(x[r.num])) {
+          continue;  // a fluent without a value stays without one (as ENHSP)
+        }
+        double v = evaluate(r.value, x.data());
+        if (std::isnan(v)) {
+          return false;  // an undefined rate
+        }
+        k[r.num] += r.op == ast::AssignOp::Decrease ? -v : v;
+      }
+      return true;
+    };
+  // One Runge-Kutta 4 step of length h from x (the active rates of x's start)
+  thread_local std::vector<double> rk_k1, rk_k2, rk_k3, rk_k4, rk_at;
+  auto rk4 = [&](const std::vector<double> & x, double h, std::vector<double> & out) {
+      auto shift = [&](const std::vector<double> & k, double f) -> const std::vector<double> & {
+          rk_at = x;
+          for (size_t i = 0; i < rk_at.size(); ++i) {
+            rk_at[i] += f * k[i];
+          }
+          return rk_at;
+        };
+      if (!derivative(x, rk_k1) || !derivative(shift(rk_k1, h / 2), rk_k2) ||
+        !derivative(shift(rk_k2, h / 2), rk_k3) || !derivative(shift(rk_k3, h), rk_k4))
+      {
+        return false;
+      }
+      out = x;
+      for (size_t j = 0; j < out.size(); ++j) {
+        double s = rk_k1[j] + 2.0 * rk_k2[j] + 2.0 * rk_k3[j] + rk_k4[j];
+        if (s != 0.0) {
+          out[j] += h / 6.0 * s;
+        }
+      }
+      return true;
+    };
+  // Rounded to 1e-9: 50 steps of 0.2 reach 10, not 9.999999999999998
+  auto round_changed = [&](std::vector<double> & x) {
+      for (size_t j = 0; j < x.size(); ++j) {
+        if (x[j] != numbers_[j] && std::fabs(x[j]) < 1e6) {
+          x[j] = std::round(x[j] * 1e9) / 1e9;
+        }
+      }
+    };
+  // Time left to the nearest deadline from x (infinity if none); nullopt: a hard one is reached
+  auto deadline_left = [&](const std::vector<double> & x) -> std::optional<double> {
+      double best = std::numeric_limits<double>::infinity();
+      for (const auto & d : task_.clock_deadlines) {
+        if (values_[d.when.var] != d.when.value) {
+          continue;
+        }
+        double left = (d.bound ? x[*d.bound] : d.at) - x[d.clock];
+        if (std::isnan(left)) {
+          continue;
+        }
+        if (left <= kDeadlineSlack) {
+          if (d.hard) {
+            return std::nullopt;
+          }
+          continue;
+        }
+        best = std::min(best, left);
+      }
+      return best;
+    };
+  auto set_active = [&](const std::vector<double> & x) {
+      active.clear();
+      for (const auto & r : task_.clock_rates) {
+        if (holds(r.condition, task_, values_.data(), x.data())) {
+          active.push_back(&r);
+        }
+      }
+    };
+  if (!long_wait) {
+    // One step, up to a deadline
+    auto left = deadline_left(next_numbers_);
+    if (!left) {
+      return false;  // something must happen first
+    }
+    double dt = std::min(max_dt, *left);
+    set_active(next_numbers_);
+    if (active.empty()) {
+      return true;  // nothing changes
+    }
+    bool crossing_only = task_.short_only_at_change && max_dt == task_.clock_delta;
+    if (crossing_only) {
+      watch(numbers_, watched);
+    }
+    int steps = std::max(1, static_cast<int>(std::ceil(dt / kClockStep - 1e-9)));
+    double h = dt / steps;
+    for (int i = 0; i < steps; ++i) {
+      if (!rk4(next_numbers_, h, before)) {
+        return false;
+      }
+      next_numbers_.swap(before);
+    }
+    round_changed(next_numbers_);
+    last_wait_ = dt;
+    if (crossing_only && dt >= max_dt) {
+      watch(next_numbers_, now);
+      if (now == watched) {
+        return false;  // nothing crossed: the long wait goes further
+      }
+    }
+    return true;
+  }
+  // Long: blocks of steps that double while the error is small and nothing watched changes,
+  // halve otherwise; it stops at the last step before a change, or at a deadline
+  watch(numbers_, watched);
+  const double step = max_dt;
+  bool stopped = false;
+  int64_t blocks = 1;
+  int64_t taken = 0;
+  thread_local std::vector<double> full, half, result;
+  while (taken < kLongSteps) {
+    auto left = deadline_left(next_numbers_);
+    if (!left) {
+      if (taken == 0) {
+        return false;
+      }
+      stopped = true;
+      break;
+    }
+    set_active(next_numbers_);
+    if (active.empty()) {
+      break;  // nothing changes
+    }
+    blocks = std::min(blocks, kLongSteps - taken);
+    double dt = static_cast<double>(blocks) * step;
+    bool to_deadline = *left < dt;
+    if (to_deadline) {
+      dt = *left;
+    }
+    if (!rk4(next_numbers_, dt, full)) {
+      return false;
+    }
+    if (dt > step + 1e-12) {
+      // The error of the block: one step against two halves
+      if (!rk4(next_numbers_, dt / 2, half) || !rk4(half, dt / 2, result)) {
+        return false;
+      }
+      double err = 0.0;
+      for (size_t j = 0; j < full.size(); ++j) {
+        if (!std::isnan(full[j])) {
+          err = std::max(err, std::fabs(full[j] - result[j]) / (1.0 + std::fabs(result[j])));
+        }
+      }
+      if (err > 1e-10) {
+        blocks = std::max<int64_t>(1, blocks / 2);
+        if (blocks > 1 || !to_deadline) {
+          continue;
+        }
+      }
+      full.swap(result);
+    }
+    round_changed(full);
+    watch(full, now);
+    if (now != watched) {
+      if (dt > step + 1e-12) {
+        blocks = std::max<int64_t>(1, blocks / 2);  // the change is inside: smaller blocks
+        if (to_deadline) {
+          blocks = std::max<int64_t>(1, static_cast<int64_t>(std::floor(*left / step)));
+          blocks = std::max<int64_t>(1, blocks / 2);
+        }
+        continue;
+      }
+      stopped = true;  // just before the change
+      break;
+    }
+    next_numbers_.swap(full);
+    last_wait_ += dt;
+    taken += to_deadline ? kLongSteps : blocks;
+    if (to_deadline) {
+      stopped = true;  // a deadline
+      break;
+    }
+    blocks = std::min<int64_t>(blocks * 2, 4096);
+  }
+  // A long wait that nothing stops changes nothing that matters: not applicable
+  return !long_wait || (stopped && last_wait_ > 0.0);
+}
+
+bool StateSpace::holds_numeric(const sas::NumericCondition & c, const double * numbers) const
+{
+  return compare(c.op, evaluate(c.lhs, numbers), evaluate(c.rhs, numbers));
 }
 
 std::optional<StateId> StateSpace::successor(StateId s, uint32_t action)
 {
   load(s);
+  if (action == task_.clock || action == task_.long_clock || action == task_.epsilon_clock) {
+    double dt = action == task_.epsilon_clock ? task_.clock_epsilon : task_.clock_delta;
+    if (!integrate(dt, action == task_.long_clock)) {
+      return std::nullopt;
+    }
+    return registry_.insert(next_values_, next_numbers_).first;
+  }
   const auto & a = task_.actions[action];
   if (!apply_effects(
       task_, a.changes, a.effects, sas::Timing::Instant, values_.data(), numbers_.data(),

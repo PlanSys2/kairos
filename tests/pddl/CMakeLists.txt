@@ -15,6 +15,7 @@
 kairos_add_test(pddl_tests
   SOURCES
     corpus_test.cpp
+    dialect_test.cpp
     lexer_test.cpp
     parser_domain_test.cpp
     parser_problem_test.cpp

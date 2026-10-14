@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "pddl/dialect.hpp"
 #include "pddl/parser.hpp"
 #include "orchestrator/orchestrator.hpp"
 #include "semantic/analyzer.hpp"
@@ -103,8 +104,10 @@ CheckReport check_domain(std::string_view domain_text, std::string_view filename
     report.diagnostics = parsed.take_diagnostics();
     return finish(std::move(report));
   }
+  auto repairs = pddl::repair_domain(*parsed);
   auto model = sem::analyze_domain(*parsed);
   report.diagnostics = parsed.take_diagnostics();
+  append(report.diagnostics, std::move(repairs));
   bool supported = false;
   if (model.ok()) {
     report.features = model->features.names();
@@ -141,13 +144,16 @@ CheckReport check_problem(
     append(report.diagnostics, problem.take_diagnostics());
     return finish(std::move(report));
   }
+  auto repairs = pddl::repair_domain(*domain);
   auto dmodel = sem::analyze_domain(*domain);
   report.diagnostics = domain.take_diagnostics();
   append(report.diagnostics, problem.take_diagnostics());
+  append(report.diagnostics, std::move(repairs));
   if (!dmodel.ok()) {
     append(report.diagnostics, dmodel.take_diagnostics());
     return finish(std::move(report));
   }
+  append(report.diagnostics, pddl::repair_problem(*problem, *domain));
   auto pmodel = sem::analyze_problem(*problem, *domain, *dmodel);
   append(report.diagnostics, dmodel.take_diagnostics());
   bool supported = false;

@@ -597,6 +597,10 @@ private:
       out_.goal = Condition{};
       out_.goal_unreachable = true;
     }
+    if (!out_.goal_unreachable && !condition(g_.always, out_.always)) {
+      out_.always = Condition{};
+      out_.goal_unreachable = true;
+    }
     out_.metric.minimize = g_.metric.minimize;
     out_.metric.is_default = g_.metric.is_default;
     out_.metric.expr = expr(g_.metric.expr);
