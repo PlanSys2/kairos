@@ -74,9 +74,20 @@ inline std::optional<std::string> check_lexer_invariants(std::string_view source
     }
     const char * begin = source.data();
     if (t.joined) {
-      // "? x": the '?', blanks, then the name (the text is "?x", kept apart)
-      size_t q = source.find('?', cursor);
-      if (t.kind != TokenKind::Variable || q == std::string_view::npos) {
+      // "? x": the '?' after blanks and comments, blanks, then the name (the text is "?x",
+      // kept apart)
+      size_t q = cursor;
+      for (bool comment = false; q < source.size(); ++q) {
+        char c = source[q];
+        if (c == '\n' || c == '\r') {
+          comment = false;
+        } else if (c == ';') {
+          comment = true;
+        } else if (!comment && c != ' ' && c != '\t' && c != '\f' && c != '\v') {
+          break;
+        }
+      }
+      if (t.kind != TokenKind::Variable || q >= source.size() || source[q] != '?') {
         return "joined token without its '?'";
       }
       size_t at = q + 1;

@@ -624,6 +624,19 @@ TEST(PlannerApiTest, PddlPlusDurativeActionsWithContinuousEffectsAndBounds)
   EXPECT_LE(r.plan->steps[0].duration, 4.0 + 1e-6);
 }
 
+// Sanitizers and coverage run several times slower: time limits scale
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || defined(KAIROS_COVERAGE_BUILD)
+constexpr int kSlowBuild = 20;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+constexpr int kSlowBuild = 20;
+#else
+constexpr int kSlowBuild = 1;
+#endif
+#else
+constexpr int kSlowBuild = 1;
+#endif
+
 // SMTPlan's linear generator: it runs for 1000 s, burning 1 per second; each tank refuels it at
 // 2 per second for 10 s
 std::string generator_domain()
@@ -662,7 +675,7 @@ TEST(PlannerApiTest, PddlPlusSymmetricObjectsAreTriedInOneOrder)
   auto start = std::chrono::steady_clock::now();
   SolveResult r = Planner().solve(p, quick());
   ASSERT_EQ(r.status, Status::Solved);
-  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+  EXPECT_LT(std::chrono::steady_clock::now() - start, kSlowBuild * std::chrono::seconds(2));
   EXPECT_TRUE(validate(p, *r.plan).valid());
   int refuels = 0;
   for (const auto & s : r.plan->steps) {

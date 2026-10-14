@@ -15,9 +15,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
-
 #include <cmath>
-
 #include <string>
 #include <vector>
 
@@ -25,6 +23,23 @@
 
 namespace kairos
 {
+
+namespace
+{
+// Sanitizers and coverage run several times slower: time limits scale
+#if defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__) || defined(KAIROS_COVERAGE_BUILD)
+constexpr int kSlowBuild = 20;
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer)
+constexpr int kSlowBuild = 20;
+#else
+constexpr int kSlowBuild = 1;
+#endif
+#else
+constexpr int kSlowBuild = 1;
+#endif
+}  // namespace
+
 namespace
 {
 
@@ -797,7 +812,7 @@ TEST(ValidatePddlPlusTest, ChatteringConditionsEnd)
       " (:goal (and (>= (t) 9.99) (<= (v) 0.01) (>= (v) -0.01))))",
       "0: (go)\n10: @PlanEND\n");
   EXPECT_EQ(r.status, ValidationStatus::Valid) << dump(r);
-  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+  EXPECT_LT(std::chrono::steady_clock::now() - start, kSlowBuild * std::chrono::seconds(2));
 }
 
 TEST(ValidatePddlPlusTest, EventLoopNamesTheEvents)
@@ -831,7 +846,7 @@ TEST(ValidatePddlPlusTest, GroundingsOfStaticFactsThatNeverHoldAreLeftOut)
       " (:init (link n1 n2) (= (flow n1 n2) 0)) (:goal (>= (flow n1 n2) 4.99)))",
       "0: (go)\n5: @PlanEND\n");
   EXPECT_EQ(r.status, ValidationStatus::Valid) << dump(r);
-  EXPECT_LT(std::chrono::steady_clock::now() - start, std::chrono::seconds(2));
+  EXPECT_LT(std::chrono::steady_clock::now() - start, kSlowBuild * std::chrono::seconds(2));
 }
 
 TEST(ValidateInputTest, BrokenDomainOrProblem)

@@ -298,6 +298,9 @@ TEST(LexerTest, SpacedVariablesAreJoined)
   // The joined text outlives the lexer
   std::vector<Token> kept = tokenize("? zz");
   EXPECT_EQ(kept[0].text, "?zz");
+  // A '?' in a comment before it is not its '?' (found by fuzzing the invariants)
+  EXPECT_EQ(testing::check_lexer_invariants("; ? a\n(? g)"), std::nullopt);
+  EXPECT_EQ(testing::check_lexer_invariants("x ;?\n ? y ?"), std::nullopt);
 }
 
 TEST(LexerTest, LexingContinuesAfterErrors)
