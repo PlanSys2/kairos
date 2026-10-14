@@ -38,12 +38,17 @@ part ([cli.md](cli.md#--features)).
 
 ## What Kairos does not plan with yet
 
-- **Duration inequalities and continuous effects** are planned without a linear program: each
-  duration is tried at its bounds, and a continuous change is applied at the safest instant
-  for the conditions that read it. Plans are always valid, but a plan that needs a duration in
-  between is not found (POPF, with its LP, finds those). See [examples.md](examples.md),
-  battery patrol. Continuous effects these engines cannot plan (a rate that changes, a value
-  read other than as a bound) are planned as PDDL+, below.
+Nothing: `kairos --features` lists every feature as `full`.
+
+**Durations in between their bounds.** Engines M2 and M3 try each duration of an inequality at
+its bounds, with each linear continuous change at the safest instant for the conditions that
+read it. When they find no plan, the task is also planned in steps of time (below): an action
+then lasts until a deadline, a step of 0.1 s, or the instant where ending it makes a condition
+true (an oven that adds 2 degrees per second of heating ends when the temperature reaches the
+range wanted), with `?duration` in its end effects as the time it ran. On problems that need a
+duration in between (`bench/durations`: a one-shot recharge inside a closing window, an oven,
+filling a tank, a shared charger, drilling to a depth range; 25 problems), Kairos solves all 25
+within 100 ms, POPF 17 (and 8 invalid plans), OPTIC and NextFLAP 5 each.
 
 ## How Kairos plans PDDL+
 

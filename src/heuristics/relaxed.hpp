@@ -114,6 +114,8 @@ private:
     sas::LinearExpr e;
     bool strict = false;
     std::vector<uint32_t> contributors;  // contributors changing a variable of e
+    // Non-linear (g >= 0, or > 0): e is g linearized around each evaluation's state
+    std::optional<ground::Expr> g;
   };
   struct NumEffect
   {
@@ -136,6 +138,8 @@ private:
   uint32_t neg_node(sas::VarId var, uint32_t value);
   uint32_t false_node(sas::VarId var);
   uint32_t num_node(const sas::LinearExpr & e, bool strict);
+  uint32_t nonlinear_node(ground::Expr g, bool strict);
+  void linearize(const EvalContext & ctx);
   void condition(const sas::Condition & c, std::vector<uint32_t> & out);
   void add_op(std::vector<uint32_t> pre, uint32_t effect, double base, uint32_t action);
   void simplify();

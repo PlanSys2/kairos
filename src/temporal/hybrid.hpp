@@ -64,6 +64,7 @@ struct Hybrid
   std::vector<sas::Condition> loose_over_all;
   std::optional<sas::NumVarId> time;    // the time, with durative actions or timed literals
   std::string unsupported;              // why this task cannot be planned (empty if it can)
+  double separation = 0.0;  // PDDL 2.1 (no processes nor events): happenings this far apart
   // For the heuristics (same actions): each end also needs its over all conditions projected
   // to its last moment with its own rates
   sas::Task guide;

@@ -510,7 +510,9 @@ TEST_F(CliTest, FeaturesTableAndJson)
   EXPECT_TRUE(contains(t.out, "kairos " + std::string(kairos::version())));
   EXPECT_TRUE(contains(t.out, "durative-actions"));
   EXPECT_TRUE(contains(t.out, "processes"));
-  EXPECT_TRUE(contains(t.out, " partial "));
+  EXPECT_TRUE(contains(t.out, " full "));
+  EXPECT_FALSE(contains(t.out, " partial "));  // nothing planned only in part
+  EXPECT_FALSE(contains(t.out, " none "));
   for (size_t at = 0; (at = t.out.find(" \n", at)) != std::string::npos; ++at) {
     ADD_FAILURE() << "a line ends with blanks";
   }
@@ -518,7 +520,7 @@ TEST_F(CliTest, FeaturesTableAndJson)
   EXPECT_EQ(j.code, 0);
   EXPECT_EQ(j.out.rfind("{\"version\": ", 0), 0u) << j.out;
   EXPECT_TRUE(contains(j.out, "{\"feature\": \"processes\", \"requirements\": [\":time\"], "
-    "\"support\": \"partial\""));
+    "\"support\": \"full\""));
   // One entry per feature in both
   size_t rows = 0;
   for (size_t at = 0; (at = j.out.find("\"feature\": ", at)) != std::string::npos; ++at) {

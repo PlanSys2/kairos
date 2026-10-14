@@ -127,22 +127,22 @@ TEST(CheckApiTest, SupportOfEveryFeature)
       return SupportLevel::Full;
     };
   EXPECT_EQ(level("durative-actions"), SupportLevel::Full);
-  EXPECT_EQ(level("continuous-effects"), SupportLevel::Partial);
-  EXPECT_EQ(level("processes"), SupportLevel::Partial);
-  EXPECT_EQ(level("events"), SupportLevel::Partial);
+  EXPECT_EQ(level("continuous-effects"), SupportLevel::Full);
+  EXPECT_EQ(level("processes"), SupportLevel::Full);
+  EXPECT_EQ(level("events"), SupportLevel::Full);
   EXPECT_EQ(level("global-constraints"), SupportLevel::Full);
   EXPECT_EQ(level("preferences"), SupportLevel::Full);
-  EXPECT_EQ(level("trajectory-constraints"), SupportLevel::Partial);
+  EXPECT_EQ(level("trajectory-constraints"), SupportLevel::Full);
   EXPECT_EQ(to_string(SupportLevel::Partial), "partial");
 }
 
 TEST(CheckApiTest, TheReportGivesTheSupportOfWhatTheDomainUses)
 {
-  // A process: partial
+  // A process: full
   CheckReport r = check_domain(kProcess);
   bool process = false;
   for (const auto & f : r.support) {
-    process = process || (f.feature == "processes" && f.level == SupportLevel::Partial);
+    process = process || (f.feature == "processes" && f.level == SupportLevel::Full);
     // Only features it uses
     EXPECT_NE(std::find(r.features.begin(), r.features.end(), f.feature), r.features.end());
   }

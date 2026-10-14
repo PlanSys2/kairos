@@ -99,7 +99,7 @@ NextFLAP, the satisficing IPC 2023 configurations) only show when they stopped: 
 
 | Planner | 100 ms | 1 s | whole limit |
 |---|---:|---:|---:|
-| **Kairos** | 53 | 92 | 142 |
+| **Kairos** | 54 | 94 | 148 |
 | SMTPlan+ | 25 | 31 | 35 |
 | ENHSP (sat-hadd, steps of 0.1 s) | 0 | 18 | 23 |
 
@@ -109,7 +109,7 @@ By family (problems solved in 30 s):
 |---|---:|---:|---:|---:|
 | 1D powered descent | 10 | 10 | 0 | 0 |
 | agile robot | 10 | 10 | 0 | 0 |
-| automatic transmission | 72 | 15 | 0 | 0 |
+| automatic transmission | 72 | 13 | 0 | 0 |
 | car | 8 | 8 | 8 | 0 |
 | car (non-linear) | 8 | 8 | 8 | 0 |
 | chasing cars | 42 | 15 | 5 | 0 |
@@ -118,12 +118,12 @@ By family (problems solved in 30 s):
 | generator (non-linear) | 8 | 4 | 0 | 0 |
 | hasp | 10 | 0 | 0 | 0 |
 | hvac | 10 | 8 | 0 | 0 |
-| intercept | 10 | 1 | 0 | 0 |
+| intercept | 10 | 10 | 0 | 0 |
 | SMTPlan car without drag | 10 | 10 | 0 | 10 |
 | SMTPlan generator with events | 8 | 8 | 0 | 3 |
 | SMTPlan linear generator | 8 | 8 | 0 | 8 |
 | SMTPlan non-linear generator | 8 | 8 | 0 | 8 |
-| SMTPlan Torricelli generator | 9 | 9 | 0 | 6 |
+| SMTPlan Torricelli generator | 9 | 8 | 0 | 6 |
 | zermelo navigation | 10 | 6 | 0 | 0 |
 
 Every plan is validated in continuous time (exact integration, events at the instant their
@@ -132,15 +132,32 @@ powered descent, chasing cars) hold only with them: they count as invalid. ENHSP
 durative actions (SMTPlan's generators are a syntax error for it). SMTPlan+ runs from
 planutils, whose packaging costs it 0.185 s per problem (subtracted, see Method).
 
+### Durations in between their bounds (25)
+
+| Planner | 100 ms | 1 s | whole limit |
+|---|---:|---:|---:|
+| **Kairos** | 25 | 25 | 25 |
+| POPF | 17 | 17 | 17 |
+| NextFLAP | 4 | 5 | 5 |
+| OPTIC | 0 | 3 | 5 |
+
+Five domains of five problems (`bench/durations/gen.py`) where neither bound of the key
+action's duration gives a plan: a one-shot recharge inside a window that closes, an oven with
+`?duration` in its effect and a temperature range, filling a tank to a level range, robots
+sharing a charger before a deadline, drilling to a depth range. POPF's 8 other plans (drill,
+tank) are invalid; OPTIC and NextFLAP fail on the domains with continuous effects.
+
 - **Classical**: Kairos solves 153, more than LAMA (151) and than the winners of the IPC 2023
   satisficing track (Scorpion Maidu 145, Levitron 146, Fast Downward Stone Soup 2023 147) with
   the same 30 s, and the most within 100 ms (67; Dual-BFWS 51, the others none) and 1 s (103;
   the best of the others 78).
 - **Numeric** (B3): Kairos 289, the current ENHSP 208 and LNM-Plan (IPC 2023 numeric winner) 117.
 - **Temporal** (B1, B2, robotics, PDDL3): Kairos solves the most at every limit.
-- **PDDL+** (processes, events, continuous effects): Kairos 142 of 255, SMTPlan+ 35 and ENHSP 23;
-  within 100 ms, 53 against 25 and 0. Kairos solves the most in every family, all 33 of
+- **PDDL+** (processes, events, continuous effects): Kairos 148 of 255, SMTPlan+ 35 and ENHSP 23;
+  within 100 ms, 54 against 25 and 0. Kairos solves the most in every family, 32 of the 33 of
   SMTPlan's generator benchmarks among them (the non-linear ones in 2 to 10 ms).
+- **Durations in between their bounds** (25): Kairos 25, all within 100 ms; POPF 17, OPTIC and
+  NextFLAP 5.
 - **PlanSys2 problems at scale** (B6): Kairos 92 of 144, the others at most 58. Kairos keeps the
   2 GB limit from the start of grounding: the largest patrol problems (537 680 actions) need
   more than that just to be prepared.
@@ -188,6 +205,7 @@ planutils, whose packaging costs it 0.185 s per problem (subtracted, see Method)
 | Classical | 220 | Classical domains of the IPC 1998 to 2023, 10 instances per domain |
 | B6 | 144 | PlanSys2 domains with problems scaled from 10 to 20 000 objects (below) |
 | PDDL3 | 125 | IPC 2006 domains with preferences (simple, qualitative, complex) and trajectory constraints, 5 instances each (`coverage.py` suite `prefs`) |
+| Durations | 25 | Problems that need a duration between its bounds (`bench/durations/gen.py`, `coverage.py` suite `durations`) |
 | PDDL+ | 255 | The PDDL+ domains of hstairs (processes, events, ENHSP's global constraints), up to 10 instances each, and SMTPlan's benchmarks (PDDL+ and PDDL 2.1 with non-linear continuous effects) (`coverage.py` suite `pddlplus`) |
 
 The instances come from public collections (potassco pddl-instances, the IPC 2023 and 2026

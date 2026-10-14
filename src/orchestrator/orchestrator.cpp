@@ -80,17 +80,18 @@ const std::vector<Support> & support_table()
     {F::ConditionalEffects, Support::Full, "", ""},
     {F::NumericFluents, Support::Full, "", ""},
     {F::ObjectFluents, Support::Full, "", ""},
-    {F::NonLinearNumeric, Support::Partial,
-      "planned and validated exactly; the heuristics take non-linear conditions as true", ""},
+    {F::NonLinearNumeric, Support::Full,
+      "planned and validated exactly; the heuristics linearize non-linear conditions at each "
+      "state", ""},
     {F::ActionCosts, Support::Full, "", ""},
     {F::DurativeActions, Support::Full, "required concurrency included, in engine M3", ""},
-    {F::DurationInequalities, Support::Partial,
-      "one action per bound of the duration: every plan valid, some plans not found", ""},
+    {F::DurationInequalities, Support::Full,
+      "the bounds in engines M2 and M3, durations in between in steps of time", ""},
     {F::VariableDuration, Support::Full, "", ""},
     {F::DurationInEffects, Support::Full, "", ""},
-    {F::ContinuousEffects, Support::Partial,
-      "linear ones as discrete changes at the most pessimistic instant, the others in steps of "
-      "0.1 s (as PDDL+): every plan valid, some plans not found", ""},
+    {F::ContinuousEffects, Support::Full,
+      "linear ones as discrete changes in engines M2 and M3, any in steps of time (integrated "
+      "with Runge-Kutta)", ""},
     {F::DerivedPredicates, Support::Full, "recursive ones included", ""},
     {F::TimedInitialLiterals, Support::Full, "", ""},
     {F::TimedInitialFluents, Support::Full, "", ""},
@@ -99,13 +100,12 @@ const std::vector<Support> & support_table()
       "and over constraints; counted elsewhere (more, or nested), where only improving plans "
       "sees their cost",
       ""},
-    {F::TrajectoryConstraints, Support::Partial,
-      "all, hard or as preferences; in temporal plans the timed ones are read at the "
-      "happenings, always-within with a clock (as PDDL+): every plan valid, some not found", ""},
-    {F::Processes, Support::Partial,
-      "planned in steps of 0.1 s (or until a condition changes), integrated with Runge-Kutta; "
-      "every plan validated in continuous time; some plans not found", ""},
-    {F::Events, Support::Partial, "fired between the steps; every plan validated in continuous "
+    {F::TrajectoryConstraints, Support::Full,
+      "all, hard or as preferences; always-within in temporal plans with a clock", ""},
+    {F::Processes, Support::Full,
+      "planned in steps of time (to where a condition changes), integrated with Runge-Kutta; "
+      "every plan validated in continuous time", ""},
+    {F::Events, Support::Full, "fired between the steps; every plan validated in continuous "
       "time (events fire when their condition crosses)", ""},
     {F::GlobalConstraints, Support::Full, "", ""},
     {F::Metric, Support::Full, "", ""},
@@ -363,7 +363,9 @@ namespace
 // - simple temporal tasks with "auto" and anytime: M2 for the first plan (its improvements
 //   lower the sum of durations, which says little of the makespan), then the M3 portfolio
 //   with g the makespan of the partial plan
-enum class Kind : uint8_t {Plain, Compressed, Snap};
+// Steps: the task in steps of time (temporal/hybrid.hpp) beside M2 or M3, for durations in
+// between their bounds and continuous effects as they are
+enum class Kind : uint8_t {Plain, Compressed, Snap, Steps};
 
 struct Phase
 {
@@ -584,6 +586,21 @@ private:
     return std::nullopt;
   }
 
+  // Durations fixed to their bounds for M2 and M3, with steps of time beside: their spaces
+  // running out proves nothing
+  bool bounded_durations() const {return hybrid_ && !hybrid_primary_;}
+
+  // Without processes or events in the domain, plans are PDDL 2.1 ones: happenings that
+  // depend on each other epsilon apart
+  void separate_happenings()
+  {
+    if (in_.domain.processes.empty() && in_.domain.events.empty()) {
+      for (auto * h : {&hybrid_, &hybrid_short_, &hybrid_crossing_}) {
+        (*h)->separation = o_.epsilon;
+      }
+    }
+  }
+
   // Temporal tasks: M2 compresses durative actions when no plan needs them to overlap; M3
   // searches start and end snap actions over a temporal network otherwise (as POPF)
   std::optional<SolveResult> choose_engine()
@@ -591,6 +608,7 @@ private:
     const sas::Task & task = *sas_;
     if (!task.processes.empty() || !task.events.empty() || continuous_steps_) {
       // PDDL+: discrete time steps, the plans validated with continuous time
+      hybrid_primary_ = true;
       hybrid_ = temporal::hybrid(task, kHybridDelta, temporal::Waits::Both, o_.epsilon);
       hybrid_short_ = temporal::hybrid(task, kHybridDelta, temporal::Waits::Short, o_.epsilon,
           false);
@@ -599,6 +617,7 @@ private:
       // The same symmetries (the variants differ in the waits, which name no object)
       hybrid_short_->task.symmetries = hybrid_->task.symmetries;
       hybrid_crossing_->task.symmetries = hybrid_->task.symmetries;
+      separate_happenings();
       if (!hybrid_->unsupported.empty()) {
         res_.diagnostics.push_back(Diagnostic::error(
             "unsupported.pddl_plus", "Kairos cannot plan yet with " + hybrid_->unsupported));
@@ -648,6 +667,22 @@ private:
           "initial literals", task.durative_actions.size(), task.timed_events.size());
       }
     }
+    if (temporal_task_ && fixed_.changed && o_.search == "auto") {
+      // Durations between their bounds and continuous effects as they are: in steps of time
+      // too (the battery patrol recharges once 4 s, not four times 1 s)
+      auto both = temporal::hybrid(*translated_, kHybridDelta, temporal::Waits::Both, o_.epsilon);
+      if (both.unsupported.empty()) {
+        hybrid_ = std::move(both);
+        hybrid_short_ = temporal::hybrid(
+          *translated_, kHybridDelta, temporal::Waits::Short, o_.epsilon, false);
+        hybrid_crossing_ = temporal::hybrid(
+          *translated_, kHybridDelta, temporal::Waits::Crossing, o_.epsilon, false);
+        hybrid_short_->task.symmetries = hybrid_->task.symmetries;
+        hybrid_crossing_->task.symmetries = hybrid_->task.symmetries;
+        separate_happenings();
+        log_.info(LogChannel::Orchestrator, "durations: also in steps of {} s", kHybridDelta);
+      }
+    }
     length_metric_ = in_.problem.metric == std::nullopt;
     // Temporal tasks minimizing the makespan (the default): each durative action costs its
     // duration (at the initial state), so the search prefers short and spread work, which the
@@ -662,7 +697,7 @@ private:
 
   const sas::Task & search_task() const
   {
-    if (hybrid_) {
+    if (hybrid_ && hybrid_primary_) {
       return hybrid_->task;
     }
     return compressed_ ? compressed_->task : (snapped_ ? snapped_->task : *sas_);
@@ -862,7 +897,7 @@ private:
       double share = improver_ ? 0.0 : 1.0;  // M2 before M3: until its first plan
       bool improve = o_.anytime && !improver_;
       const sas::Task & first_task = compressed_ ? compressed_->task :
-        (hybrid_ ? hybrid_->task : *sas_);
+        (hybrid_primary_ ? hybrid_->task : *sas_);
       if (portfolio && search::goals_apply(first_task)) {
         // Many goal facts (patrolling, visiting, delivering): one at a time first, where one
         // search for all meets plateaus that grow with the agents (B6 patrol L: no plan in
@@ -870,7 +905,7 @@ private:
         log_.info(LogChannel::Orchestrator, "search: incremental goals first (auto)");
         phases_.push_back({kind, "goals", 0.5, improve, false});
       }
-      if (portfolio && hybrid_) {
+      if (portfolio && hybrid_primary_) {
         // PDDL+: novelty crosses the plateaus of waiting (car: 40 ms, lazy LAMA 0.5 s), lazy
         // LAMA finds others at once (agile robot, intercept); waits until a condition changes
         // cross long stretches (a generator that runs for 1000 s) but mislead elsewhere
@@ -927,6 +962,15 @@ private:
         m3_portfolio(true);
       }
     }
+    if (hybrid_ && !hybrid_primary_ && !phases_.empty()) {
+      // Steps of time before the last phase of M2 or M3, if they have no plan yet: plans that
+      // need durations in between their bounds
+      using W = temporal::Waits;
+      auto at = phases_.end() - 1;
+      at = phases_.insert(
+        at, {Kind::Steps, "lama-novelty", 0.1, o_.anytime, false, true, W::Crossing});
+      phases_.insert(at + 1, {Kind::Steps, "lama", 0.15, o_.anytime, false, true, W::Both});
+    }
     snap_task_ = snapped_ ? &*snapped_ : (improver_ ? &*improver_ : nullptr);
     if (!time_metric_ && !heuristics::metric_costs_apply(search_task()) && !length_metric_ &&
       !(temporal_task_ && mixed_metric(*sas_)))
@@ -966,7 +1010,8 @@ private:
   // One phase: its task, budget, costs and search configuration, and the anytime search
   search::AnytimeResult run_phase(const Phase & ph, bool last)
   {
-    const temporal::Hybrid * hy = !hybrid_ ? nullptr :
+    bool steps = hybrid_ && (ph.kind == Kind::Steps || (ph.kind == Kind::Plain && hybrid_primary_));
+    const temporal::Hybrid * hy = !steps ? nullptr :
       (ph.waits == temporal::Waits::Both ? &*hybrid_ :
       (ph.waits == temporal::Waits::Short ? &*hybrid_short_ : &*hybrid_crossing_));
     const sas::Task & task_k = ph.kind == Kind::Compressed ? compressed_->task :
@@ -984,7 +1029,10 @@ private:
     }
     Budget & bk = own ? *own : *budget_;
     bool prune = false;
-    auto costs = costs_of(task_k, ph.kind == Kind::Compressed ? &*compressed_ : nullptr,
+    // Steps of time: unit costs (the durations are waits there)
+    auto costs = ph.kind == Kind::Steps ?
+      std::vector<double>(task_k.actions.size(), 1.0) :
+      costs_of(task_k, ph.kind == Kind::Compressed ? &*compressed_ : nullptr,
         ph.kind == Kind::Snap ? snap_task_ : nullptr, prune);
     std::string chosen = ph.search == "auto" ?
       resolve_auto(task_k, ph.kind == Kind::Snap) : ph.search;
@@ -1143,7 +1191,7 @@ private:
           }
           auto result = run_phase(ph, true);
           results[k] = result;
-          if (result == search::AnytimeResult::Exhausted && !has_plan()) {
+          if (result == search::AnytimeResult::Exhausted && !has_plan() && !bounded_durations()) {
             bool proof = ph.kind == Kind::Plain ||
               (ph.kind == Kind::Compressed && m2_complete_);
             (proof ? proof_ : m3_exhausted_) = true;
@@ -1211,7 +1259,7 @@ private:
       }
       auto result = run_phase(ph, k + 1 == phases_.size());
       outcome_ = result;
-      if (result == search::AnytimeResult::Exhausted && !res_.plan) {
+      if (result == search::AnytimeResult::Exhausted && !res_.plan && !bounded_durations()) {
         // No plan in its whole space: a proof for the plain task and a complete M2; strong
         // evidence for M3 (one partial plan per state)
         proof_ = ph.kind == Kind::Plain || (ph.kind == Kind::Compressed && m2_complete_);
@@ -1310,6 +1358,7 @@ private:
   bool m2_complete_ = true;  // exhausting the compressed task proves there is no plan
   bool temporal_task_ = false;
   // PDDL+: processes and events as discrete steps
+  bool hybrid_primary_ = false;  // PDDL+: the only engine (else beside M2 or M3, Kind::Steps)
   std::optional<temporal::Hybrid> hybrid_;
   std::optional<temporal::Hybrid> hybrid_short_;  // the same without long waits
   std::optional<temporal::Hybrid> hybrid_crossing_;  // short waits only to cross a change

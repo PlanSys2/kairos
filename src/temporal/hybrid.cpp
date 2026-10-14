@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <map>
 #include <string>
 #include <utility>
@@ -217,7 +218,7 @@ Hybrid hybrid(
   bool timed = !task.durative_actions.empty() || !task.timed_events.empty();
   std::optional<SnapTask> snapped;
   if (timed) {
-    snapped = snap(task);
+    snapped = snap(task, true);
     h.unsupported = snapped->unsupported;
     h.task = snapped->task;
   } else {
@@ -289,6 +290,45 @@ Hybrid hybrid(
         {runs, clock, bound, 0.0, d.op == sas::CompareOp::Eq || upper});
       if (upper || d.op == sas::CompareOp::Eq) {
         proj.until = bound;
+      }
+    }
+    // ?duration of a duration that is not fixed: what the clock reads at the end
+    std::function<void(ground::Expr &)> by_clock = [&](ground::Expr & e) {
+        if (e.op == ground::ExprOp::Duration) {
+          e = fluent(clock);
+          return;
+        }
+        for (auto & c : e.children) {
+          by_clock(c);
+        }
+      };
+    auto relinearize = [&](sas::Condition & c) {
+        for (auto & n : c.numeric) {
+          if (uses_duration(n.lhs.tree) || uses_duration(n.rhs.tree)) {
+            by_clock(n.lhs.tree);
+            by_clock(n.rhs.tree);
+            n = compare(n.op, n.lhs.tree, n.rhs.tree);
+          }
+        }
+      };
+    {
+      auto & end = h.task.actions[h.first_start + 2 * i + 1];
+      relinearize(end.pre);
+      for (auto & e : end.effects) {
+        relinearize(e.condition);
+        if (e.kind == sas::Effect::Kind::Numeric && uses_duration(e.value.tree)) {
+          by_clock(e.value.tree);
+          e.value = numeric(e.value.tree);
+        }
+      }
+      const auto & st = h.task.actions[h.first_start + 2 * i];
+      bool at_start = std::any_of(st.effects.begin(), st.effects.end(), [&](const sas::Effect & e) {
+            return e.kind == sas::Effect::Kind::Numeric && uses_duration(e.value.tree);
+          }) || std::any_of(st.pre.numeric.begin(), st.pre.numeric.end(), [&](const auto & n) {
+            return uses_duration(n.lhs.tree) || uses_duration(n.rhs.tree);
+          });
+      if (at_start && h.unsupported.empty()) {
+        h.unsupported = name + " reads ?duration at start, and its duration is not fixed";
       }
     }
     for (const auto & e : da.effects) {
@@ -407,6 +447,47 @@ Hybrid hybrid(
   for (const auto & c : h.over_all) {
     watch(c);
   }
+  // The numeric effects at the end of the durative actions, as if they ended now: a condition
+  // on what they change is also watched with their values in (an oven that adds 2 per second
+  // of heating: (>= (temp) 47) as (>= (+ (temp) (* 2 clock)) 47)), so waits stop where ending
+  // then makes a difference
+  std::vector<sas::NumericCondition> ended;
+  for (uint32_t i = 0; i < h.durative; ++i) {
+    for (const auto & e : h.task.actions[h.first_start + 2 * i + 1].effects) {
+      bool constant = e.value.linear && e.value.linear->terms.empty();
+      if (e.kind != sas::Effect::Kind::Numeric || !e.condition.empty() || constant) {
+        continue;  // constant changes need no time to be right
+      }
+      std::function<ground::Expr(const ground::Expr &)> after = [&](const ground::Expr & x) {
+          if (x.op == ground::ExprOp::Fluent && x.fluent == e.num) {
+            switch (e.op) {
+              case ast::AssignOp::Increase: return binary(ground::ExprOp::Add, x, e.value.tree);
+              case ast::AssignOp::Decrease: return binary(ground::ExprOp::Sub, x, e.value.tree);
+              case ast::AssignOp::Assign: return e.value.tree;
+              default: return x;
+            }
+          }
+          ground::Expr out = x;
+          for (auto & c : out.children) {
+            c = after(c);
+          }
+          return out;
+        };
+      for (const auto & n : h.task.clock_watch) {
+        auto p = compare(n.op, after(n.lhs.tree), after(n.rhs.tree));
+        if (!(p.lhs == n.lhs && p.rhs == n.rhs)) {
+          ended.push_back(std::move(p));
+        }
+      }
+    }
+  }
+  for (auto & p : ended) {
+    if (std::find(h.task.clock_watch.begin(), h.task.clock_watch.end(), p) ==
+      h.task.clock_watch.end())
+    {
+      h.task.clock_watch.push_back(std::move(p));
+    }
+  }
   // Objects it does not tell apart (tanks of a generator): one order of their actions
   if (symmetries) {
     h.task.symmetries = sas::find_symmetries(h.task);
@@ -478,6 +559,18 @@ Plan Hybrid::plan(const std::vector<uint32_t> & actions, state::StateSpace & spa
   double t = 0.0;
   state::StateId s = space.registry().initial();
   std::vector<size_t> open(durative, 0);
+  // PDDL 2.1: happenings at one instant, epsilon apart (each later one shifts what follows)
+  double offset = 0.0;
+  double last = -std::numeric_limits<double>::infinity();
+  auto at = [&]() {
+      double ht = t + offset;
+      if (separation > 0.0 && ht < last + separation * 0.5) {
+        offset += last + separation - ht;
+        ht = last + separation;
+      }
+      last = ht;
+      return ht;
+    };
   for (uint32_t a : actions) {
     if (auto next = space.successor(s, a)) {
       s = *next;
@@ -494,12 +587,12 @@ Plan Hybrid::plan(const std::vector<uint32_t> & actions, state::StateSpace & spa
     uint32_t i = timed ? (a - first_start) / 2 : 0;
     if (timed && (a - first_start) % 2 == 1) {
       auto & st = p.steps[open[i]];
-      st.duration = t - st.time;
+      st.duration = at() - st.time;
       continue;
     }
     const auto & act = task.actions[a];
     PlanStep step;
-    step.time = t;
+    step.time = at();
     step.name = task.action_names[act.schema];
     for (auto o : act.args) {
       step.args.push_back(task.object_names[o.index()]);
@@ -509,7 +602,9 @@ Plan Hybrid::plan(const std::vector<uint32_t> & actions, state::StateSpace & spa
     }
     p.steps.push_back(std::move(step));
   }
-  p.end = t;
+  if (separation == 0.0) {
+    p.end = t;  // PDDL+: time passes after the last step too
+  }
   return p;
 }
 

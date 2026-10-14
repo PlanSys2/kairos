@@ -68,7 +68,9 @@ struct SnapTask
   size_t durative(uint32_t a) const {return (a - instant) / 2;}
 };
 
-SnapTask snap(const sas::Task & task);
+/// @brief The snap task; with `keep_variable_duration`, ?duration of a duration that is not
+/// fixed stays in the actions (as ExprOp::Duration) instead of making the task unsupported.
+SnapTask snap(const sas::Task & task, bool keep_variable_duration = false);
 
 /// @brief Duration bounds of a durative action in a state (nullopt: no bound on that side).
 struct DurationBounds

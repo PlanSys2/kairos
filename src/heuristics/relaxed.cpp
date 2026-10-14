@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -221,8 +222,61 @@ uint32_t RelaxedGraph::num_node(const sas::LinearExpr & e, bool strict)
   num_ids_.emplace(std::move(key), id);
   node_num_[id] = static_cast<int32_t>(num_.size());
   num_node_id_.push_back(id);
-  num_.push_back(NumNode{e, strict, {}});
+  num_.push_back(NumNode{e, strict, {}, std::nullopt});
   return id;
+}
+
+// A non-linear condition: its variables now (with placeholder coefficients, for the
+// contributors), its linear form at each evaluation
+uint32_t RelaxedGraph::nonlinear_node(ground::Expr g, bool strict)
+{
+  std::set<sas::NumVarId> vars;
+  std::function<void(const ground::Expr &)> collect = [&](const ground::Expr & x) {
+      if (x.op == ground::ExprOp::Fluent) {
+        vars.insert(x.fluent);
+      }
+      for (const auto & ch : x.children) {
+        collect(ch);
+      }
+    };
+  collect(g);
+  sas::LinearExpr e;
+  for (auto v : vars) {
+    e.terms.emplace_back(v, 1.0);
+  }
+  uint32_t id = add_node();
+  node_num_[id] = static_cast<int32_t>(num_.size());
+  num_node_id_.push_back(id);
+  num_.push_back(NumNode{std::move(e), strict, {}, std::move(g)});
+  return id;
+}
+
+// Each non-linear condition as its tangent at the state: gradient by finite differences
+void RelaxedGraph::linearize(const EvalContext & ctx)
+{
+  thread_local std::vector<double> x;
+  bool loaded = false;
+  for (auto & n : num_) {
+    if (!n.g) {
+      continue;
+    }
+    if (!loaded) {
+      x.assign(ctx.numbers, ctx.numbers + task_.numeric_fluents.size());
+      loaded = true;
+    }
+    double g0 = state::evaluate(*n.g, x.data());
+    double constant = g0;
+    for (auto & [v, coef] : n.e.terms) {
+      double keep = x[v];
+      double step = 1e-6 * std::max(1.0, std::fabs(keep));
+      x[v] = keep + step;
+      double g1 = state::evaluate(*n.g, x.data());
+      x[v] = keep;
+      coef = std::isnan(g0) || std::isnan(g1) ? 0.0 : (g1 - g0) / step;
+      constant -= coef * keep;
+    }
+    n.e.constant = std::isnan(g0) ? -kInfinity : constant;
+  }
 }
 
 void RelaxedGraph::condition(const sas::Condition & c, std::vector<uint32_t> & out)
@@ -255,7 +309,26 @@ void RelaxedGraph::condition(const sas::Condition & c, std::vector<uint32_t> & o
   }
   for (const auto & n : c.numeric) {
     if (!n.difference) {
-      continue;  // non-linear: optimistic
+      // Non-linear: linearized at each evaluation
+      auto g = [&](bool flip) {
+          ground::Expr d;
+          d.op = ground::ExprOp::Sub;
+          d.children = flip ? std::vector<ground::Expr>{n.rhs.tree, n.lhs.tree} :
+          std::vector<ground::Expr>{n.lhs.tree, n.rhs.tree};
+          return d;
+        };
+      switch (n.op) {
+        case sas::CompareOp::Ge: out.push_back(nonlinear_node(g(false), false)); break;
+        case sas::CompareOp::Gt: out.push_back(nonlinear_node(g(false), true)); break;
+        case sas::CompareOp::Le: out.push_back(nonlinear_node(g(true), false)); break;
+        case sas::CompareOp::Lt: out.push_back(nonlinear_node(g(true), true)); break;
+        case sas::CompareOp::Eq:
+          out.push_back(nonlinear_node(g(false), false));
+          out.push_back(nonlinear_node(g(true), false));
+          break;
+        case sas::CompareOp::Ne: break;  // optimistic
+      }
+      continue;
     }
     sas::LinearExpr neg = *n.difference;
     neg.constant = -neg.constant;
@@ -657,6 +730,7 @@ void RelaxedGraph::explore(const EvalContext & ctx, bool stop_at_goal)
   in_buckets_ = 0;
   heap_ = {};
   seq_ = 0;
+  linearize(ctx);
   missing_.assign(num_.size(), 0.0);
   best_ratio_.assign(num_.size(), kInfinity);
   for (uint32_t n = 0; n < num_.size(); ++n) {

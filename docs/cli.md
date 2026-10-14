@@ -763,7 +763,7 @@ kairos --features [--format text|json]
 ```
 
 Every PDDL feature Kairos knows and how far it plans with it: `full`; `partial`, with the
-limits; or `none`, with the phase that will bring it. The requirement is the main one that
+limits; or `none`, with the phase that will bring it. Today every one is `full`. The requirement is the main one that
 declares the feature (`--format json` lists all of them). It prints to stdout and exits with 0;
 `--features` must be the first argument. The same table, through the library, is
 `kairos::pddl_support()` (`kairos/check.hpp`), and it is what makes `check` say `not plannable
@@ -778,11 +778,11 @@ kairos 0.5.0: PDDL features (full, partial, none)
   ...
   object-fluents             full     :object-fluents
   ...
-  continuous-effects         partial  :continuous-effects         linear ones as discrete changes at the most pessimistic instant, the others in steps of 0.1 s (as PDDL+): every plan valid, some plans not found
+  continuous-effects         full     :continuous-effects         linear ones as discrete changes in engines M2 and M3, any in steps of time (integrated with Runge-Kutta)
   ...
   preferences                full     :preferences                compiled in goals (also under forall), at the top of preconditions (four per action) and over constraints; counted elsewhere (more, or nested), where only improving plans sees their cost
   ...
-  processes                  partial  :time                       planned in steps of 0.1 s (or until a condition changes), integrated with Runge-Kutta; every plan validated in continuous time; some plans not found
+  processes                  full     :time                       planned in steps of time (to where a condition changes), integrated with Runge-Kutta; every plan validated in continuous time
   ...
 ```
 

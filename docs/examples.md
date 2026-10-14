@@ -108,11 +108,12 @@ battery that drains while they move and charges while they recharge.
   `(over all (>= (battery ?r) 0))`.
 - **Duration inequality**: a recharge lasts from 1 s up to a full battery,
   `(<= ?duration (/ (- (capacity ?r) (battery ?r)) (charge_rate ?r)))`.
-- How Kairos plans it (sound, not complete): each recharge is tried at its bounds (the minimum
-  and until full), and each continuous change becomes its total at the safest instant for
-  the conditions that read the battery (a drain at the start of the move, a charge at the end
-  of the recharge). Durations in between are not tried: the simple problem recharges four times
-  1 s rather than once 4 s. Every plan is checked with the real continuous semantics.
+- How Kairos plans it: engines M2 and M3 try each recharge at its bounds (the minimum and until
+  full), with each continuous change as its total at the safest instant for the conditions
+  that read the battery (a drain at the start of the move, a charge at the end of the
+  recharge); if that finds no plan, steps of time try durations in between (see
+  [pddl-support.md](pddl-support.md)). Every plan is checked with the real continuous
+  semantics.
 
 | Problem | Size |
 |---------|------|

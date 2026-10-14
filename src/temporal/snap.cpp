@@ -126,7 +126,7 @@ DurationBounds bounds(const sas::DurativeAction & a, const double * numbers)
   return b;
 }
 
-SnapTask snap(const sas::Task & task)
+SnapTask snap(const sas::Task & task, bool keep_variable_duration)
 {
   SnapTask s;
   s.task = task;
@@ -171,14 +171,18 @@ SnapTask snap(const sas::Task & task)
     bool unchanging = std::none_of(
       reads.num_reads.begin(), reads.num_reads.end(),
       [&](sas::NumVarId n) {return written.count(n) > 0;});
-    if (da.uses_duration && !fixed && s.unsupported.empty()) {
+    bool keep = keep_variable_duration && da.uses_duration && !fixed;
+    if (da.uses_duration && !fixed && !keep && s.unsupported.empty()) {
       s.unsupported = name + " uses ?duration with a duration that is not fixed";
     }
     ground::Expr duration = fixed ? da.duration[0].value.tree : ground::Expr{};
+    if (keep) {
+      duration.op = ground::ExprOp::Duration;  // left for the caller (the clock at the end)
+    }
     // A duration that depends on the state, read at end: kept at start in a numeric variable of
     // its own (other actions may change what it reads meanwhile)
     ground::Expr end_duration = duration;
-    std::optional<sas::Effect> keep;
+    std::optional<sas::Effect> kept;
     if (da.uses_duration && fixed && !unchanging) {
       s.task.function_names.push_back("kairos-duration " + name);
       ground::FluentInfo info;
@@ -193,7 +197,7 @@ SnapTask snap(const sas::Task & task)
       e.num = var;
       e.op = ast::AssignOp::Assign;
       e.value.tree = duration;
-      keep = std::move(e);
+      kept = std::move(e);
       end_duration = ground::Expr{};
       end_duration.op = sas::ExprOp::Fluent;
       end_duration.fluent = var;
@@ -233,8 +237,8 @@ SnapTask snap(const sas::Task & task)
       substitute(e, at_end ? end_duration : duration);
       (at_end ? end : start).effects.push_back(std::move(e));
     }
-    if (keep) {
-      start.effects.push_back(std::move(*keep));
+    if (kept) {
+      start.effects.push_back(std::move(*kept));
     }
     s.task.actions.push_back(std::move(start));
     s.task.actions.push_back(std::move(end));
