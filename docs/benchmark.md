@@ -26,17 +26,17 @@ NextFLAP, the satisficing IPC 2023 configurations) only show when they stopped: 
 
 | Planner | 100 ms | 1 s | whole limit |
 |---|---:|---:|---:|
-| **Kairos** | 67 | 103 | 156 |
-| LAMA (anytime) | - | - | 151 |
-| lama-first | 0 | 68 | 150 |
-| Scorpion Maidu | - | - | 145 |
-| Scorpion Maidu agile | 0 | 65 | 132 |
-| Levitron | - | - | 146 |
-| Levitron agile | 0 | 72 | 131 |
-| FD Stone Soup 2023 | - | - | 147 |
-| FD Stone Soup 2023 agile | 0 | 66 | 132 |
-| DecStar 2023 (agile) | 0 | 67 | 136 |
-| Dual-BFWS | 51 | 78 | 123 |
+| **Kairos** | 76 | 112 | 165 |
+| LAMA (anytime) | - | - | 160 |
+| lama-first | 0 | 75 | 159 |
+| Scorpion Maidu | - | - | 154 |
+| Scorpion Maidu agile | 0 | 73 | 142 |
+| Levitron | - | - | 156 |
+| Levitron agile | 0 | 80 | 141 |
+| FD Stone Soup 2023 | - | - | 157 |
+| FD Stone Soup 2023 agile | 0 | 73 | 142 |
+| DecStar 2023 (agile) | 0 | 72 | 146 |
+| Dual-BFWS | 57 | 88 | 133 |
 
 ### B3: numeric (420)
 
@@ -181,10 +181,57 @@ not fit (see [pddl-support.md](pddl-support.md)); every plan is validated. Power
 (Corrêa et al., commit `bf54e16`) runs its best satisficing configuration: BFWS alternating
 with lifted FF, Yannakakis joins, unit costs.
 
-- **Classical**: Kairos solves 156, more than LAMA (151) and than the winners of the IPC 2023
-  satisficing track (Scorpion Maidu 145, Levitron 146, Fast Downward Stone Soup 2023 147) with
-  the same 30 s, and the most within 100 ms (67; Dual-BFWS 51, the others none) and 1 s (103;
-  the best of the others 78).
+### Per PDDL feature (450)
+
+Every feature `kairos --features` lists has its bank (the `features` suite of
+kairos-benchmarks): up to six families of the public collections that use it, five problems
+each from easiest to hardest, and families written for what none of them has (object fluents,
+timed initial fluents, a robotic warehouse with up to 400 robots), each with problems that have
+no plan. Solved in 30 s, of the problems with a plan:
+
+| Feature | Problems | Kairos | lama-first | OPTIC | POPF | ENHSP |
+|---|---:|---:|---:|---:|---:|---:|
+| action-costs | 30 | **14** | 9 | 2 | 3 | 5 |
+| conditional-effects | 30 | **15** | 14 | 0 | 0 | 9 |
+| continuous-effects | 30 | **29** | 0 | 0 | 6 | 1 |
+| derived-predicates | 30 | **24** | 12 | 0 | 0 | 0 |
+| disjunctive-preconditions | 30 | **16** | 4 | 0 | 0 | 11 |
+| duration-in-effects | 16 | **15** | 0 | 9 | 9 | 0 |
+| duration-inequalities | 30 | **29** | 0 | 5 | 17 | 0 |
+| durative-actions | 30 | **27** | 0 | 12 | 16 | 0 |
+| equality | 30 | **23** | 13 | 10 | 8 | 18 |
+| events | 20 | **12** | 0 | 0 | 0 | 0 |
+| existential-preconditions | 30 | **18** | 7 | 4 | 0 | 2 |
+| global-constraints | 30 | **23** | 0 | 0 | 0 | 1 |
+| metric | 30 | **25** | 3 | 7 | 9 | 5 |
+| metric-fluents | 30 | **26** | 8 | 6 | 5 | 6 |
+| metric-total-time | 30 | **24** | 0 | 11 | 9 | 6 |
+| negative-preconditions | 30 | **25** | 3 | 1 | 0 | 8 |
+| non-linear-numeric | 30 | **21** | 0 | 0 | 0 | 2 |
+| numeric-fluents | 30 | **24** | 3 | 7 | 3 | 6 |
+| object-fluents | 20 | **18** | 0 | 0 | 0 | 0 |
+| preferences | 30 | **19** | 0 | 11 | 7 | 5 |
+| processes | 30 | **21** | 0 | 0 | 0 | 1 |
+| timed-initial-fluents | 15 | **14** | 0 | 0 | 0 | 0 |
+| timed-initial-literals | 30 | **22** | 0 | 8 | 15 | 0 |
+| trajectory-constraints | 30 | **17** | 0 | 14 | 5 | 0 |
+| typing | 30 | **22** | 8 | 7 | 10 | 10 |
+| universal-preconditions | 30 | **15** | 12 | 0 | 0 | 8 |
+| variable-duration | 30 | **26** | 0 | 6 | 14 | 0 |
+| warehouse | 23 | **6** | 3 | 2 | 0 | 3 |
+
+A family counts for every feature it uses. No planner gave a wrong answer (a plan for a problem
+without one, "unsolvable" for one with); Kairos says "unsolvable" only with a proof, and
+`no plan found` otherwise (two timed-initial-fluent problems without a plan, where M3 proves
+nothing). The warehouse with 20 robots or more has plans (each comes with one, built along with
+the problem) that no planner finds yet.
+
+- **Classical**: Kairos solves 165, more than LAMA (160) and than the winners of the IPC 2023
+  satisficing track (Scorpion Maidu 154, Levitron 156, Fast Downward Stone Soup 2023 157) with
+  the same 30 s, and the most within 100 ms (76; Dual-BFWS 57, the others none) and 1 s (112;
+  the best of the others 88).
+- **Per PDDL feature** (450 problems, 28 features): Kairos solves the most for every feature
+  (308; OPTIC 82, POPF 74, ENHSP 72, lama-first 59), and gives no wrong answer.
 - **Numeric** (B3): Kairos 289, the current ENHSP 208 and LNM-Plan (IPC 2023 numeric winner) 117.
 - **Temporal** (B1, B2, robotics, PDDL3): Kairos solves the most at every limit.
 - **PDDL+** (processes, events, continuous effects): Kairos 148 of 255, SMTPlan+ 35 and ENHSP 23;
@@ -242,6 +289,7 @@ with lifted FF, Yannakakis joins, unit costs.
 | B6 | 144 | PlanSys2 domains with problems scaled from 10 to 20 000 objects (below) |
 | PDDL3 | 125 | IPC 2006 domains with preferences (simple, qualitative, complex) and trajectory constraints, 5 instances each (`coverage.py` suite `prefs`) |
 | Durations | 25 | Problems that need a duration between its bounds (`bench/durations/gen.py`, `coverage.py` suite `durations`) |
+| Per feature | 450 | Per PDDL feature, up to 6 families of the public collections that use it, 5 problems each, and families for object fluents, timed initial fluents and a robotic warehouse, each with problems without a plan (`coverage.py` suite `features`) |
 | Hard to ground | 287 | Tasks of the lifted planning papers that are too large to ground (https://github.com/abcorrea/htg-domains), 5 per folder (`coverage.py` suite `htg`) |
 | PDDL+ | 255 | The PDDL+ domains of hstairs (processes, events, ENHSP's global constraints), up to 10 instances each, and SMTPlan's benchmarks (PDDL+ and PDDL 2.1 with non-linear continuous effects) (`coverage.py` suite `pddlplus`) |
 
