@@ -19,7 +19,9 @@ if(NOT GTest_FOUND)
     URL https://github.com/google/googletest/archive/refs/tags/v1.17.0.tar.gz)
   set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
   FetchContent_MakeAvailable(googletest)
-  add_library(GTest::gtest_main ALIAS gtest_main)
+  if(NOT TARGET GTest::gtest_main)  # googletest defines it itself since 1.11
+    add_library(GTest::gtest_main ALIAS gtest_main)
+  endif()
 endif()
 include(GoogleTest)
 

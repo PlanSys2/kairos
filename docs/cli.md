@@ -151,6 +151,20 @@ $ echo $?
 | 2 | `invalid input` | bad options, unreadable files, PDDL errors |
 | 1 | `cancelled`, `internal error` | stopped by a signal before any plan; a bug (e.g. every plan found failed validation) |
 
+**Why there is no plan.** Without a plan, a note on stderr says why and which option could
+change it, for example:
+
+```text
+note: no plan within the time limit of 2 s (15575 states searched). More time may find one: --timeout (SolveOptions::timeout). More threads run the phases of the search at once: --threads (SolveOptions::threads). [orchestrator.why]
+kairos: timeout (timeout)
+```
+
+It names the phase where the limit came (grounding or search), the memory available for
+`--memory`, whether planning without grounding applies to the task, and for `no plan found`
+that more time does not help. An unreachable goal is explained atom by atom
+(`orchestrator.unreachable_goal`). Library callers get the same notes in
+`SolveResult::diagnostics`.
+
 **With `--format popf` the exit code is always 0**, whatever happens (no plan, PDDL errors,
 timeout): PlanSys2's POPF plugin expects 0 and looks for the `;;;; Solution Found` marker on
 stdout instead. Without a plan, stdout is empty.
@@ -773,7 +787,7 @@ yet` and `solve` refuse a task.
 
 ```console
 $ kairos --features
-kairos 0.5.0: PDDL features (full, partial, none)
+kairos 1.0.0: PDDL features (full, partial, none)
   typing                     full     :typing
   negative-preconditions     full     :negative-preconditions
   disjunctive-preconditions  full     :disjunctive-preconditions
@@ -790,7 +804,7 @@ kairos 0.5.0: PDDL features (full, partial, none)
 
 ```console
 $ kairos --features --format json
-{"version": "0.5.0", "features": [{"feature": "typing", "requirements": [":typing", ":adl"], "support": "full", "note": ""}, ...]}
+{"version": "1.0.0", "features": [{"feature": "typing", "requirements": [":typing", ":adl"], "support": "full", "note": ""}, ...]}
 ```
 
 Which features other planners plan with: [pddl-support.md](pddl-support.md).
@@ -799,7 +813,7 @@ Which features other planners plan with: [pddl-support.md](pddl-support.md).
 
 ```console
 $ kairos --version
-kairos 0.5.0
+kairos 1.0.0
 ```
 
 `--version` must be the first argument. It prints to stdout and exits with 0.

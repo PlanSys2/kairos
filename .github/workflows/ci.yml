@@ -178,6 +178,32 @@ jobs:
           name: kairos-conda-${{ matrix.arch }}
           path: channel/*/*.conda
 
+  ros-package:
+    # As the ROS 2 buildfarm's binary jobs: bloom generates the package, it builds without tests,
+    # installs in /opt/ros/DISTRO, runs, and a program that uses the library builds against it
+    name: ROS package ${{ matrix.distro }} (${{ matrix.image }}, ${{ matrix.arch }})
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {distro: jazzy, image: 'ros:jazzy-ros-core', kind: deb, arch: amd64}
+          - {distro: jazzy, image: 'ros:jazzy-ros-core', kind: deb, arch: arm64}
+          - {distro: kilted, image: 'ros:kilted-ros-core', kind: deb, arch: amd64}
+          - {distro: kilted, image: 'ros:kilted-ros-core', kind: deb, arch: arm64}
+          - {distro: lyrical, image: 'ros:lyrical-ros-core', kind: deb, arch: amd64}
+          - {distro: lyrical, image: 'ros:lyrical-ros-core', kind: deb, arch: arm64}
+          - {distro: jazzy, image: 'almalinux:9', kind: rpm, arch: amd64}
+          - {distro: kilted, image: 'almalinux:9', kind: rpm, arch: amd64}
+          - {distro: lyrical, image: 'almalinux:10', kind: rpm, arch: amd64}
+          - {distro: lyrical, image: 'fedora:43', kind: rpm, arch: amd64}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build, install and use the package
+        run: |
+          docker run --rm -e ROS_DISTRO=${{ matrix.distro }} -v "$PWD:/src:ro" \
+            ${{ matrix.image }} bash /src/.github/scripts/ros_${{ matrix.kind }}.sh
+
   fuzz:
     name: libFuzzer (2 min per target)
     runs-on: ubuntu-24.04

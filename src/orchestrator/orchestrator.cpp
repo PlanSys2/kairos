@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <exception>
 #include <fstream>
 #include <functional>
@@ -475,6 +476,9 @@ private:
 
   SolveResult finish(Status status, StopReason reason)
   {
+    if (!res_.plan) {
+      explain(status);
+    }
     res_.status = status;
     res_.stop_reason = reason;
     res_.stats.total_ms = ms_since(t0_);
@@ -552,7 +556,11 @@ private:
     go.logger = log_;
     // A task the lifted engine can plan grounds with part of the time and memory: if that is
     // not enough, it is planned without grounding
-    bool liftable = lift::unsupported(task).empty() && o_.engine == Engine::Auto;
+    lift_reason_ = lift::unsupported(task);
+    if (lift_reason_.empty() && o_.engine != Engine::Auto) {
+      lift_reason_ = "an engine was forced (--engine)";
+    }
+    bool liftable = lift_reason_.empty();
     std::optional<Budget> ground_budget;
     if (liftable) {
       BudgetConfig gc = bc_;
@@ -674,6 +682,7 @@ private:
   // A task too large to ground: searched as it is (lift/lift.hpp)
   SolveResult plan_lifted(const lifted::Task & task, const std::string & why)
   {
+    lifted_ran_ = true;
     log_.info(LogChannel::Orchestrator, "{}; planned without grounding", why);
 #if defined(__GLIBC__)
     malloc_trim(0);  // what grounding freed, back to the system (the limit reads the RSS)
@@ -752,6 +761,7 @@ private:
   // Grounding did not fit: what the lifted engine (running already) finds
   SolveResult wait_lifted(const std::string & why)
   {
+    lifted_ran_ = true;
     log_.info(LogChannel::Orchestrator, "{}; planned without grounding", why);
 #if defined(__GLIBC__)
     malloc_trim(0);
@@ -773,6 +783,84 @@ private:
     return finish(s == Status::OutOfMemory && !grounded_ ? Status::GroundingTooLarge : s, r);
   }
   bool grounded_ = false;  // the task did ground (memory then ran out searching)
+  bool lifted_ran_ = false;  // the lifted engine searched (the task did not fit grounded)
+  std::string lift_reason_;  // why the lifted engine does not apply (empty: it does)
+
+  // Why there is no plan, and which option could change that (a note for the caller)
+  void explain(Status status)
+  {
+    auto mb = [](size_t bytes) {return std::to_string(bytes >> 20);};
+    std::string why;
+    bool searched = sas_ != nullptr || lifted_ran_;
+    std::string states = std::to_string(res_.stats.states) + " states";
+    auto seconds = std::chrono::duration<double>(o_.timeout).count();
+    char limit[32];
+    std::snprintf(limit, sizeof(limit), "%g", seconds);
+    switch (status) {
+      case Status::Timeout:
+        why = searched ?
+          "no plan within the time limit of " + std::string(limit) + " s (" + states +
+          " searched). More time may find one: --timeout (SolveOptions::timeout)." :
+          "no plan: the time limit of " + std::string(limit) + " s ran out while grounding the "
+          "task (it "
+          "has very many actions). More time may find a plan: --timeout "
+          "(SolveOptions::timeout).";
+        if (o_.threads <= 1 && std::thread::hardware_concurrency() > 1) {
+          why += " More threads run the phases of the search at once: --threads "
+            "(SolveOptions::threads).";
+        }
+        if (o_.search != "auto") {
+          why += " The search was fixed to '" + o_.search + "'; the default (auto) tries "
+            "several in turn: --search auto.";
+        }
+        if (o_.engine != Engine::Auto) {
+          why += " The engine was forced; --engine auto chooses it from the task.";
+        }
+        break;
+      case Status::OutOfMemory:
+      case Status::GroundingTooLarge: {
+          std::string where = status == Status::GroundingTooLarge ?
+            "the task does not fit once grounded (an action per combination of objects)" :
+            (searched ? "the search kept " + states : "while preparing the task");
+          why = "no plan: the memory limit of " + mb(res_.stats.memory_limit_bytes) +
+            " MB was reached: " +
+            where + ".";
+          if (status == Status::GroundingTooLarge) {
+            why += lift_reason_.empty() ?
+              " Planning without grounding (the lifted engine) ran out of memory too." :
+              " Planning without grounding does not apply here: " + lift_reason_ + ".";
+          }
+          why += " A larger limit may find a plan: --memory MB (SolveOptions::memory_limit_mb)";
+          if (auto avail = read_memory_snapshot().mem_available) {
+            why += "; " + mb(*avail) + " MB are available now";
+          }
+          why += ".";
+          if (o_.threads > 1) {
+            why += " Fewer threads keep fewer searches in memory at once: --threads 1.";
+          }
+          break;
+        }
+      case Status::NoPlanFound:
+        why = "no plan: the engines that apply ran out of states (" + states + ") before the time "
+          "limit, so more time does not help; none of them is complete for this task, so a "
+          "plan may still exist (see the note before).";
+        break;
+      case Status::Unsolvable:
+        if (res_.stats.states > 0) {
+          why = "no plan: every state reachable from the initial one was searched (" + states +
+            ") and none satisfies the goal.";
+        }
+        break;
+      case Status::Cancelled:
+        why = "no plan: stopped before the first plan (stop(), the stop token or Ctrl-C).";
+        break;
+      default:
+        break;
+    }
+    if (!why.empty()) {
+      res_.diagnostics.push_back(Diagnostic::note("orchestrator.why", why));
+    }
+  }
   std::optional<lifted::Task> lifted_task_;
   std::optional<Budget> lifted_budget_;
   lift::Stats lifted_stats_;

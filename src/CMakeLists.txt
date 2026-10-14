@@ -39,19 +39,25 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 find_package(Threads REQUIRED)
 
-# Adds an internal module: static library with src/ and the public headers in its include path.
+# Adds an internal module: its objects (compiled once; libkairos is made of them) and a static
+# library of them for the tests, with src/ and the public headers in its include path
 function(kairos_add_module name)
   cmake_parse_arguments(ARG "" "" "SOURCES;DEPENDS" ${ARGN})
-  add_library(${name} STATIC ${ARG_SOURCES})
-  target_include_directories(${name} PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-    $<BUILD_INTERFACE:${KAIROS_GENERATED_INCLUDE_DIR}>
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>)
-  target_compile_definitions(${name} PUBLIC $<$<NOT:$<BOOL:${KAIROS_SHARED}>>:KAIROS_STATIC_DEFINE>)
+  add_library(${name}_objects OBJECT ${ARG_SOURCES})
+  add_library(${name} STATIC $<TARGET_OBJECTS:${name}_objects>)
+  foreach(target ${name}_objects ${name})
+    target_include_directories(${target} PUBLIC
+      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+      $<BUILD_INTERFACE:${KAIROS_GENERATED_INCLUDE_DIR}>
+      $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>)
+    target_compile_definitions(${target} PUBLIC
+      $<$<NOT:$<BOOL:${KAIROS_SHARED}>>:KAIROS_STATIC_DEFINE>)
+    kairos_configure_target(${target})
+  endforeach()
   # Public symbols defined in modules are exported from libkairos
-  target_compile_definitions(${name} PRIVATE kairos_EXPORTS)
+  target_compile_definitions(${name}_objects PRIVATE kairos_EXPORTS)
+  target_link_libraries(${name}_objects PUBLIC Threads::Threads)
   target_link_libraries(${name} PUBLIC ${ARG_DEPENDS})
-  kairos_configure_target(${name})
   set_property(GLOBAL APPEND PROPERTY KAIROS_MODULES ${name})
   # Only a static libkairos needs the module archives at link time
   if(NOT KAIROS_SHARED)
@@ -83,18 +89,20 @@ target_include_directories(kairos PRIVATE ${PROJECT_SOURCE_DIR}/src)
 if(NOT KAIROS_SHARED)
   target_compile_definitions(kairos PUBLIC KAIROS_STATIC_DEFINE)
 endif()
-# Whole archives: public functions defined in modules must end up in libkairos.so
+# The objects of every module: public functions defined in modules end up in libkairos.so
+# (no whole-archive linking, which CMake before 3.30 cannot mix with the modules' own links)
 get_property(KAIROS_MODULES GLOBAL PROPERTY KAIROS_MODULES)
 if(KAIROS_SHARED)
   foreach(module ${KAIROS_MODULES})
-    target_link_libraries(kairos PRIVATE "$<LINK_LIBRARY:WHOLE_ARCHIVE,${module}>")
+    target_sources(kairos PRIVATE $<TARGET_OBJECTS:${module}_objects>)
   endforeach()
+  target_link_libraries(kairos PRIVATE Threads::Threads)
 else()
   target_link_libraries(kairos PRIVATE ${KAIROS_MODULES})
 endif()
 set_target_properties(kairos PROPERTIES
   VERSION ${PROJECT_VERSION}
-  SOVERSION ${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR})
+  SOVERSION ${PROJECT_VERSION_MAJOR})
 kairos_configure_target(kairos)
 
 install(TARGETS kairos EXPORT kairosTargets

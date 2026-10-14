@@ -383,6 +383,9 @@ TEST_F(CliTest, UnsolvableExitsTen)
   EXPECT_EQ(r.code, 10);
   EXPECT_TRUE(r.out.empty());
   EXPECT_TRUE(contains(r.err, "unsolvable"));
+  // And why: the goal unreachable, or every reachable state searched
+  EXPECT_TRUE(contains(r.err, "never be reached") || contains(r.err, "every state reachable"))
+    << r.err;
 }
 
 TEST_F(CliTest, TimeoutExitsEleven)
@@ -393,6 +396,9 @@ TEST_F(CliTest, TimeoutExitsEleven)
   EXPECT_EQ(r.code, 11);
   EXPECT_TRUE(r.out.empty());
   EXPECT_TRUE(contains(r.err, "timeout"));
+  // Why, and the option that could change it
+  EXPECT_TRUE(contains(r.err, "[orchestrator.why]")) << r.err;
+  EXPECT_TRUE(contains(r.err, "--timeout")) << r.err;
 }
 
 TEST_F(CliTest, MemoryLimitExitsTwelve)
@@ -403,6 +409,8 @@ TEST_F(CliTest, MemoryLimitExitsTwelve)
     "'" + path("h.pddl") + "' '" + path("hp.pddl") + "' --memory 8 --timeout 60 --search ff");
   EXPECT_EQ(r.code, 12);
   EXPECT_TRUE(contains(r.err, "out of memory"));
+  EXPECT_TRUE(contains(r.err, "the memory limit of 8 MB was reached")) << r.err;
+  EXPECT_TRUE(contains(r.err, "--memory")) << r.err;
 }
 
 TEST_F(CliTest, GroundingStaysWithinTheMemoryLimit)

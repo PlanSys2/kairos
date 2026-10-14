@@ -14,7 +14,7 @@
 
 #include <gtest/gtest.h>
 
-#include <format>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -31,17 +31,14 @@ struct Counted
   int * count;
 };
 
-}  // namespace
-
-template<>
-struct std::formatter<Counted>: std::formatter<std::string_view>
+// How the logger writes it (found by argument-dependent lookup): counts each formatting
+std::string to_log_string(const Counted & c)
 {
-  auto format(const Counted & c, std::format_context & ctx) const
-  {
-    ++*c.count;
-    return std::formatter<std::string_view>::format("counted", ctx);
-  }
-};
+  ++*c.count;
+  return "counted";
+}
+
+}  // namespace
 
 namespace kairos
 {
@@ -139,6 +136,21 @@ TEST(LoggerTest, FilteredMessagesAreNotFormatted)
   EXPECT_EQ(formatted, 1);
   ASSERT_EQ(out.size(), 1u);
   EXPECT_EQ(out[0].message, "counted");
+}
+
+TEST(LoggerTest, FormatsAsStdFormatWould)
+{
+  std::vector<Record> out;
+  Logger logger(capture(out, LogLevel::Info, LogChannels::all()));
+  uint8_t small = 7;
+  logger.info(LogChannel::General, "{} {} {} {} {:.1f} {{x}} {}", 0.1, 2316.0, true, small, 3.14159,
+    std::string("end"));
+  logger.info(LogChannel::General, "{} and {}", 1e-6, -42);
+  logger.info(LogChannel::General, "no placeholders {{}}");
+  ASSERT_EQ(out.size(), 3u);
+  EXPECT_EQ(out[0].message, "0.1 2316 true 7 3.1 {x} end");
+  EXPECT_EQ(out[1].message, "1e-06 and -42");
+  EXPECT_EQ(out[2].message, "no placeholders {}");
 }
 
 TEST(LoggerTest, ThrowingCallbackIsSwallowed)

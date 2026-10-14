@@ -15,7 +15,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(kairos
-  VERSION 0.5.0
+  VERSION 1.0.0
   DESCRIPTION "Modern temporal and numeric PDDL planner"
   LANGUAGES CXX)
 
@@ -42,9 +42,15 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
 
-option(KAIROS_BUILD_TESTS "Build the gtest suites and lint tests" ON)
+# The tests follow BUILD_TESTING when it is given (packaging builds turn it off: nothing to
+# download, no lint)
+if(DEFINED BUILD_TESTING)
+  set(_kairos_tests_default ${BUILD_TESTING})
+else()
+  set(_kairos_tests_default ON)
+endif()
+option(KAIROS_BUILD_TESTS "Build the gtest suites and lint tests" ${_kairos_tests_default})
 option(KAIROS_BUILD_CLI "Build the kairos executable" ON)
-option(KAIROS_WITH_HIGHS "Use HiGHS for LP-based temporal reasoning" OFF)
 option(KAIROS_BUILD_FUZZERS "Build libFuzzer targets (requires Clang)" OFF)
 option(KAIROS_COVERAGE "Instrument for coverage" OFF)
 option(KAIROS_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
@@ -52,6 +58,11 @@ set(KAIROS_SANITIZE "" CACHE STRING "Sanitizers: empty, 'address;undefined' or '
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(KairosCompilerOptions)
+# A ROS install (the buildfarm's packages, /opt/ros/DISTRO) finds libraries in lib only, not in
+# lib64 (RHEL, Fedora) or lib/<multiarch> (Debian)
+if(CMAKE_INSTALL_PREFIX MATCHES "^/opt/ros/")
+  set(CMAKE_INSTALL_LIBDIR lib)  # over the cache (packaging tools pass their own)
+endif()
 include(GNUInstallDirs)
 
 add_subdirectory(src)
@@ -85,7 +96,7 @@ configure_package_config_file(cmake/kairosConfig.cmake.in
   INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/kairos)
 write_basic_package_version_file(
   ${CMAKE_CURRENT_BINARY_DIR}/kairosConfigVersion.cmake
-  COMPATIBILITY SameMinorVersion)
+  COMPATIBILITY SameMajorVersion)
 install(FILES
   ${CMAKE_CURRENT_BINARY_DIR}/kairosConfig.cmake
   ${CMAKE_CURRENT_BINARY_DIR}/kairosConfigVersion.cmake
