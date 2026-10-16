@@ -2,7 +2,7 @@
   <img src="docs/images/kairos_white.png" alt="Kairos logo" width="450">
 </p>
 
-<h1 align="center">Kairos</h1>
+<h1 align="center">Kairos (καιρός)</h1>
 
 <p align="center">
   <b>A modern temporal and numeric PDDL planner in C++20, usable as a library and as an
