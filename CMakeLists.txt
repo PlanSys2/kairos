@@ -12,10 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.22)
 
 project(kairos
-  VERSION 1.0.0
+  VERSION 1.0.1
   DESCRIPTION "Modern temporal and numeric PDDL planner"
   LANGUAGES CXX)
 

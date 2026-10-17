@@ -2,6 +2,16 @@
 Changelog for package kairos
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+1.0.1 (2026-10-17)
+------------------
+* Builds on Ubuntu 22.04 and ROS 2 Humble: CMake 3.22 is enough (nothing needed 3.24), and the
+  CI builds the Humble packages as the buildfarm does.
+* The style test is disabled, with a warning, when uncrustify is older than its configuration
+  (0.78).
+* Why there is no plan: an unreachable goal is now traced to the static fact that is really
+  missing (the initial facts that grounding leaves out of the task count as reachable).
+* Contributors: Francisco Martín Rico
+
 1.0.0 (2026-10-14)
 ------------------
 * PDDL+: processes, events, global constraints and continuous effects (linear and non-linear),

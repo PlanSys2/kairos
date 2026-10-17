@@ -13,7 +13,7 @@
 # limitations under the License.
 
 # Standalone project: checks that an installed Kairos works with find_package
-cmake_minimum_required(VERSION 3.24)
+cmake_minimum_required(VERSION 3.22)
 project(kairos_consumer LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)

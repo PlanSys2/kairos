@@ -60,6 +60,14 @@ public:
       }
       reachable_[a.predicate.value()].push_back(std::move(args));
     }
+    // The ground task leaves out static facts: they hold from the initial state
+    for (const auto & [predicate, objects] : task.init_facts) {
+      std::vector<uint32_t> args;
+      for (auto o : objects) {
+        args.push_back(o.value());
+      }
+      reachable_[predicate.value()].push_back(std::move(args));
+    }
     for (const auto & a : task.actions) {
       add(a.name, a.variables, {&a.precondition}, a.effects);
     }

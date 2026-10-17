@@ -187,6 +187,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - {distro: humble, image: 'ros:humble-ros-core', kind: deb, arch: amd64}
+          - {distro: humble, image: 'ros:humble-ros-core', kind: deb, arch: arm64}
           - {distro: jazzy, image: 'ros:jazzy-ros-core', kind: deb, arch: amd64}
           - {distro: jazzy, image: 'ros:jazzy-ros-core', kind: deb, arch: arm64}
           - {distro: kilted, image: 'ros:kilted-ros-core', kind: deb, arch: amd64}

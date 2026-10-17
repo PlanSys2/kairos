@@ -453,6 +453,58 @@ TEST(PlannerApiTest, ExplainsThroughDerivedPredicates)
   EXPECT_NE(w.find("b adds it, but needs (a)"), std::string::npos) << w;
 }
 
+const char * kDeliver =
+  "(define (domain deliver) (:requirements :typing) (:types robot room item)"
+  " (:predicates (at ?r - robot ?x - room) (in ?i - item ?x - room)"
+  "  (holding ?r - robot ?i - item) (connected ?x ?y - room) (door-open ?x ?y - room))"
+  " (:action move :parameters (?r - robot ?x ?y - room)"
+  "  :precondition (and (at ?r ?x) (connected ?x ?y) (door-open ?x ?y))"
+  "  :effect (and (not (at ?r ?x)) (at ?r ?y)))"
+  " (:action pick :parameters (?r - robot ?i - item ?x - room)"
+  "  :precondition (and (at ?r ?x) (in ?i ?x)) :effect (and (not (in ?i ?x)) (holding ?r ?i)))"
+  " (:action drop :parameters (?r - robot ?i - item ?x - room)"
+  "  :precondition (and (at ?r ?x) (holding ?r ?i))"
+  "  :effect (and (not (holding ?r ?i)) (in ?i ?x))))";
+
+std::string deliver_why(const std::string & statics)
+{
+  return why(kDeliver,
+           "(define (problem p) (:domain deliver)"
+           " (:objects r1 - robot kitchen hall office - room cup - item)"
+           " (:init (at r1 hall) (in cup kitchen) (connected hall kitchen)"
+           "  (connected kitchen hall) (door-open hall kitchen) (door-open kitchen hall) " +
+           statics + ") (:goal (in cup office)))");
+}
+
+TEST(PlannerApiTest, ExplainsTheStaticFactThatIsMissing)
+{
+  // The room is connected but its door is closed: the reason is the door, not the connection
+  std::string w = deliver_why("(connected hall office)");
+  EXPECT_NE(w.find("move adds it, but needs (door-open ?x - room office)"), std::string::npos)
+    << w;
+  EXPECT_EQ(w.find("needs (connected"), std::string::npos) << w;
+}
+
+TEST(PlannerApiTest, ExplainsTheFirstStaticFactWhenItIsTheMissingOne)
+{
+  // The door is open but nothing connects the room: the connection
+  std::string w = deliver_why("(door-open hall office)");
+  EXPECT_NE(w.find("move adds it, but needs (connected ?x - room office)"), std::string::npos)
+    << w;
+  EXPECT_EQ(w.find("needs (door-open"), std::string::npos) << w;
+}
+
+TEST(PlannerApiTest, ExplainsAStaticFactThatHoldsOnlyForOtherObjects)
+{
+  // Both static predicates have facts, but none for the office: the first one is named, and the
+  // chain ends at a fact no action adds
+  std::string w = deliver_why("");
+  EXPECT_NE(w.find("move adds it, but needs (connected ?x - room office)"), std::string::npos)
+    << w;
+  EXPECT_NE(w.find("no action adds it, and the initial state does not have it"),
+    std::string::npos) << w;
+}
+
 TEST(PlannerApiTest, ExplainsAnActionThatNeverApplies)
 {
   // The adder's positive preconditions hold: what blocks it is another kind of condition
