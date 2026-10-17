@@ -15,7 +15,8 @@ at scale), with their generators. Anyone can run the same problems.
 Kairos is meant to answer in milliseconds, so each suite counts the problems solved within
 **100 ms**, **1 s** and the whole limit (30 s and 3 GB per problem; B6: 60 s and 2 GB), all
 planners under the same limits. Every plan is checked by Kairos's validator: a planner that
-prints an invalid plan does not get the problem.
+prints an invalid plan does not get the problem. The Kairos rows of this summary are from
+release 1.0.0.
 
 The short columns need the time of the first plan. Kairos reports it; planners that stop at
 their first plan take that long (the agile configurations of the IPC 2023 winners, lama-first,
@@ -42,7 +43,7 @@ NextFLAP, the satisficing IPC 2023 configurations) only show when they stopped: 
 
 | Planner | 100 ms | 1 s | whole limit |
 |---|---:|---:|---:|
-| **Kairos** | 152 | 203 | 289 |
+| **Kairos** | 169 | 216 | 299 |
 | ENHSP (current) | 0 | 128 | 208 |
 | ENHSP-2020 | 0 | 41 | 103 |
 | LNM-Plan | 22 | 69 | 117 |
@@ -52,7 +53,7 @@ NextFLAP, the satisficing IPC 2023 configurations) only show when they stopped: 
 
 | Planner | 100 ms | 1 s | whole limit |
 |---|---:|---:|---:|
-| **Kairos** | 101 | 146 | 178 |
+| **Kairos** | 103 | 147 | 180 |
 | POPF | 53 | 84 | 104 |
 | OPTIC | - | - | 107 |
 | TFD | - | - | 110 |
@@ -85,7 +86,7 @@ NextFLAP, the satisficing IPC 2023 configurations) only show when they stopped: 
 
 | Planner | 100 ms | 1 s | whole limit |
 |---|---:|---:|---:|
-| **Kairos** | 58 | 67 | 84 |
+| **Kairos** | 60 | 72 | 86 |
 | POPF | 13 | 15 | 16 |
 | OPTIC | - | - | 45 |
 | NextFLAP | - | - | 10 |
@@ -94,7 +95,7 @@ NextFLAP, the satisficing IPC 2023 configurations) only show when they stopped: 
 
 | Planner | 100 ms | 1 s | whole limit |
 |---|---:|---:|---:|
-| **Kairos** | 60 | 77 | 92 |
+| **Kairos** | 60 | 77 | 93 |
 | POPF | 23 | 45 | 57 |
 | OPTIC | - | - | 57 |
 | TFD | - | - | 58 |
@@ -157,7 +158,7 @@ tank) are invalid; OPTIC and NextFLAP fail on the domains with continuous effect
 
 | Planner | 100 ms | 1 s | whole limit |
 |---|---:|---:|---:|
-| **Kairos** | 48 | 155 | 215 |
+| **Kairos** | 48 | 156 | 215 |
 | Powerlifted (alt-bfws1, lifted FF) | 22 | 106 | 190 |
 
 By family (problems solved in 30 s):
@@ -165,10 +166,10 @@ By family (problems solved in 30 s):
 | Family | Problems | Kairos | Powerlifted |
 |---|---:|---:|---:|
 | blocksworld (large) | 20 | 19 | 11 |
-| childsnack | 60 | 43 | 43 |
+| childsnack | 60 | 44 | 43 |
 | genome edit distance | 15 | 11 | 10 |
 | Gnad et al. 2019 large instances | 30 | 7 | 6 |
-| labyrinth | 10 | 3 | 4 |
+| labyrinth | 10 | 2 | 4 |
 | logistics | 22 | 22 | 22 |
 | organic synthesis | 15 | 13 | 13 |
 | pipesworld tankage | 5 | 4 | 5 |
@@ -232,16 +233,16 @@ the problem) that no planner finds yet.
   the best of the others 88).
 - **Per PDDL feature** (450 problems, 28 features): Kairos solves the most for every feature
   (308; OPTIC 82, POPF 74, ENHSP 72, lama-first 59), and gives no wrong answer.
-- **Numeric** (B3): Kairos 289, the current ENHSP 208 and LNM-Plan (IPC 2023 numeric winner) 117.
+- **Numeric** (B3): Kairos 299, the current ENHSP 208 and LNM-Plan (IPC 2023 numeric winner) 117.
 - **Temporal** (B1, B2, robotics, PDDL3): Kairos solves the most at every limit.
 - **PDDL+** (processes, events, continuous effects): Kairos 148 of 255, SMTPlan+ 35 and ENHSP 23;
   within 100 ms, 54 against 25 and 0. Kairos solves the most in every family, 32 of the 33 of
   SMTPlan's generator benchmarks among them (the non-linear ones in 2 to 10 ms).
 - **Durations in between their bounds** (25): Kairos 25, all within 100 ms; POPF 17, OPTIC and
   NextFLAP 5.
-- **Hard to ground** (287): Kairos 215, Powerlifted 190; within 1 s, 155 against 106, and
+- **Hard to ground** (287): Kairos 215, Powerlifted 190; within 1 s, 156 against 106, and
   within 100 ms, 48 against 22.
-- **PlanSys2 problems at scale** (B6): Kairos 92 of 144, the others at most 58. Kairos keeps the
+- **PlanSys2 problems at scale** (B6): Kairos 93 of 144, the others at most 58. Kairos keeps the
   2 GB limit from the start of grounding: the largest patrol problems (537 680 actions) need
   more than that just to be prepared.
 
