@@ -109,7 +109,6 @@ struct Bench
     to_string(report.diagnostics[0]));
     // (time, order within the instant: 0 end, 1 literal, 2 start; action)
     std::vector<std::tuple<double, int, uint32_t>> happenings;
-    double last = 0.0;
     for (const auto & st : plan.steps) {
       size_t i = 0;
       while (i < p->sas.durative_actions.size() &&
@@ -120,12 +119,10 @@ struct Bench
       ASSERT_LT(i, p->sas.durative_actions.size()) << st.action();
       happenings.emplace_back(st.time, 2, start(i));
       happenings.emplace_back(st.time + st.duration, 0, start(i) + 1);
-      last = std::max(last, st.time + st.duration);
     }
+    // Every literal, also after the last step (the goal holds after them, as VAL checks it)
     for (size_t j = 0; j < p->sas.timed_events.size(); ++j) {
-      if (p->sas.timed_events[j].time <= last + 1e-9) {
-        happenings.emplace_back(p->sas.timed_events[j].time, 1, til(j));
-      }
+      happenings.emplace_back(p->sas.timed_events[j].time, 1, til(j));
     }
     std::sort(happenings.begin(), happenings.end());
     state::StateId s = reg->initial();

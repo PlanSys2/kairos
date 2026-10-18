@@ -159,6 +159,45 @@ TEST(ParserProblemTest, MetricForms)
     (std::vector<std::string>{"parse.unexpected_token@1:42"}));
 }
 
+// What UPF's PDDL writer gives: several constraints without 'and', and timed initial fluents
+// as (at t (assign ...))
+TEST(ParserProblemTest, DialectOfUpfsWriter)
+{
+  auto r = parse_problem(problem(
+      "(:goal (p)) (:constraints (always (p)) (sometime (q)) (at end (r)))"));
+  ASSERT_TRUE(r.ok()) << dump(r.diagnostics());
+  EXPECT_EQ(codes(r.diagnostics()),
+    (std::vector<std::string>{"parse.constraints_without_and@1:46"}));
+  EXPECT_EQ(to_pddl(r->nodes, r->symbols, r->constraints),
+    "(and (always (p)) (sometime (q)) (at end (r)))");
+  // One constraint: as always, no warning
+  auto one = parse_problem(problem("(:constraints (always (p)))"));
+  ASSERT_TRUE(one.ok());
+  EXPECT_TRUE(one.diagnostics().empty());
+  // In the domain too
+  auto d = parse_domain("(define (domain d) (:predicates (p) (q))"
+      " (:constraints (always (p)) (always (q))))");
+  ASSERT_TRUE(d.ok()) << dump(d.diagnostics());
+  EXPECT_EQ(to_pddl(d->nodes, d->symbols, d->constraints), "(and (always (p)) (always (q)))");
+
+  auto t = parse_problem(problem(
+      "(:init (= (value) 1) (at 1.0 (assign (value) 3)) (at 2 (assign (speed r1) 0.5))"
+      " (assign (level) 4))"));
+  ASSERT_TRUE(t.ok()) << dump(t.diagnostics());
+  ASSERT_EQ(t->init.size(), 4u);
+  EXPECT_EQ(t->init[1].kind, ast::InitItem::Kind::Fluent);
+  EXPECT_EQ(t->init[1].time, 1.0);
+  EXPECT_EQ(name(*t, t->init[1].name), "value");
+  EXPECT_EQ(to_pddl(t->nodes, t->symbols, t->init[1].value), "3");
+  EXPECT_EQ(t->init[2].time, 2.0);
+  EXPECT_EQ(t->init[2].args.size(), 1u);
+  EXPECT_FALSE(t->init[3].time.has_value());
+  EXPECT_EQ(codes(t.diagnostics()).size(), 3u);  // parse.assign_in_init, each
+  // A predicate named assign stays one
+  auto pred = parse_ok(problem("(:init (assign a b))"));
+  EXPECT_EQ(pred.init[0].kind, ast::InitItem::Kind::Fact);
+}
+
 TEST(ParserProblemTest, LengthIsIgnoredWithAWarning)
 {
   auto r = parse_problem(problem("(:length (:serial 10) (:parallel 3)) (:goal (p))"));

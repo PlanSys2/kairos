@@ -272,9 +272,14 @@ SnapTask snap(const sas::Task & task, bool keep_variable_duration)
       s.task.actions.push_back(std::move(til));
     }
   }
-  // Nothing may be running at the end
+  // Nothing may be running at the end, and every timed literal happened: the goal holds after
+  // the last one too (as VAL and the validator check it)
   for (auto run : s.running) {
     s.task.goal.facts.push_back(sas::Fact{run, 1});
+  }
+  if (s.tils < s.task.actions.size()) {
+    const auto & last = s.task.actions.back().changes.front();
+    s.task.goal.facts.push_back(last);
   }
   std::sort(s.task.goal.facts.begin(), s.task.goal.facts.end());
   // For the heuristics: each end also needs the facts of its over all conditions. Not for the

@@ -240,6 +240,8 @@ TEST(SnapTest, TimedInitialLiteralsOpenAndCloseWindows)
   ASSERT_TRUE(b->take("til 1"));
   ASSERT_TRUE(b->take("start (work)"));
   ASSERT_TRUE(b->take("end (work)"));
+  EXPECT_FALSE(b->goal());  // the window closes after the plan too: the goal holds then
+  ASSERT_TRUE(b->take("til 2"));
   ASSERT_TRUE(b->goal());
   auto plan = b->filter->plan(b->taken);
   ASSERT_TRUE(plan);
@@ -274,6 +276,7 @@ TEST(SnapTest, DeadlinesRejectStatesThatCannotMakeItInTime)
   ASSERT_TRUE(ok->take("end (drive)"));
   ASSERT_TRUE(ok->take("start (deliver)"));
   ASSERT_TRUE(ok->take("end (deliver)"));
+  ASSERT_TRUE(ok->take("til 1"));
   EXPECT_TRUE(ok->goal());
   // Until 8 it cannot: the first step is already a dead end (11 at the earliest)
   auto late = bench(kDeliver, "(define (problem x) (:domain d) (:init (at-a) (deliverable)"

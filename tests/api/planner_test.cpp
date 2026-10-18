@@ -1120,6 +1120,32 @@ TEST(PlannerApiTest, RequiredConcurrencyThatALoneRobotCannotGiveIsUnsolvable)
   EXPECT_TRUE(validate(two, *r.plan).valid());
 }
 
+TEST(PlannerApiTest, TheGoalHoldsAfterTheLastTimedLiteral)
+{
+  // As VAL checks it: a literal at 1 sets the value back, so the task (at once, or at 0 as M3
+  // planned it) must come after it (UPF's basic_numeric_with_timed_effect: every plan failed
+  // validation, "a bug in Kairos")
+  const char * domain =
+    "(define (domain d) (:requirements :numeric-fluents :timed-initial-literals)"
+    " (:predicates (p)) (:functions (value))"
+    " (:action task :parameters () :precondition (= (value) 1) :effect (assign (value) 2)))";
+  Problem later = problem(domain, "(define (problem x) (:domain d)"
+      " (:init (= (value) 1) (at 1 (= (value) 1))) (:goal (= (value) 2)))");
+  for (unsigned threads : {1u, 4u}) {
+    SolveOptions o = quick();
+    o.threads = threads;
+    SolveResult r = Planner().solve(later, o);
+    ASSERT_EQ(r.status, Status::Solved) << threads;
+    EXPECT_TRUE(validate(later, *r.plan).valid());
+    ASSERT_EQ(r.plan->steps.size(), 1u);
+    EXPECT_GT(r.plan->steps[0].time, 1.0);
+  }
+  // A literal after any plan takes the goal away for good: no plan, proved
+  Problem never = problem(domain, "(define (problem x) (:domain d)"
+      " (:init (p) (= (value) 1) (at 5 (not (p)))) (:goal (p)))");
+  EXPECT_EQ(Planner().solve(never, quick()).status, Status::Unsolvable);
+}
+
 TEST(PlannerApiTest, DeadlinesKnowWhatAStartGivesItselfAndDurationsThatChange)
 {
   // Busy over all, set by work's own start; and a duration (10) that tune shortens to 1: both

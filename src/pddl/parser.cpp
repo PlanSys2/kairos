@@ -991,6 +991,31 @@ private:
     }
   }
 
+  // :constraints holds one formula; several (as UPF's writer gives them) are their conjunction
+  void constraints_section(const Token & keyword, ast::FormulaId & slot)
+  {
+    bool repeated = single_section(keyword);
+    ast::FormulaId f = parse_gd(GdContext{false, true});
+    if (!at_close()) {
+      warning("parse.constraints_without_and", "several constraints without 'and': read as "
+        "their conjunction", keyword);
+      ast::Formula all;
+      all.loc = loc_of(keyword);
+      all.kind = ast::FormulaKind::And;
+      all.children.push_back(f);
+      while (!at_close()) {
+        all.children.push_back(parse_gd(GdContext{false, true}));
+      }
+      f = add_formula(std::move(all));
+    }
+    if (repeated && slot.valid()) {
+      compare_repeated(
+        keyword, to_pddl(nodes_, symbols_, f) == to_pddl(nodes_, symbols_, slot));
+    } else {
+      slot = f;
+    }
+  }
+
   void parse_requirements(std::vector<ast::Requirement> & out)
   {
     while (!at_close()) {
@@ -1030,7 +1055,7 @@ private:
       list_section(keyword);
       parse_functions(d.functions);
     } else if (iequals(k, ":constraints")) {
-      single_formula(keyword, d.constraints, GdContext{false, true});
+      constraints_section(keyword, d.constraints);
       expect(TokenKind::RParen, "')' closing :constraints");
     } else if (iequals(k, ":action")) {
       d.actions.push_back(parse_action(keyword, false));
@@ -1219,7 +1244,7 @@ private:
       single_formula(keyword, p.goal, GdContext{});
       expect(TokenKind::RParen, "')' closing :goal");
     } else if (iequals(k, ":constraints")) {
-      single_formula(keyword, p.constraints, GdContext{false, true});
+      constraints_section(keyword, p.constraints);
       expect(TokenKind::RParen, "')' closing :constraints");
     } else if (iequals(k, ":metric")) {
       bool repeated = single_section(keyword);
@@ -1259,20 +1284,24 @@ private:
     ast::InitItem item;
     item.loc = loc_of(open);
     const Token & head = peek();
+    // (= (f a) v), after the '='
+    auto value = [&]() {
+        item.kind = ast::InitItem::Kind::Fluent;
+        if (peek().kind == TokenKind::Name) {  // zero-arity function without parentheses
+          item.name = intern(next());
+        } else {
+          expect(TokenKind::LParen, "'(' starting the function");
+          item.name = intern(expect(TokenKind::Name, "function name"));
+          item.args = parse_terms_until_close();
+        }
+        item.value = parse_expr();
+        expect(TokenKind::RParen, "')' closing the initial value");
+        return item;
+      };
 
     if (head.kind == TokenKind::Operator && head.text == "=") {
       next();
-      item.kind = ast::InitItem::Kind::Fluent;
-      if (peek().kind == TokenKind::Name) {  // zero-arity function without parentheses
-        item.name = intern(next());
-      } else {
-        expect(TokenKind::LParen, "'(' starting the function");
-        item.name = intern(expect(TokenKind::Name, "function name"));
-        item.args = parse_terms_until_close();
-      }
-      item.value = parse_expr();
-      expect(TokenKind::RParen, "')' closing the initial value");
-      return item;
+      return value();
     }
     if (head.kind != TokenKind::Name) {
       unexpected(head, "initial fact");
@@ -1285,6 +1314,11 @@ private:
       timed.loc = item.loc;
       expect(TokenKind::RParen, "')' closing the timed initial literal");
       return timed;
+    }
+    if (iequals(word.text, "assign") && peek().kind == TokenKind::LParen) {
+      // UPF's writer gives timed initial fluents so
+      warning("parse.assign_in_init", "(assign ...) in :init read as (= ...)", word);
+      return value();
     }
     if (iequals(word.text, "not")) {
       expect(TokenKind::LParen, "'(' starting the negated fact");

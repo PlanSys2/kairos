@@ -11,6 +11,12 @@ Forthcoming
 * A search stopped by the caller while the steps of time were still searching after M3 ran out
   of states is cancelled, not "no plan found".
 * The static ``libkairos`` is position independent (it links into shared objects).
+* The goal holds after the last timed initial literal too, as VAL and the validator check it:
+  M3 and the steps of time planned as if the plan ended before later literals, and every plan
+  they found then failed validation (an internal error).
+* Reads the PDDL that UPF's writer gives: several constraints in ``:constraints`` without
+  ``and``, and timed initial fluents as ``(at t (assign (f) v))`` (with a warning).
+* Python: ``SearchOptions`` given to ``solve`` (what ``SolveOptions`` has).
 * Contributors: Francisco Martín Rico
 
 1.0.2 (2026-10-18)
