@@ -452,6 +452,28 @@ TEST(ValidateTemporalTest, InterferenceAndEpsilon)
       "0.000: (strike) [5.000]\n0.001: (peek) [2.000]\n");
   EXPECT_TRUE(exact.valid());
   EXPECT_TRUE(exact.diagnostics.empty()) << dump(exact);
+  // Epsilon 0 (UPF without an epsilon): no separation, so the same instant may interfere. peek
+  // at strike's end reads the light before the happening, still on
+  ValidateOptions none;
+  none.epsilon = 0.0;
+  auto together = validate_plan(kTemporal, kMatchProblem,
+      *parse_plan("0.000: (strike) [5.000]\n5.000: (peek) [2.000]\n"), none);
+  EXPECT_TRUE(together.valid()) << dump(together);
+  // and at its start, before the light is on: as before, the condition fails
+  auto before = validate_plan(kTemporal, kMatchProblem,
+      *parse_plan("0.000: (strike) [5.000]\n0.000: (peek) [2.000]\n"), none);
+  EXPECT_EQ(error_code(before), "validate.precondition_failed") << dump(before);
+  // Writes that disagree at one instant are interference with epsilon 0 too: strike's end
+  // deletes the light that a timed literal adds (UPF's basic_tils)
+  auto both = validate_plan(kTemporal,
+      "(define (problem w) (:domain t) (:init (at 5 (light))) (:goal (light)))",
+      *parse_plan("0.000: (strike) [5.000]\n"), none);
+  EXPECT_EQ(error_code(both), "validate.interference") << dump(both);
+  // Closer than nothing: no warnings
+  auto near = validate_plan(kTemporal, kMatchProblem,
+      *parse_plan("0.000: (strike) [5.000]\n0.0005: (peek) [2.000]\n"), none);
+  EXPECT_TRUE(near.valid());
+  EXPECT_TRUE(near.diagnostics.empty()) << dump(near);
 }
 
 TEST(ValidateTemporalTest, NonInterferingSimultaneousActions)

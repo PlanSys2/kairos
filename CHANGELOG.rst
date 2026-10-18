@@ -2,6 +2,14 @@
 Changelog for package kairos
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* The validator with epsilon 0 (``ValidateOptions::epsilon``, ``kairos validate --epsilon 0``):
+  no separation, so a happening may read what another at the same instant writes (conditions
+  read the state before, effects apply together), as UPF validates problems without an epsilon.
+  Writes that disagree are still interference.
+* Contributors: Francisco Martín Rico
+
 1.0.3 (2026-10-18)
 ------------------
 * Python: ``pip install kairos-planner`` (wheels for Linux x86-64 and arm64): parse, check,

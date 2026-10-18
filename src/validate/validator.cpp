@@ -1622,6 +1622,7 @@ private:
   void initial_state();
   void check_global_constraints(const State & s, const std::string & when);
   bool interfere(const EventInfo & a, const EventInfo & b) const;
+  bool conflict(const EventInfo & a, const EventInfo & b) const;  // writes that disagree
   bool integrate(double from, double to);  // true if some fluent changed
   bool nonlinear_ = false;  // continuous effects whose rates change: evolve, not integrate
   // PDDL+: processes and events
@@ -1807,9 +1808,11 @@ bool Validator::interfere(const EventInfo & a, const EventInfo & b) const
       }
       return false;
     };
-  if (writes_read(a, b) || writes_read(b, a)) {
-    return true;
-  }
+  return writes_read(a, b) || writes_read(b, a) || conflict(a, b);
+}
+
+bool Validator::conflict(const EventInfo & a, const EventInfo & b) const
+{
   auto contains = [](const std::vector<Key> & v, const Key & k) {
       return std::find(v.begin(), v.end(), k) != v.end();
     };
@@ -2106,6 +2109,10 @@ void Validator::run()
         current_ = ev.kind == EventInfo::Kind::Til ? std::nullopt : std::optional<size_t>(ev.index);
         return ev.kind == EventInfo::Kind::Til ? 0u : steps_[ev.index].step->line;
       };
+    // Epsilon 0: no separation, so one happening may read what another at the same instant
+    // writes (UPF without an epsilon): conditions read the state before, effects apply
+    // together. Writes that disagree are still an error
+    bool separated = w_.options.epsilon > 0.0;
     for (size_t x = 0; x < group.size(); ++x) {
       for (size_t y = x + 1; y < group.size(); ++y) {
         if (group[x].kind == EventInfo::Kind::Start && group[y].kind == EventInfo::Kind::End &&
@@ -2113,7 +2120,7 @@ void Validator::run()
         {
           continue;
         }
-        if (interfere(group[x], group[y])) {
+        if (separated ? interfere(group[x], group[y]) : conflict(group[x], group[y])) {
           fail("validate.interference", describe(group[x]) + " and " + describe(group[y]) +
             " happen at the same time and interfere", line_of(group[y]));
         }

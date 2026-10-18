@@ -42,7 +42,11 @@ enum class ValidationStatus : uint8_t
 
 struct ValidateOptions
 {
-  double epsilon = 0.001;            // minimum separation between interfering happenings
+  // Minimum separation between interfering happenings. 0: none, and a happening may read what
+  // another at the same instant writes (conditions read the state before them, effects apply
+  // together), as UPF validates problems without an epsilon; writes that disagree (an add and
+  // a delete of an atom, two assignments) are still interference
+  double epsilon = 0.001;
   double tolerance = 1e-6;           // for numeric comparisons and simultaneity
   double duration_tolerance = 1e-3;  // for (= ?duration ...): plans print 3 decimals
   // Interfering happenings closer than epsilon: an error if true, a warning if false. PDDL 2.1
