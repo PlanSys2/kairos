@@ -1030,6 +1030,7 @@ TEST(PlannerApiTest, AChargeTooShortForThreeMovesEndsBeforeTheTimeout)
     " (:goal (robot_at r1 lab)))");
   for (unsigned threads : {1u, 4u}) {
     SolveOptions o = quick();
+    o.timeout *= kSlowBuild;  // the coverage build ran out of 10 s
     o.threads = threads;
     auto start = std::chrono::steady_clock::now();
     SolveResult r = Planner().solve(p, o);

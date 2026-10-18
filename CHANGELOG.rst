@@ -2,8 +2,8 @@
 Changelog for package kairos
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+1.0.3 (2026-10-18)
+------------------
 * Python: ``pip install kairos-planner`` (wheels for Linux x86-64 and arm64): parse, check,
   plan (blocking, in the background or as an iterator of better plans) and validate, with the
   diagnostics; planning releases the GIL and Ctrl-C stops it. The wheel has the ``kairos``
