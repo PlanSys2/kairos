@@ -1123,9 +1123,9 @@ TEST(PlannerApiTest, RequiredConcurrencyThatALoneRobotCannotGiveIsUnsolvable)
 
 TEST(PlannerApiTest, TheGoalHoldsAfterTheLastTimedLiteral)
 {
-  // As VAL checks it: a literal at 1 sets the value back, so the task (at once, or at 0 as M3
-  // planned it) must come after it (UPF's basic_numeric_with_timed_effect: every plan failed
-  // validation, "a bug in Kairos")
+  // As VAL checks it: a literal at 1 sets the value back, so the task must come after it (UPF's
+  // basic_numeric_with_timed_effect: M3 planned it at 0 and every plan failed validation, "a bug
+  // in Kairos"). A goal state of M3 counts once its plan is valid
   const char * domain =
     "(define (domain d) (:requirements :numeric-fluents :timed-initial-literals)"
     " (:predicates (p)) (:functions (value))"
@@ -1138,8 +1138,8 @@ TEST(PlannerApiTest, TheGoalHoldsAfterTheLastTimedLiteral)
     SolveResult r = Planner().solve(later, o);
     ASSERT_EQ(r.status, Status::Solved) << threads;
     EXPECT_TRUE(validate(later, *r.plan).valid());
-    ASSERT_EQ(r.plan->steps.size(), 1u);
-    EXPECT_GT(r.plan->steps[0].time, 1.0);
+    ASSERT_FALSE(r.plan->steps.empty());
+    EXPECT_GT(r.plan->steps.back().time, 1.0);  // the last task after the literal
   }
   // A literal after any plan takes the goal away for good: no plan, proved
   Problem never = problem(domain, "(define (problem x) (:domain d)"

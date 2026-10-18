@@ -67,6 +67,11 @@ Untimed untimed(const sas::Task & task)
   }
   u.task = std::move(s.task);
   u.running = s.running;
+  if (s.tils < u.task.actions.size()) {
+    // Every plan applies every timed literal (the goal holds after the last one, as VAL checks)
+    u.task.goal.facts.push_back(u.task.actions.back().changes.front());
+    std::sort(u.task.goal.facts.begin(), u.task.goal.facts.end());
+  }
   u.task.symmetries.clear();  // the new variables are not in them
   std::vector<sas::VarId> started;
   for (size_t i = 0; i < task.durative_actions.size(); ++i) {

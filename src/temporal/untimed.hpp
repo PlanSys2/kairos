@@ -34,7 +34,7 @@ namespace kairos::temporal
  * the running actions after each instant, so only `kairos-advance` checks them here (accept);
  * an action with an over all condition and a duration surely above 0 cannot end in the instant
  * it starts. Durations, epsilon, interference and the times of the timed initial literals are
- * left out (any order of the literals that keeps theirs).
+ * left out (any order of the literals that keeps theirs); the goal holds after all of them.
  *
  * Every plan is then a path to the goal here, so a space without one proves there is no plan,
  * as long as no durative action overlaps itself (as in POPF; the snap task runs one instance

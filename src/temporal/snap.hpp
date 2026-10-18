@@ -44,8 +44,8 @@ namespace kairos::temporal
  * - start: the at start conditions and "not running"; its start effects and "running";
  * - end: the at end conditions and "running"; its end effects and "not running";
  * - a timed initial literal: the ones before it happened; its effects;
- * - goal: the original goal, nothing running and every timed initial literal applied (the
- *   goal holds after the last one too, as VAL checks it).
+ * - goal: the original goal and nothing running (it must hold after the later timed initial
+ *   literals too, as VAL checks it: the orchestrator validates each plan before taking it).
  *
  * Over all conditions are not in the task: the TemporalFilter checks them while the action
  * runs (`guide`, for the heuristics, has them in the ends), and the STN checks durations, epsilon separations and the times of the timed initial

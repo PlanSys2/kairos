@@ -1500,6 +1500,22 @@ private:
       ctx.accept = [&filter](state::StateId p, uint32_t a, state::StateId c) {
           return filter->accept(p, a, c);
         };
+      if (snap_task_->tils < snap_task_->task.actions.size()) {
+        // The goal must hold after the later timed literals too (VAL): a goal state counts if
+        // its plan is valid. Asking the search for every literal instead lost airport with
+        // 300 of them (as many more steps and landmarks for the heuristics)
+        ctx.check_plan = [this, &filter](const std::vector<uint32_t> & actions) {
+            auto p = filter->plan(actions);
+            if (!p) {
+              return false;
+            }
+            strip_preference_steps(*p);
+            auto report = validate(*p);
+            bool ok = report.valid();
+            checked_ = std::make_pair(actions, std::move(report));
+            return ok;
+          };
+      }
       if (ph.makespan_g) {
         ctx.path_cost = [&filter, &costs](
           state::StateId p, uint32_t a, state::StateId c, double g) {

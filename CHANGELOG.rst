@@ -12,8 +12,9 @@ Changelog for package kairos
   of states is cancelled, not "no plan found".
 * The static ``libkairos`` is position independent (it links into shared objects).
 * The goal holds after the last timed initial literal too, as VAL and the validator check it:
-  M3 and the steps of time planned as if the plan ended before later literals, and every plan
-  they found then failed validation (an internal error).
+  M3 took a goal state as a plan before later literals, and every plan it found could fail
+  validation (an internal error). A goal state of M3 with timed literals counts once its plan
+  is valid; the search goes on otherwise.
 * Reads the PDDL that UPF's writer gives: several constraints in ``:constraints`` without
   ``and``, and timed initial fluents as ``(at t (assign (f) v))`` (with a warning).
 * Python: ``SearchOptions`` given to ``solve`` (what ``SolveOptions`` has).
