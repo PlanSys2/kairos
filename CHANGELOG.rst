@@ -2,8 +2,8 @@
 Changelog for package kairos
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+1.0.4 (2026-10-18)
+------------------
 * The validator with epsilon 0 (``ValidateOptions::epsilon``, ``kairos validate --epsilon 0``):
   no separation, so a happening may read what another at the same instant writes (conditions
   read the state before, effects apply together), as UPF validates problems without an epsilon.
