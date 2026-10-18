@@ -62,7 +62,7 @@ struct Hybrid
   // Global and over all conditions as accept checks them (the validator's tolerance)
   sas::Condition always;
   std::vector<sas::Condition> loose_over_all;
-  std::optional<sas::NumVarId> time;    // the time, with durative actions or timed literals
+  std::optional<sas::NumVarId> time;    // the time, with timed literals (stops at the last)
   std::string unsupported;              // why this task cannot be planned (empty if it can)
   double separation = 0.0;  // PDDL 2.1 (no processes nor events): happenings this far apart
   // For the heuristics (same actions): each end also needs its over all conditions projected

@@ -72,6 +72,12 @@ struct SnapTask
 /// fixed stays in the actions (as ExprOp::Duration) instead of making the task unsupported.
 SnapTask snap(const sas::Task & task, bool keep_variable_duration = false);
 
+/// @brief A new variable with its own atoms (for printing): predicates `names` (one per name)
+/// over `args`; binary with one atom (value 0 true, 1 false), a group with more.
+sas::VarId add_variable(
+  sas::Task & t, const std::vector<std::string> & names, sas::Variable::Kind kind,
+  uint32_t initial, const std::vector<sas::ObjectId> & args = {});
+
 /// @brief Duration bounds of a durative action in a state (nullopt: no bound on that side).
 struct DurationBounds
 {
@@ -102,6 +108,11 @@ public:
   TemporalFilter & operator=(const TemporalFilter &) = delete;
 
   bool accept(state::StateId parent, uint32_t action, state::StateId child);
+
+  /// @brief The goal facts that the relaxation with deadlines (see above) cannot reach in time
+  /// from the initial state: if any, no plan exists.
+  static std::vector<sas::Fact> late_goals(
+    const sas::Task & original, const SnapTask & snap, double epsilon);
 
   /// @brief The makespan of the plan of `parent` plus a transition accepted while expanding it
   /// (pending ends included); `fallback` if unknown.

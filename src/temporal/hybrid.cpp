@@ -236,8 +236,14 @@ Hybrid hybrid(
     h.first_start = static_cast<uint32_t>(snapped->instant);
     h.durative = static_cast<uint32_t>(task.durative_actions.size());
     h.running = snapped->running;
-    h.time = b.add_fluent("kairos-time", 0.0);
-    b.rate(increase(*h.time), constant(1.0));
+    if (!tils.empty()) {
+      // Only the timed literals read the time: it stops at the last one, else no state repeats
+      h.time = b.add_fluent("kairos-time", 0.0);
+      sas::Effect tick = increase(*h.time);
+      tick.condition.not_facts.push_back(
+        sas::Fact{tils.front().changes.front().var, static_cast<uint32_t>(tils.size() - 1)});
+      b.rate(tick, constant(1.0));
+    }
   }
   // Per durative action, for the heuristics: its clock, the last moment it may end, and the
   // constant rates of its own continuous effects
@@ -416,6 +422,16 @@ Hybrid hybrid(
     h.task.clock_deadlines.push_back({til.pre.facts.at(0), *h.time, std::nullopt, at, true});
     h.task.actions.push_back(std::move(til));
   }
+  // Epsilon waits only right after a happening: chained (or after a wait) they make a grid of
+  // epsilons where no state repeats (a door that closes at 3: millions of states)
+  if (h.wait_epsilon != UINT32_MAX) {
+    sas::VarId happened = add_variable(h.task, {"kairos-happened"}, sas::Variable::Kind::Binary, 1);
+    for (uint32_t a = 0; a < h.task.actions.size(); ++a) {
+      bool waits_here = a == h.wait || a == h.wait_long || a == h.wait_epsilon;
+      h.task.actions[a].changes.push_back(sas::Fact{happened, waits_here ? 1u : 0u});
+    }
+    h.task.actions[h.wait_epsilon].pre.facts.push_back(sas::Fact{happened, 0});
+  }
   h.always = loosen(h.task.always, kTolerance);
   for (const auto & c : h.over_all) {
     h.loose_over_all.push_back(loosen(c, kTolerance));
@@ -576,8 +592,9 @@ Plan Hybrid::plan(const std::vector<uint32_t> & actions, state::StateSpace & spa
       s = *next;
     }
     if (a == wait || a == wait_long || a == wait_epsilon) {
-      // The time itself if kept; else the sum, rounded as the clocks (1e-9)
-      t = time ? space.numbers(s)[*time] : std::round((t + space.last_wait()) * 1e9) / 1e9;
+      // The time itself while it runs; else the sum, rounded as the clocks (1e-9)
+      double sum = std::round((t + space.last_wait()) * 1e9) / 1e9;
+      t = time && space.numbers(s)[*time] > t ? space.numbers(s)[*time] : sum;
       continue;
     }
     if (is_event(a)) {

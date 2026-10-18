@@ -293,6 +293,78 @@ TEST(SnapTest, DeadlinesRejectStatesThatCannotMakeItInTime)
   EXPECT_TRUE(none->take("start (drive)"));
 }
 
+// What the deadlines say from the initial state: goals no plan reaches in time
+std::vector<std::string> late(const std::string & domain, const std::string & problem)
+{
+  auto p = pipeline(domain, problem);
+  EXPECT_TRUE(p->ok);
+  std::vector<std::string> out;
+  for (const auto & f : TemporalFilter::late_goals(p->sas, snap(p->sas), 0.001)) {
+    out.push_back(sas::fact_name(p->sas, f));
+  }
+  return out;
+}
+
+TEST(SnapTest, LateGoalsFromTheInitialState)
+{
+  // Work (4) needs open over all: from 3 to 6 is too short, to 10 is not
+  EXPECT_EQ(late(kWindow, "(define (problem x) (:domain w) (:init (at 3 (open))"
+    " (at 6 (not (open)))) (:goal (done)))"), std::vector<std::string>{"(done)"});
+  EXPECT_TRUE(late(kWindow, "(define (problem x) (:domain w) (:init (at 3 (open))"
+    " (at 10 (not (open)))) (:goal (done)))").empty());
+  // Drive (10) and deliver (1) by 15, not by 8
+  EXPECT_TRUE(late(kDeliver, "(define (problem x) (:domain d) (:init (at-a) (deliverable)"
+    " (at 15 (not (deliverable)))) (:goal (delivered)))").empty());
+  EXPECT_EQ(late(kDeliver, "(define (problem x) (:domain d) (:init (at-a) (deliverable)"
+    " (at 8 (not (deliverable)))) (:goal (delivered)))"),
+    std::vector<std::string>{"(delivered)"});
+  // Without literals that take something away for good: nothing to say
+  EXPECT_TRUE(late(kDeliver, "(define (problem x) (:domain d) (:init (at-a))"
+    " (:goal (delivered)))").empty());
+}
+
+TEST(SnapTest, LateGoalsWithOverAllConditionsAStartGivesItself)
+{
+  // Busy over all, set by its own start: it holds right after, not before (it was taken as
+  // needed before the start, and nothing else sets it: a false "too late")
+  auto domain = [](const std::string & over_all) {
+      return "(define (domain s) (:requirements :durative-actions :timed-initial-literals)"
+             " (:predicates (light) (busy) (done))"
+             " (:durative-action work :parameters () :duration (= ?duration 2)"
+             "  :condition (and (at start (light)) (over all (busy)) " + over_all + ")"
+             "  :effect (and (at start (busy)) (at end (done)))))";
+    };
+  EXPECT_TRUE(late(domain(""), "(define (problem x) (:domain s) (:init (light)"
+    " (at 1 (not (light)))) (:goal (done)))").empty());
+  // Light over all too, gone at 1: no room for 2
+  EXPECT_EQ(late(domain("(over all (light))"), "(define (problem x) (:domain s) (:init (light)"
+    " (at 1 (not (light)))) (:goal (done)))"), std::vector<std::string>{"(done)"});
+}
+
+TEST(SnapTest, LateGoalsWithDurationsThatChange)
+{
+  // Work lasts len, 10 at first; tune makes it 1, which fits before 5. Its duration in the
+  // initial state is no lower bound (it was: a false "too late")
+  const char * domain =
+    "(define (domain v) (:requirements :durative-actions :numeric-fluents"
+    " :timed-initial-literals)"
+    " (:predicates (open) (done)) (:functions (len))"
+    " (:action tune :parameters () :precondition () :effect (assign (len) 1))"
+    " (:durative-action work :parameters () :duration (= ?duration (len))"
+    "  :condition (over all (open)) :effect (at end (done))))";
+  EXPECT_TRUE(late(domain, "(define (problem x) (:domain v) (:init (open) (= (len) 10)"
+    " (at 5 (not (open)))) (:goal (done)))").empty());
+  // A length nothing changes is a bound: 10 does not fit before 5
+  const char * fixed =
+    "(define (domain v) (:requirements :durative-actions :numeric-fluents"
+    " :timed-initial-literals)"
+    " (:predicates (open) (done)) (:functions (len))"
+    " (:durative-action work :parameters () :duration (= ?duration (len))"
+    "  :condition (over all (open)) :effect (at end (done))))";
+  EXPECT_EQ(late(fixed, "(define (problem x) (:domain v) (:init (open) (= (len) 10)"
+    " (at 5 (not (open)))) (:goal (done)))"), std::vector<std::string>{"(done)"});
+}
+
 TEST(SnapTest, WhatM3CannotPlanYet)
 {
   const char * domain =

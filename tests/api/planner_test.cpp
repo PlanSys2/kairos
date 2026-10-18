@@ -936,8 +936,208 @@ TEST(PlannerApiTest, TimedInitialLiteralsWithEngineM3)
       "(define (problem x) (:domain w) (:init (at 3 (open)) (at 6 (not (open))))"
       " (:goal (done)))");
   SolveResult n = Planner().solve(q, quick());
-  EXPECT_EQ(n.status, Status::NoPlanFound);  // M3 is no proof
-  EXPECT_TRUE(has_code(n.diagnostics, "orchestrator.m3_exhausted"));
+  EXPECT_EQ(n.status, Status::Unsolvable);  // even ignoring deletes, it ends after 6
+  EXPECT_TRUE(has_code(n.diagnostics, "orchestrator.deadlines"));
+}
+
+// --- Tasks from PlanSys2's test bank (kairos 1.0.0) ---------------------------------------------
+
+const char * kClosingDoors =
+  "(define (domain closing_doors)"
+  " (:requirements :strips :typing :durative-actions :timed-initial-literals)"
+  " (:types robot room door)"
+  " (:predicates (robot_at ?r - robot ?l - room) (door_between ?d - door ?a - room ?b - room)"
+  "  (door_open ?d - door))"
+  " (:durative-action pass_door :parameters (?r - robot ?d - door ?from - room ?to - room)"
+  "  :duration (= ?duration 4)"
+  "  :condition (and (at start (robot_at ?r ?from)) (over all (door_between ?d ?from ?to))"
+  "   (over all (door_open ?d)))"
+  "  :effect (and (at start (not (robot_at ?r ?from))) (at end (robot_at ?r ?to)))))";
+
+TEST(PlannerApiTest, ADoorThatClosesBeforeThePassageEndsIsUnsolvable)
+{
+  // Closes at 3, passing takes 4: it ran to the timeout (3 million states) without a proof
+  Problem p = problem(kClosingDoors,
+      "(define (problem p) (:domain closing_doors)"
+      " (:objects r1 - robot corridor office - room office_door - door)"
+      " (:init (robot_at r1 corridor) (door_open office_door)"
+      "  (door_between office_door corridor office) (at 3 (not (door_open office_door))))"
+      " (:goal (robot_at r1 office)))");
+  for (unsigned threads : {1u, 4u}) {
+    SolveOptions o = quick();
+    o.threads = threads;
+    auto start = std::chrono::steady_clock::now();
+    SolveResult r = Planner().solve(p, o);
+    EXPECT_EQ(r.status, Status::Unsolvable) << threads;
+    EXPECT_TRUE(has_code(r.diagnostics, "orchestrator.deadlines")) << threads;
+    EXPECT_LT(std::chrono::steady_clock::now() - start, kSlowBuild * 1s) << threads;
+  }
+}
+
+TEST(PlannerApiTest, ADoorThatClosesLaterWithTwoRobotsEndsWithItsPlan)
+{
+  // The first plan in 2 ms, then the steps of time (for when there is no plan) went on for
+  // 300 ms beside it with several threads
+  Problem p = problem(kClosingDoors,
+      "(define (problem p) (:domain closing_doors)"
+      " (:objects r1 r2 - robot corridor office lab - room office_door lab_door - door)"
+      " (:init (robot_at r1 corridor) (robot_at r2 corridor) (door_open office_door)"
+      "  (door_between office_door corridor office) (door_between lab_door office lab)"
+      "  (door_open lab_door) (at 9 (not (door_open office_door))))"
+      " (:goal (and (robot_at r1 lab) (robot_at r2 office))))");
+  for (unsigned threads : {1u, 4u}) {
+    SolveOptions o = quick();
+    o.threads = threads;
+    auto start = std::chrono::steady_clock::now();
+    SolveResult r = Planner().solve(p, o);
+    ASSERT_EQ(r.status, Status::Solved) << threads;
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+    EXPECT_NEAR(r.plan->makespan(), 8.001, 1e-6);
+    EXPECT_EQ(r.stop_reason, StopReason::Exhausted) << threads;  // not stopped
+    EXPECT_LT(r.stats.states, 5000u) << threads;  // 15 000 and more before
+    EXPECT_LT(std::chrono::steady_clock::now() - start, kSlowBuild * 1s) << threads;
+  }
+}
+
+TEST(PlannerApiTest, AChargeTooShortForThreeMovesEndsBeforeTheTimeout)
+{
+  // The longest charge (8 s) gives 80, three moves need 90. In steps of time the time grew for
+  // ever and epsilon waits chained: the timeout, 2.5 million states. Now the steps run out of
+  // states at once; not a proof (they may miss a plan that needs finer timing)
+  Problem p = problem(
+    "(define (domain recharge) (:requirements :strips :typing :durative-actions"
+    " :numeric-fluents :duration-inequalities)"
+    " (:types robot room charger)"
+    " (:predicates (robot_at ?r - robot ?l - room) (connected ?a - room ?b - room)"
+    "  (charger_at ?c - charger ?l - room) (charger_free ?c - charger))"
+    " (:functions (battery ?r - robot))"
+    " (:durative-action move :parameters (?r - robot ?from - room ?to - room)"
+    "  :duration (= ?duration 5)"
+    "  :condition (and (at start (robot_at ?r ?from)) (at start (>= (battery ?r) 30))"
+    "   (over all (connected ?from ?to)))"
+    "  :effect (and (at start (not (robot_at ?r ?from))) (at start (decrease (battery ?r) 30))"
+    "   (at end (robot_at ?r ?to))))"
+    " (:durative-action charge :parameters (?r - robot ?c - charger ?l - room)"
+    "  :duration (and (>= ?duration 1) (<= ?duration 8))"
+    "  :condition (and (at start (charger_free ?c)) (over all (charger_at ?c ?l))"
+    "   (over all (robot_at ?r ?l)))"
+    "  :effect (and (at start (not (charger_free ?c)))"
+    "   (at end (increase (battery ?r) (* 10 ?duration))))))",
+    "(define (problem p) (:domain recharge)"
+    " (:objects r1 - robot dock hall office lab - room c1 - charger)"
+    " (:init (robot_at r1 dock) (= (battery r1) 0) (charger_at c1 dock) (charger_free c1)"
+    "  (connected dock hall) (connected hall office) (connected office lab))"
+    " (:goal (robot_at r1 lab)))");
+  for (unsigned threads : {1u, 4u}) {
+    SolveOptions o = quick();
+    o.threads = threads;
+    auto start = std::chrono::steady_clock::now();
+    SolveResult r = Planner().solve(p, o);
+    EXPECT_EQ(r.status, Status::NoPlanFound) << threads;
+    EXPECT_TRUE(has_code(r.diagnostics, "orchestrator.m3_exhausted")) << threads;
+    EXPECT_TRUE(has_code(r.diagnostics, "orchestrator.steps_exhausted")) << threads;
+    EXPECT_LT(std::chrono::steady_clock::now() - start, kSlowBuild * 2s) << threads;
+  }
+}
+
+TEST(PlannerApiTest, StepsOfTimeThatRunOutOfTimeAreATimeout)
+{
+  // M3 runs out of states (charges of 1 s: 10 each), the steps of time do not (a charge of
+  // any length): "no plan, more time does not help" was wrong, more time may help
+  Problem p = problem(
+    "(define (domain endless) (:requirements :typing :durative-actions :numeric-fluents"
+    " :duration-inequalities) (:types robot)"
+    " (:predicates (free ?r - robot) (done ?r - robot))"
+    " (:functions (battery ?r - robot))"
+    " (:durative-action charge :parameters (?r - robot) :duration (>= ?duration 1)"
+    "  :condition (at start (free ?r))"
+    "  :effect (and (at start (not (free ?r)))"
+    "   (at end (increase (battery ?r) (* 10 ?duration)))))"
+    " (:durative-action work :parameters (?r - robot) :duration (= ?duration 1)"
+    "  :condition (at start (and (>= (battery ?r) 30) (<= (battery ?r) 20)))"
+    "  :effect (at end (done ?r))))",
+    "(define (problem p) (:domain endless) (:objects r - robot)"
+    " (:init (free r) (= (battery r) 0)) (:goal (done r)))");
+  for (unsigned threads : {1u, 4u}) {
+    SolveOptions o;
+    o.timeout = 1s;
+    o.threads = threads;
+    SolveResult r = Planner().solve(p, o);
+    EXPECT_EQ(r.status, Status::Timeout) << threads;
+    EXPECT_TRUE(has_code(r.diagnostics, "orchestrator.m3_exhausted")) << threads;
+  }
+}
+
+TEST(PlannerApiTest, RequiredConcurrencyThatALoneRobotCannotGiveIsUnsolvable)
+{
+  // Holding the door needs the robot in the room over all, passing takes it out: no plan.
+  // M3 ran out of states, which proves nothing; without durations nor times it does
+  const char * domain =
+    "(define (domain door_holding) (:requirements :strips :typing :durative-actions)"
+    " (:types robot room door)"
+    " (:predicates (robot_at ?r - robot ?l - room) (door_between ?d - door ?a - room ?b - room)"
+    "  (door_open ?d - door))"
+    " (:durative-action hold_door :parameters (?r - robot ?d - door ?l - room ?other - room)"
+    "  :duration (= ?duration 10)"
+    "  :condition (and (over all (robot_at ?r ?l)) (over all (door_between ?d ?l ?other)))"
+    "  :effect (and (at start (door_open ?d)) (at end (not (door_open ?d)))))"
+    " (:durative-action pass_door :parameters (?r - robot ?d - door ?from - room ?to - room)"
+    "  :duration (= ?duration 4)"
+    "  :condition (and (at start (robot_at ?r ?from)) (over all (door_between ?d ?from ?to))"
+    "   (over all (door_open ?d)))"
+    "  :effect (and (at start (not (robot_at ?r ?from))) (at end (robot_at ?r ?to)))))";
+  auto task = [&](const std::string & robots, const std::string & at) {
+      return problem(domain, "(define (problem p) (:domain door_holding)"
+               " (:objects " + robots + " - robot corridor office - room office_door - door)"
+               " (:init " + at + " (door_between office_door corridor office)"
+               "  (door_between office_door office corridor))"
+               " (:goal (robot_at walker office)))");
+    };
+  Problem alone = task("walker", "(robot_at walker corridor)");
+  for (unsigned threads : {1u, 4u}) {
+    SolveOptions o = quick();
+    o.threads = threads;
+    SolveResult r = Planner().solve(alone, o);
+    EXPECT_EQ(r.status, Status::Unsolvable) << threads;
+    auto why = std::find_if(r.diagnostics.begin(), r.diagnostics.end(),
+        [](const Diagnostic & d) {return d.code == "orchestrator.why";});
+    ASSERT_NE(why, r.diagnostics.end()) << threads;
+    EXPECT_NE(why->message.find("without durations and times"), std::string::npos);
+    EXPECT_FALSE(has_code(r.diagnostics, "orchestrator.m3_exhausted")) << threads;
+  }
+  // With a teammate to hold it: a plan
+  Problem two = task("walker holder", "(robot_at walker corridor) (robot_at holder corridor)");
+  SolveResult r = Planner().solve(two, quick());
+  ASSERT_EQ(r.status, Status::Solved);
+  EXPECT_TRUE(validate(two, *r.plan).valid());
+}
+
+TEST(PlannerApiTest, DeadlinesKnowWhatAStartGivesItselfAndDurationsThatChange)
+{
+  // Busy over all, set by work's own start; and a duration (10) that tune shortens to 1: both
+  // fit before the light goes at 5, and were taken as too late
+  Problem busy = problem(
+    "(define (domain s) (:requirements :durative-actions :timed-initial-literals)"
+    " (:predicates (light) (busy) (done))"
+    " (:durative-action work :parameters () :duration (= ?duration 2)"
+    "  :condition (and (at start (light)) (over all (busy)))"
+    "  :effect (and (at start (busy)) (at end (done)))))",
+    "(define (problem x) (:domain s) (:init (light) (at 5 (not (light)))) (:goal (done)))");
+  SolveResult b = Planner().solve(busy, quick());
+  ASSERT_EQ(b.status, Status::Solved);
+  EXPECT_TRUE(validate(busy, *b.plan).valid());
+  Problem tune = problem(
+    "(define (domain v) (:requirements :durative-actions :numeric-fluents"
+    " :timed-initial-literals)"
+    " (:predicates (open) (done)) (:functions (len))"
+    " (:action tune :parameters () :precondition () :effect (assign (len) 1))"
+    " (:durative-action work :parameters () :duration (= ?duration (len))"
+    "  :condition (over all (open)) :effect (at end (done))))",
+    "(define (problem x) (:domain v) (:init (open) (= (len) 10) (at 5 (not (open))))"
+    " (:goal (done)))");
+  SolveResult t = Planner().solve(tune, quick());
+  ASSERT_EQ(t.status, Status::Solved);
+  EXPECT_TRUE(validate(tune, *t.plan).valid());
 }
 
 // Timed initial fluents read where M2 and M3 keep them apart from the snap actions: a duration

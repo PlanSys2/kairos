@@ -16,11 +16,14 @@ kairos_add_test(temporal_tests
   SOURCES
     compress_test.cpp
     durations_test.cpp
+    hybrid_test.cpp
     profile_test.cpp
     snap_test.cpp
     stn_test.cpp
+    untimed_test.cpp
   DEPENDS
-    kairos_temporal)
+    kairos_temporal
+    kairos_validate)
 target_compile_definitions(temporal_tests PRIVATE
   KAIROS_TEST_DATA_DIR="${PROJECT_SOURCE_DIR}/tests/data"
   KAIROS_EXAMPLES_DIR="${PROJECT_SOURCE_DIR}/docs/examples/pddls")

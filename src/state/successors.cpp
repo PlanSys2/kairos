@@ -572,6 +572,9 @@ std::optional<StateId> StateSpace::successor(StateId s, uint32_t action)
     if (!integrate(dt, action == task_.long_clock)) {
       return std::nullopt;
     }
+    for (const auto & f : task_.actions[action].changes) {
+      next_values_[f.var] = f.value;  // what a wait marks (temporal/hybrid.hpp)
+    }
     return registry_.insert(next_values_, next_numbers_).first;
   }
   const auto & a = task_.actions[action];

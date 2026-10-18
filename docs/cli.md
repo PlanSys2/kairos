@@ -143,7 +143,7 @@ $ echo $?
 | Code | Status | When |
 |-----:|--------|------|
 | 0 | `solved` | at least one valid plan (also when stopped by timeout, memory, `Ctrl-C`, `--target-cost` or `--no-improvement` after a plan) |
-| 10 | `unsolvable` | no plan exists: proved (a complete search, grounding or the lifted search ran out of states) |
+| 10 | `unsolvable` | no plan exists: proved (a complete search, grounding or the lifted search ran out of states; on temporal tasks, the timed initial literals take away what the goal needs too soon, or the task without durations nor times has no path to the goal) |
 | 11 | `timeout` | out of time before the first plan |
 | 12 | `out of memory`, `grounding too large` | memory limit reached before the first plan |
 | 13 | `unsupported` | features Kairos cannot plan with yet, `--engine m1` on a temporal task |
@@ -589,9 +589,14 @@ Forcing an engine:
   without a plan and that is not a proof (variable durations, possible required concurrency), the
   status is `no plan found` (exit 14). On a simple task without variable durations, it is a
   proof: `unsolvable`.
-- `--engine m3`: when M3 exhausts its space without a plan the status is `no plan found` (exit
-  14) with a note: like POPF, M3 keeps one partial plan per state, so this is strong evidence, not
-  a proof. Constructs M3 cannot handle yet give `unsupported.m3` and exit 13.
+- `--engine m3`: when M3 exhausts its space without a plan, Kairos searches the task without
+  durations nor times (happenings in any order, the over all conditions checked between
+  instants, no durative action overlapping itself, as in POPF). If that has no path to the goal,
+  the status is `unsolvable`; otherwise `no plan found` (exit 14) with a note: like POPF, M3 keeps
+  one partial plan per state, so this is strong evidence, not a proof. With steps of time beside
+  M3 (durations between their bounds, timed initial literals), a run that ends with the steps
+  still searching is a `timeout`. Constructs M3 cannot handle yet give `unsupported.m3` and
+  exit 13.
 
 ```bash
 kairos domain.pddl problem.pddl --engine m3 -v      # see the phases in the [orchestrator] lines

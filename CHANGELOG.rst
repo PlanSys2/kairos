@@ -2,6 +2,19 @@
 Changelog for package kairos
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* Proofs that a temporal task has no plan: the timed initial literals take away what the goal
+  needs too soon (from the initial state, ignoring deletes, with the shortest durations), or the
+  task without durations nor times has no path to the goal (when M3 runs out of states).
+* Steps of time: the time is kept only with timed initial literals, until the last one, and
+  epsilon passes only right after a happening; tiny tasks that ran to the timeout end in ms.
+* With several threads, the phases for when there is no plan stop once another finds one.
+* M3 out of states while the steps of time run out of time is a timeout, not "no plan found".
+* The deadlines of M3 no longer take durations that change as bounds, nor over all conditions
+  an action's start gives itself as needed before it.
+* Contributors: Francisco Martín Rico
+
 1.0.1 (2026-10-17)
 ------------------
 * Builds on Ubuntu 22.04 and ROS 2 Humble: CMake 3.22 is enough (nothing needed 3.24), and the

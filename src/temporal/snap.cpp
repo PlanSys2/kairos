@@ -79,11 +79,11 @@ void substitute(sas::Effect & e, const ground::Expr & duration)
   }
 }
 
-// A new variable with its own atoms (for printing): binary with one atom, a group with more
-// A variable of new atoms: predicates `names` (one per name) over `args`
+}  // namespace
+
 sas::VarId add_variable(
   sas::Task & t, const std::vector<std::string> & names, sas::Variable::Kind kind,
-  uint32_t initial, const std::vector<sas::ObjectId> & args = {})
+  uint32_t initial, const std::vector<sas::ObjectId> & args)
 {
   sas::Variable v;
   v.kind = kind;
@@ -105,8 +105,6 @@ sas::VarId add_variable(
   t.initial.push_back(initial);
   return var;
 }
-
-}  // namespace
 
 DurationBounds bounds(const sas::DurativeAction & a, const double * numbers)
 {
@@ -380,17 +378,52 @@ public:
     for (const auto & ax : o_.axioms) {
       instant(ax.body, {ax.head}, {}, true);
     }
+    // Durations that read what some happening changes: their bound in a state says nothing of
+    // later ones (0, the least)
+    std::set<sas::NumVarId> written;
+    auto note = [&](const std::vector<sas::Effect> & effects) {
+        for (const auto & e : effects) {
+          if (e.kind == sas::Effect::Kind::Numeric) {
+            written.insert(e.num);
+          }
+        }
+      };
+    for (const auto & a : o_.actions) {
+      note(a.effects);
+    }
+    for (const auto & a : o_.events) {
+      note(a.effects);
+    }
+    for (const auto & a : o_.durative_actions) {
+      note(a.effects);
+    }
+    for (const auto & ev : o_.timed_events) {
+      note(ev.effects);
+    }
     end_op_.resize(o_.durative_actions.size());
     for (uint32_t i = 0; i < o_.durative_actions.size(); ++i) {
       const auto & da = o_.durative_actions[i];
+      Access reads;
+      for (const auto & d : da.duration) {
+        reads.read(d.value.tree);
+      }
+      varies_.push_back(std::any_of(reads.num_reads.begin(), reads.num_reads.end(),
+        [&](sas::NumVarId n) {return written.count(n) > 0;}));
       Op st;
       st.kind = Op::Start;
       st.index = i;
       facts(da.at_start, st.pre);
       st.check = st.pre;
-      facts(da.over_all, st.pre);
-      facts(da.over_all, st.open_after);
       adds(da.start, da.effects, sas::Timing::Start, st.adds);
+      // Its over all conditions hold from right after it: not before what it adds itself
+      std::vector<uint32_t> during;
+      facts(da.over_all, during);
+      for (uint32_t f : during) {
+        if (std::find(st.adds.begin(), st.adds.end(), f) == st.adds.end()) {
+          st.pre.push_back(f);
+        }
+      }
+      st.open_after = during;
       Op en;
       en.kind = Op::End;
       en.index = i;
@@ -459,7 +492,7 @@ public:
     }
     least_.resize(o_.durative_actions.size());
     for (size_t i = 0; i < least_.size(); ++i) {
-      least_[i] = std::max(0.0, bounds(o_.durative_actions[i], numbers).lo);
+      least_[i] = varies_[i] ? 0.0 : std::max(0.0, bounds(o_.durative_actions[i], numbers).lo);
     }
     heap_ = {};
     // Deadlines: a later literal takes the value away and nothing gives it back
@@ -511,9 +544,19 @@ public:
         }
       }
     }
-    return std::all_of(
-      o_.goal.facts.begin(), o_.goal.facts.end(),
-      [&](const sas::Fact & f) {return time_[offset_[f.var] + f.value] < Stn::kInfinity;});
+    return late().empty();
+  }
+
+  /// @brief The goal facts the last feasible() could not reach in time.
+  std::vector<sas::Fact> late() const
+  {
+    std::vector<sas::Fact> out;
+    for (const auto & f : o_.goal.facts) {
+      if (time_[offset_[f.var] + f.value] == Stn::kInfinity) {
+        out.push_back(f);
+      }
+    }
+    return out;
   }
 
 private:
@@ -628,6 +671,7 @@ private:
   std::vector<Op> ops_;
   std::vector<uint32_t> end_op_;
   std::vector<uint8_t> producible_;
+  std::vector<uint8_t> varies_;  // per durative action: its duration reads what changes
   std::vector<std::vector<uint32_t>> triggers_;
   std::vector<std::vector<sas::Fact>> tils_;
   bool active_ = false;
@@ -700,6 +744,25 @@ TemporalFilter::TemporalFilter(
 }
 
 TemporalFilter::~TemporalFilter() = default;
+
+std::vector<sas::Fact> TemporalFilter::late_goals(
+  const sas::Task & original, const SnapTask & snap, double epsilon)
+{
+  if (snap.tils >= snap.task.actions.size()) {
+    return {};
+  }
+  Deadlines d(original, snap, epsilon);
+  if (!d.active()) {
+    return {};
+  }
+  std::vector<double> numbers;
+  for (const auto & n : original.initial_numeric) {
+    numbers.push_back(n ? *n : state::kUndefined);
+  }
+  // From the initial state: every value since time 0, nothing running
+  d.feasible(original.initial.data(), numbers.data(), 0, [](sas::VarId) {return 0.0;}, {});
+  return d.late();
+}
 
 bool TemporalFilter::invariants(state::StateId s)
 {

@@ -60,7 +60,9 @@ between steps, and nothing else happens while one can; a durative action runs as
 and end (its end, and each timed literal, at their exact time). Every plan is then validated in
 continuous time: the validator integrates exactly and fires each event at the instant its
 condition crosses. A plan the steps reach but continuous time rejects is discarded and the
-search goes on; a plan that needs finer timing than the steps is not found.
+search goes on; a plan that needs finer timing than the steps is not found. The time itself is
+kept only with timed initial literals, until the last one, and epsilon passes only right after
+a happening, so that states repeat and small tasks have small spaces.
 
 `always-within` in temporal plans is planned the same way (a clock of the delay, as a process),
 and preferences are planned anywhere: compiled where the search sees their cost (goals,

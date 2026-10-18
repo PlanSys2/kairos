@@ -52,6 +52,7 @@
 #include "temporal/durations.hpp"
 #include "temporal/profile.hpp"
 #include "temporal/snap.hpp"
+#include "temporal/untimed.hpp"
 #include "state/eval.hpp"
 #include "state/registry.hpp"
 #include "state/successors.hpp"
@@ -399,7 +400,8 @@ public:
     const Input & in, const SearchOptions & options, std::stop_token stop,
     const PlanCallback & on_plan)
   : in_(in), o_(options), on_plan_(on_plan), t0_(Clock::now()), log_(log_options(options)),
-    forward_(std::move(stop), ForwardStop{&internal_})
+    forward_(std::move(stop), ForwardStop{&internal_}),
+    fallback_forward_(internal_.get_token(), ForwardStop{&fallback_})
   {
   }
 
@@ -846,7 +848,9 @@ private:
           "plan may still exist (see the note before).";
         break;
       case Status::Unsolvable:
-        if (res_.stats.states > 0) {
+        if (!proof_why_.empty()) {
+          why = proof_why_;
+        } else if (res_.stats.states > 0) {
           why = "no plan: every state reachable from the initial one was searched (" + states +
             ") and none satisfies the goal.";
         }
@@ -870,6 +874,56 @@ private:
   // Durations fixed to their bounds for M2 and M3, with steps of time beside: their spaces
   // running out proves nothing
   bool bounded_durations() const {return hybrid_ && !hybrid_primary_;}
+
+  // M3 ran out of states without a plan, which proves nothing: the task without durations nor
+  // times (temporal/untimed.hpp), whose space running out does (once, with part of the time)
+  bool untimed_proof()
+  {
+    // Once: a second phase that runs out waits for the first one's answer
+    std::lock_guard<std::mutex> once(untimed_mutex_);
+    if (untimed_tried_ || has_plan() || !translated_) {
+      return untimed_proven_;
+    }
+    untimed_tried_ = true;
+    auto u = temporal::untimed(*translated_);
+    if (!u.unsupported.empty()) {
+      log_.info(LogChannel::Orchestrator, "no proof without times: {}", u.unsupported);
+      return false;
+    }
+    BudgetConfig uc = bc_;
+    auto left = *bc_.deadline - Clock::now();
+    uc.deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(left / 4);
+    Budget ub(uc);
+    state::StateRegistry registry(u.task, &ub);
+    state::StateSpace space(u.task, registry);
+    std::vector<double> costs(u.task.actions.size(), 1.0);
+    search::PlanSink sink;
+    search::SearchContext ctx(u.task, registry, space, costs, sink, &ub);
+    ctx.accept = [&u, &space](state::StateId, uint32_t a, state::StateId c) {
+        return u.accept(a, space.values(c).data(), space.numbers(c).data());
+      };
+    ctx.logger = log_;
+    search::EngineOptions eo;
+    eo.kind = search::EngineOptions::Kind::EagerGreedy;
+    auto outcome = search::run_engine(ctx, eo);
+    log_.info(LogChannel::Orchestrator, "without times: {} states, {}", registry.size(),
+      outcome == search::Outcome::Unsolvable ? "no path to the goal" :
+      (outcome == search::Outcome::Solved ? "a path to the goal" : "stopped"));
+    if (outcome != search::Outcome::Unsolvable) {
+      return false;
+    }
+    untimed_proven_ = true;
+    std::lock_guard<std::mutex> lock(mutex_);
+    proof_why_ = "no plan: not even without durations and times (happenings in any order, the "
+      "over all conditions kept) does the goal hold: " + std::to_string(registry.size()) +
+      " states of that relaxation searched, with no durative action overlapping itself (as in "
+      "POPF).";
+    return true;
+  }
+  std::mutex untimed_mutex_;
+  bool untimed_tried_ = false;
+  bool untimed_proven_ = false;
+  std::string proof_why_;  // how the proof was found (a note), if not by searching every state
 
   // M3 ran out of states without a plan
   bool snap_exhausted(search::AnytimeResult result, const Phase & ph)
@@ -923,6 +977,21 @@ private:
             "unsupported.engine", "engine M1 plans without durative actions or timed initial "
             "literals: use auto, m2 or m3"));
         return finish(Status::Unsupported, StopReason::Exhausted);
+      }
+      if (!task.timed_events.empty()) {
+        // Goal facts that need what the timed initial literals take away before they can be
+        // reached (even ignoring deletes, with the shortest durations): no plan
+        auto late = temporal::TemporalFilter::late_goals(
+          *translated_, temporal::snap(*translated_), o_.epsilon);
+        if (!late.empty()) {
+          std::string why = "no plan: the timed initial literals take away what the goal needs "
+            "before it can be reached, even ignoring deletes and with the shortest durations:";
+          for (const auto & f : late) {
+            why += " " + sas::fact_name(*translated_, f);
+          }
+          res_.diagnostics.push_back(Diagnostic::note("orchestrator.deadlines", why));
+          return finish(Status::Unsolvable, StopReason::Exhausted);
+        }
       }
       auto profile = temporal::analyze(task);
       bool m2 = o_.engine == Engine::M2 ||
@@ -1127,6 +1196,9 @@ private:
     }
     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - t0_);
     auto index = static_cast<uint32_t>(res_.stats.plans++);
+    if (!in_fallback_) {
+      fallback_.request_stop();
+    }
     res_.plan = *plan;
     best_actions_ = actions;
     best_task_ = &from;
@@ -1309,8 +1381,11 @@ private:
       (ph.kind == Kind::Snap ? snap_task_->task : (hy ? hy->task : *sas_));
     // Its own deadline, unless it is the last phase (then the global budget)
     std::optional<Budget> own;
-    if ((ph.share < 1.0 && !last) || lifted_.joinable()) {
+    if ((ph.share < 1.0 && !last) || lifted_.joinable() || ph.only_without_plan) {
       BudgetConfig pc = bc_;
+      if (ph.only_without_plan) {
+        pc.stop = fallback_.get_token();
+      }
       if (ph.share < 1.0 && !last) {
         auto left = (bc_.deadline ? *bc_.deadline : t0_ + o_.timeout) - Clock::now();
         pc.deadline = Clock::now() + std::chrono::duration_cast<Clock::duration>(left * ph.share);
@@ -1325,6 +1400,13 @@ private:
       own.emplace(pc);
     }
     Budget & bk = own ? *own : *budget_;
+    struct Fallback
+    {
+      explicit Fallback(bool on) {in_fallback_ = on;}
+      ~Fallback() {in_fallback_ = false;}
+      Fallback(const Fallback &) = delete;
+      Fallback & operator=(const Fallback &) = delete;
+    } fallback(ph.only_without_plan);
     bool prune = false;
     // Steps of time: unit costs (the durations are waits there)
     auto costs = ph.kind == Kind::Steps ?
@@ -1469,6 +1551,24 @@ private:
     return result;
   }
 
+  // A phase for when there is no plan, stopped because another found one: as if it had ended
+  // without improving (it is no stop of the run)
+  search::AnytimeResult settled(search::AnytimeResult r, const Phase & ph) const
+  {
+    bool by_plan = ph.only_without_plan && fallback_.stop_requested() &&
+      !internal_.stop_requested();
+    return r == search::AnytimeResult::Stopped && by_plan ?
+           search::AnytimeResult::NoMoreImprovement : r;
+  }
+
+  // The steps of time beside M2 or M3 ran out of states without a plan (evidence only)
+  void note_steps(search::AnytimeResult r, const Phase & ph)
+  {
+    if (r == search::AnytimeResult::Exhausted && ph.kind == Kind::Steps && !has_plan()) {
+      steps_exhausted_ = true;
+    }
+  }
+
   // With several threads: the phases at once, each with the whole budget (a pool of
   // options.threads threads takes them in order). A proof or an optimum stops the others.
   // Not deterministic: which phase finds a plan first depends on the machine.
@@ -1486,8 +1586,9 @@ private:
           if (ph.only_without_plan && has_plan()) {
             continue;
           }
-          auto result = run_phase(ph, true);
+          auto result = settled(run_phase(ph, true), ph);
           results[k] = result;
+          note_steps(result, ph);
           if (result == search::AnytimeResult::Exhausted && !has_plan() && !bounded_durations()) {
             bool proof = (ph.kind == Kind::Plain && !hybrid_primary_) ||
               (ph.kind == Kind::Compressed && m2_complete_);
@@ -1497,10 +1598,15 @@ private:
               steps_exhausted_ = true;
             } else {
               m3_exhausted_ = true;
+              proof_ = untimed_proof();
             }
             internal_.request_stop();
           } else if (snap_exhausted(result, ph)) {
             m3_exhausted_ = true;  // evidence only: the steps of time run beside
+            if (untimed_proof()) {
+              proof_ = true;
+              internal_.request_stop();
+            }
           }
           if (result == search::AnytimeResult::ProvenOptimal && ph.kind == Kind::Plain) {
             optimal = true;
@@ -1562,8 +1668,14 @@ private:
       if (ph.only_without_plan && res_.plan) {
         continue;
       }
-      auto result = run_phase(ph, k + 1 == phases_.size());
+      auto result = settled(run_phase(ph, k + 1 == phases_.size()), ph);
       outcome_ = result;
+      note_steps(result, ph);
+      if (result == search::AnytimeResult::Stopped && ph.kind == Kind::Steps &&
+        budget_->check() == BudgetState::Ok)
+      {
+        steps_cut_ = true;  // at its share of the time
+      }
       if (result == search::AnytimeResult::Exhausted && !res_.plan && !bounded_durations()) {
         // No plan in its whole space: a proof for the plain task and a complete M2; strong
         // evidence for M3 (one partial plan per state)
@@ -1572,15 +1684,31 @@ private:
           (ph.kind == Kind::Compressed && m2_complete_);
         m3_exhausted_ = ph.kind == Kind::Snap;
         steps_exhausted_ = ph.kind == Kind::Plain && hybrid_primary_;
+        if (m3_exhausted_) {
+          proof_ = untimed_proof();
+        }
         if (proof_ || m3_exhausted_) {
           break;
         }
       } else if (snap_exhausted(result, ph)) {
         m3_exhausted_ = true;  // evidence only: the steps of time come next
+        if (untimed_proof()) {
+          proof_ = true;
+          break;
+        }
       }
       if (result == search::AnytimeResult::ProvenOptimal && ph.kind == Kind::Plain) {
         break;  // nothing better exists
       }
+    }
+    if (m3_exhausted_ && steps_cut_ && !res_.plan && !proof_ && !target_reached_ &&
+      !no_improvement_ && budget_->check() == BudgetState::Ok)
+    {
+      // M3 ran out of states and the steps of time stopped at their share: the time left goes
+      // to them (as with several threads)
+      Phase rest{Kind::Steps, "lama", 1.0, o_.anytime, false, true, temporal::Waits::Both};
+      outcome_ = settled(run_phase(rest, true), rest);
+      note_steps(outcome_, rest);
     }
     if (watchdog_.joinable()) {
       watchdog_.request_stop();
@@ -1623,23 +1751,33 @@ private:
     if (proof_ || lifted_exhausted_) {
       return finish(Status::Unsolvable, StopReason::Exhausted);
     }
+    // An engine still searching when the time or the memory ran out (steps of time beside M3):
+    // more of either may find a plan
+    auto left = budget_->check();
+    bool ran_out = left == BudgetState::Timeout || left == BudgetState::OutOfMemory;
     if (m3_exhausted_) {
       res_.diagnostics.push_back(Diagnostic::note(
           "orchestrator.m3_exhausted", "engine M3 found no plan; as POPF, it keeps one "
           "partial plan per state, so this is strong evidence but not a proof"));
-      return finish(Status::NoPlanFound, StopReason::Exhausted);
+      if (ran_out) {
+        auto [st, r] = budget_status();
+        return finish(st, r);
+      }
     }
     if (steps_exhausted_) {
       res_.diagnostics.push_back(Diagnostic::note(
           "orchestrator.steps_exhausted", "no plan in steps of time; a plan that needs finer "
           "timing than the steps would be missed, so this is evidence but not a proof"));
-      return finish(Status::NoPlanFound, StopReason::Exhausted);
     }
-    if (outcome_ == search::AnytimeResult::Exhausted) {
+    bool m2 = outcome_ == search::AnytimeResult::Exhausted && !m3_exhausted_ &&
+      (compressed_ || !steps_exhausted_);
+    if (m2) {
       res_.diagnostics.push_back(Diagnostic::note(
           "orchestrator.m2_incomplete",
           "engine M2 found no plan, which does not prove there is none for this task "
           "(variable durations or possible required concurrency)"));
+    }
+    if (m3_exhausted_ || steps_exhausted_ || m2) {
       return finish(Status::NoPlanFound, StopReason::Exhausted);
     }
     if (outcome_ == search::AnytimeResult::Stopped || budget_->check() != BudgetState::Ok) {
@@ -1660,6 +1798,11 @@ private:
   Logger log_;
   std::stop_source internal_;               // stop(), the caller's token, targets, watchdog
   std::stop_callback<ForwardStop> forward_;  // the caller's token into internal_
+  // Phases only for when no other has a plan: stopped once one has (they start together in
+  // parallel), and on internal_
+  std::stop_source fallback_;
+  std::stop_callback<ForwardStop> fallback_forward_;
+  static thread_local inline bool in_fallback_ = false;  // this thread runs such a phase
   BudgetConfig bc_;
   std::optional<Budget> budget_;
   // The task
@@ -1702,7 +1845,8 @@ private:
   double bytes_per_state_ = 0.0;
   std::atomic<bool> proof_{false};  // a complete phase exhausted its space without a plan
   std::atomic<bool> m3_exhausted_{false};
-  std::atomic<bool> steps_exhausted_{false};  // PDDL+ in steps of time, no plan: no proof
+  std::atomic<bool> steps_exhausted_{false};  // steps of time ran out, no plan: no proof
+  bool steps_cut_ = false;  // one thread: steps of time stopped at their share, without a plan
   std::jthread lifted_;  // last: stopped and joined before the members it uses go
 };
 

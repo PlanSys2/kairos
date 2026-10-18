@@ -20,6 +20,7 @@ kairos_add_module(kairos_temporal
     profile.cpp
     snap.cpp
     stn.cpp
+    untimed.cpp
   DEPENDS
     kairos_state
     kairos_plan)
