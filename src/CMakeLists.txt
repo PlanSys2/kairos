@@ -102,7 +102,8 @@ else()
 endif()
 set_target_properties(kairos PROPERTIES
   VERSION ${PROJECT_VERSION}
-  SOVERSION ${PROJECT_VERSION_MAJOR})
+  SOVERSION ${PROJECT_VERSION_MAJOR}
+  POSITION_INDEPENDENT_CODE ON)  # static too: the Python module links it
 kairos_configure_target(kairos)
 
 install(TARGETS kairos EXPORT kairosTargets

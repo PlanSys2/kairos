@@ -1065,6 +1065,14 @@ TEST(PlannerApiTest, StepsOfTimeThatRunOutOfTimeAreATimeout)
     SolveResult r = Planner().solve(p, o);
     EXPECT_EQ(r.status, Status::Timeout) << threads;
     EXPECT_TRUE(has_code(r.diagnostics, "orchestrator.m3_exhausted")) << threads;
+    // Stopped by the caller meanwhile: cancelled (it was "no plan found")
+    SearchOptions so;
+    so.timeout = 30s;
+    so.threads = threads;
+    Search s = Planner().start(p, so);
+    std::this_thread::sleep_for(300ms);
+    s.stop();
+    EXPECT_EQ(s.wait().status, Status::Cancelled) << threads;
   }
 }
 

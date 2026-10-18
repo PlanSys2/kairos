@@ -2,6 +2,17 @@
 Changelog for package kairos
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* Python: ``pip install kairos-planner`` (wheels for Linux x86-64 and arm64): parse, check,
+  plan (blocking, in the background or as an iterator of better plans) and validate, with the
+  diagnostics; planning releases the GIL and Ctrl-C stops it. The wheel has the ``kairos``
+  command too.
+* A search stopped by the caller while the steps of time were still searching after M3 ran out
+  of states is cancelled, not "no plan found".
+* The static ``libkairos`` is position independent (it links into shared objects).
+* Contributors: Francisco Martín Rico
+
 1.0.2 (2026-10-18)
 ------------------
 * Proofs that a temporal task has no plan: the timed initial literals take away what the goal

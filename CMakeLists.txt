@@ -51,6 +51,7 @@ else()
 endif()
 option(KAIROS_BUILD_TESTS "Build the gtest suites and lint tests" ${_kairos_tests_default})
 option(KAIROS_BUILD_CLI "Build the kairos executable" ON)
+option(KAIROS_BUILD_PYTHON "Build the Python module (nanobind)" OFF)
 option(KAIROS_BUILD_FUZZERS "Build libFuzzer targets (requires Clang)" OFF)
 option(KAIROS_COVERAGE "Instrument for coverage" OFF)
 option(KAIROS_WARNINGS_AS_ERRORS "Treat warnings as errors" OFF)
@@ -71,6 +72,10 @@ if(KAIROS_BUILD_TESTS)
   include(CTest)  # also writes DartConfiguration.tcl, expected by colcon test
   add_subdirectory(tests)
   include(KairosLint)
+endif()
+
+if(KAIROS_BUILD_PYTHON)
+  add_subdirectory(python)
 endif()
 
 if(KAIROS_BUILD_TESTS OR KAIROS_BUILD_FUZZERS)

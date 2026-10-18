@@ -137,6 +137,19 @@ minimizes their cost), a car factory, elevators, a road trip with fuel, an under
 derived predicates. [docs/examples.md](docs/examples.md) explains each one and gives the command
 to run it.
 
+## From Python
+
+`pip install kairos-planner` (Linux, x86-64 and arm64) gives the `kairos` module and command:
+
+```python
+import kairos
+result = kairos.solve("domain.pddl", "problem.pddl", timeout=10)
+print(result.status, result.plan)
+```
+
+Anytime search, validation, checking and the diagnostics are there too: see
+[python/README.md](python/README.md). From a source tree, `pip install .`.
+
 ## With PlanSys2
 
 A native PlanSys2 plugin comes later. Until then, Kairos runs behind PlanSys2's POPF plugin:
@@ -217,6 +230,7 @@ Requirements:
 | `KAIROS_SANITIZE` | empty | `address;undefined` or `thread` |
 | `KAIROS_WARNINGS_AS_ERRORS` | OFF | `-Werror` (ON in CI) |
 | `KAIROS_COVERAGE` | OFF | Coverage instrumentation |
+| `KAIROS_BUILD_PYTHON` | OFF | The Python module (nanobind; `pip install .` turns it on) |
 
 ### Using Kairos from another CMake project
 
@@ -280,6 +294,7 @@ tools/fetch_corpus.sh  downloads the public PDDL benchmark collections used by c
 tools/plansys2/   popf_overlay.sh: Kairos behind PlanSys2's POPF plugin
 cmake/            compiler options, lint tests, package config
 fuzz/             fuzz targets and seed corpus (also replayed as tests)
+python/           Python module (nanobind bindings, the kairos package, its tests)
 docs/             documentation and images
 ```
 

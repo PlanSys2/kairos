@@ -1566,6 +1566,8 @@ private:
   {
     if (r == search::AnytimeResult::Exhausted && ph.kind == Kind::Steps && !has_plan()) {
       steps_exhausted_ = true;
+    } else if (r == search::AnytimeResult::Stopped && ph.kind == Kind::Steps) {
+      steps_unfinished_ = true;
     }
   }
 
@@ -1707,6 +1709,7 @@ private:
       // M3 ran out of states and the steps of time stopped at their share: the time left goes
       // to them (as with several threads)
       Phase rest{Kind::Steps, "lama", 1.0, o_.anytime, false, true, temporal::Waits::Both};
+      steps_unfinished_ = false;  // both waits: it covers the phases cut before
       outcome_ = settled(run_phase(rest, true), rest);
       note_steps(outcome_, rest);
     }
@@ -1719,6 +1722,8 @@ private:
   // Statistics, and the status and stop reason from how the phases ended
   SolveResult conclude()
   {
+    // Phases with budgets of their own leave the global one unchecked: its deadline too
+    budget_->check();
     res_.stats.search_ms = ms_since(search_start_);
     res_.stats.expanded = stats_.expanded;
     res_.stats.generated = stats_.generated;
@@ -1751,10 +1756,9 @@ private:
     if (proof_ || lifted_exhausted_) {
       return finish(Status::Unsolvable, StopReason::Exhausted);
     }
-    // An engine still searching when the time or the memory ran out (steps of time beside M3):
-    // more of either may find a plan
-    auto left = budget_->check();
-    bool ran_out = left == BudgetState::Timeout || left == BudgetState::OutOfMemory;
+    // Steps of time beside M3 still searching when the time or the memory ran out, or the
+    // caller stopped them: more of either may find a plan
+    bool ran_out = steps_unfinished_;  // one that ran out of states may cover only part
     if (m3_exhausted_) {
       res_.diagnostics.push_back(Diagnostic::note(
           "orchestrator.m3_exhausted", "engine M3 found no plan; as POPF, it keeps one "
@@ -1846,6 +1850,7 @@ private:
   std::atomic<bool> proof_{false};  // a complete phase exhausted its space without a plan
   std::atomic<bool> m3_exhausted_{false};
   std::atomic<bool> steps_exhausted_{false};  // steps of time ran out, no plan: no proof
+  std::atomic<bool> steps_unfinished_{false};  // steps of time stopped midway
   bool steps_cut_ = false;  // one thread: steps of time stopped at their share, without a plan
   std::jthread lifted_;  // last: stopped and joined before the members it uses go
 };
