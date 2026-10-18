@@ -2,8 +2,8 @@
 Changelog for package kairos
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+1.0.2 (2026-10-18)
+------------------
 * Proofs that a temporal task has no plan: the timed initial literals take away what the goal
   needs too soon (from the initial state, ignoring deletes, with the shortest durations), or the
   task without durations nor times has no path to the goal (when M3 runs out of states).
