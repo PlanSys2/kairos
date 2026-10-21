@@ -2,8 +2,8 @@
 Changelog for package kairos
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+1.0.5 (2026-10-21)
+------------------
 * Fixed: a temporal task simple by value where M2 ran out of states was reported unsolvable,
   but such a task may still need actions to overlap (two robots that each grip a table at start
   and need the other's grip at their end). M2 running out of states is no proof now: Kairos
