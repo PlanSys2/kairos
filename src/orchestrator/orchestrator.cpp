@@ -1002,8 +1002,6 @@ private:
               "orchestrator.forced_m2",
               "engine M2 forced on a task that may need actions to overlap: plans may be missed"));
         }
-        // One duration of each interval: some plans may need another
-        m2_complete_ = profile.simple && !profile.variable_duration;
         compressed_ = temporal::compress(task);
         log_.info(
           LogChannel::Orchestrator, "engine M2: {} durative actions compressed",
@@ -1230,25 +1228,29 @@ private:
   {
     search_start_ = Clock::now();
     bool portfolio = o_.search == "auto";
-    auto m3_portfolio = [&](bool makespan_g) {
+    auto m3_portfolio = [&](bool makespan_g, bool only_without_plan = false) {
         if (snapped_ && has_numeric_conditions(snapped_->task)) {
           // Resources (battery, ammunition): novelty first, as in M2 (PlanSys2's combat s3:
           // lazy LAMA needs 4000 expansions and 3 s, eager search with novelty 40 and 50 ms)
-          phases_.push_back({Kind::Snap, "lama-novelty", 0.3, true, makespan_g});
-          phases_.push_back({Kind::Snap, "lama", 0.4, true, makespan_g});
-          phases_.push_back({Kind::Snap, "eager-lama", 1.0, true, makespan_g});
+          phases_.push_back({Kind::Snap, "lama-novelty", 0.3, true, makespan_g, only_without_plan});
+          phases_.push_back({Kind::Snap, "lama", 0.4, true, makespan_g, only_without_plan});
+          phases_.push_back({Kind::Snap, "eager-lama", 1.0, true, makespan_g, only_without_plan});
           return;
         }
-        phases_.push_back({Kind::Snap, "lama", 0.2, true, makespan_g});
-        phases_.push_back({Kind::Snap, "eager-lama", 0.375, true, makespan_g});
-        phases_.push_back({Kind::Snap, "lama-novelty", 1.0, true, makespan_g});
+        phases_.push_back({Kind::Snap, "lama", 0.2, true, makespan_g, only_without_plan});
+        phases_.push_back({Kind::Snap, "eager-lama", 0.375, true, makespan_g, only_without_plan});
+        phases_.push_back({Kind::Snap, "lama-novelty", 1.0, true, makespan_g, only_without_plan});
       };
-    if (compressed_ && portfolio && o_.anytime && o_.engine == Engine::Auto && time_metric_) {
+    // M3 after M2: to shorten the makespan, or else only if M2 finds no plan (M2 exhausting its
+    // space is no proof: a task simple by value may still need actions to overlap)
+    bool m3_after = compressed_ && o_.engine == Engine::Auto;
+    if (m3_after && portfolio && o_.anytime && time_metric_) {
       improver_ = temporal::snap(*sas_);
       if (!improver_->unsupported.empty()) {
         improver_.reset();
       }
     }
+    bool m3_improves = improver_.has_value();
     if (snapped_) {
       if (portfolio) {
         m3_portfolio(time_metric_ && o_.anytime);
@@ -1257,8 +1259,8 @@ private:
       }
     } else {
       Kind kind = compressed_ ? Kind::Compressed : Kind::Plain;
-      double share = improver_ ? 0.0 : 1.0;  // M2 before M3: until its first plan
-      bool improve = o_.anytime && !improver_;
+      double share = m3_improves ? 0.0 : 1.0;  // M2 before M3: until its first plan
+      bool improve = o_.anytime && !m3_improves;
       const sas::Task & first_task = compressed_ ? compressed_->task :
         (hybrid_primary_ ? hybrid_->task : *sas_);
       if (portfolio && search::goals_apply(first_task)) {
@@ -1303,7 +1305,7 @@ private:
         // with novelty, the ones it misses
         log_.info(LogChannel::Orchestrator, "search: lama, then lama-novelty (auto)");
         phases_.push_back({kind, "lama", 0.25, improve, false});
-        if (improver_) {
+        if (m3_improves) {
           // Before M3: improving in M2 (each plan rescheduled) also shortens the makespan of
           // large tasks, where M3 finds nothing better in time
           phases_.push_back({kind, "lama-novelty", 0.4, true, false});
@@ -1321,7 +1323,7 @@ private:
       } else {
         phases_.push_back({kind, o_.search, share, improve, false});
       }
-      if (improver_) {
+      if (m3_improves) {
         m3_portfolio(true);
       }
     }
@@ -1333,6 +1335,15 @@ private:
       at = phases_.insert(
         at, {Kind::Steps, "lama-novelty", 0.1, o_.anytime, false, true, W::Crossing});
       phases_.insert(at + 1, {Kind::Steps, "lama", 0.15, o_.anytime, false, true, W::Both});
+    }
+    if (m3_after && !m3_improves) {
+      // Built only if M2 runs out of states (snap_ready)
+      m3_fallback_ = true;
+      if (portfolio) {
+        m3_portfolio(time_metric_ && o_.anytime, true);
+      } else {
+        phases_.push_back({Kind::Snap, o_.search, 1.0, o_.anytime, false, true});
+      }
     }
     snap_task_ = snapped_ ? &*snapped_ : (improver_ ? &*improver_ : nullptr);
     if (!time_metric_ && !heuristics::metric_costs_apply(search_task()) && !length_metric_ &&
@@ -1369,6 +1380,24 @@ private:
           }
         });
   }
+
+  // The snap task of M3 after M2, built when its first phase starts: false if M3 does not apply
+  bool snap_ready()
+  {
+    if (!m3_fallback_) {
+      return true;
+    }
+    std::lock_guard<std::mutex> lock(fallback_mutex_);
+    if (!improver_) {
+      improver_ = temporal::snap(*sas_);
+      if (improver_->unsupported.empty()) {
+        snap_task_ = &*improver_;
+      }
+    }
+    return snap_task_ != nullptr;
+  }
+  std::mutex fallback_mutex_;
+  bool m3_fallback_ = false;  // M3 runs only if M2 has no plan
 
   // One phase: its task, budget, costs and search configuration, and the anytime search
   search::AnytimeResult run_phase(const Phase & ph, bool last)
@@ -1601,17 +1630,23 @@ private:
           if (budget_->check() != BudgetState::Ok || target_reached_ || no_improvement_) {
             return;
           }
-          if (ph.only_without_plan && has_plan()) {
+          if ((ph.only_without_plan && has_plan()) || (ph.kind == Kind::Snap && !snap_ready())) {
             continue;
           }
           auto result = settled(run_phase(ph, true), ph);
           results[k] = result;
           note_steps(result, ph);
           if (result == search::AnytimeResult::Exhausted && !has_plan() && !bounded_durations()) {
-            bool proof = (ph.kind == Kind::Plain && !hybrid_primary_) ||
-              (ph.kind == Kind::Compressed && m2_complete_);
+            bool proof = ph.kind == Kind::Plain && !hybrid_primary_;
             if (proof) {
               proof_ = true;
+            } else if (ph.kind == Kind::Compressed) {
+              // No proof: M3 runs beside, unless there is one without times
+              if (untimed_proof()) {
+                proof_ = true;
+                internal_.request_stop();
+              }
+              continue;
             } else if (ph.kind == Kind::Plain) {
               steps_exhausted_ = true;
             } else {
@@ -1683,7 +1718,7 @@ private:
       if (budget_->check() != BudgetState::Ok || target_reached_ || no_improvement_) {
         break;
       }
-      if (ph.only_without_plan && res_.plan) {
+      if ((ph.only_without_plan && res_.plan) || (ph.kind == Kind::Snap && !snap_ready())) {
         continue;
       }
       auto result = settled(run_phase(ph, k + 1 == phases_.size()), ph);
@@ -1695,14 +1730,12 @@ private:
         steps_cut_ = true;  // at its share of the time
       }
       if (result == search::AnytimeResult::Exhausted && !res_.plan && !bounded_durations()) {
-        // No plan in its whole space: a proof for the plain task and a complete M2; strong
-        // evidence for M3 (one partial plan per state)
-        // Steps of time (PDDL+) are no proof either
-        proof_ = (ph.kind == Kind::Plain && !hybrid_primary_) ||
-          (ph.kind == Kind::Compressed && m2_complete_);
+        // No plan in its whole space: a proof for the plain task; strong evidence for M3 (one
+        // partial plan per state); none for M2 (M3 comes next) nor for steps of time (PDDL+)
+        proof_ = ph.kind == Kind::Plain && !hybrid_primary_;
         m3_exhausted_ = ph.kind == Kind::Snap;
         steps_exhausted_ = ph.kind == Kind::Plain && hybrid_primary_;
-        if (m3_exhausted_) {
+        if (m3_exhausted_ || ph.kind == Kind::Compressed) {
           proof_ = untimed_proof();
         }
         if (proof_ || m3_exhausted_) {
@@ -1834,7 +1867,6 @@ private:
   std::optional<temporal::SnapTask> snapped_;
   std::optional<temporal::SnapTask> improver_;  // M3 after M2
   const temporal::SnapTask * snap_task_ = nullptr;
-  bool m2_complete_ = true;  // exhausting the compressed task proves there is no plan
   bool temporal_task_ = false;
   // PDDL+: processes and events as discrete steps
   bool hybrid_primary_ = false;  // PDDL+: the only engine (else beside M2 or M3, Kind::Steps)

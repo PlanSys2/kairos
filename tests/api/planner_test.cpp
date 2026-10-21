@@ -890,6 +890,63 @@ TEST(PlannerApiTest, RequiredConcurrencyWithEngineM3)
   EXPECT_TRUE(has_code(f.diagnostics, "orchestrator.m2_incomplete"));
 }
 
+// Two robots lift a table: each one grips at start and needs the other's grip at its end. No
+// value is transient, so the task is simple by value, yet only overlapping plans exist
+const char * kLiftTable =
+  "(define (domain lift) (:requirements :typing :durative-actions :negative-preconditions)"
+  " (:types robot)"
+  " (:predicates (partner ?r ?o - robot) (grip ?r - robot) (ready ?r - robot))"
+  " (:durative-action prepare :parameters (?r ?o - robot) :duration (= ?duration 10)"
+  "  :condition (and (at start (partner ?r ?o)) (at start (not (grip ?r)))"
+  "   (at end (grip ?o)))"
+  "  :effect (and (at start (grip ?r)) (at end (ready ?r)))))";
+
+TEST(PlannerApiTest, SimpleByValueTaskThatNeedsOverlapIsSolved)
+{
+  Problem p = problem(kLiftTable,
+      "(define (problem p) (:domain lift) (:objects r1 r2 - robot)"
+      " (:init (partner r1 r2) (partner r2 r1)) (:goal (and (ready r1) (ready r2))))");
+  // M2 runs out of states: M3 follows, in every mode
+  for (int mode = 0; mode < 4; ++mode) {
+    SolveOptions o = quick();
+    o.anytime = mode % 2 == 0;
+    o.threads = mode < 2 ? 1 : 4;
+    o.search = mode == 1 ? "ff" : "auto";
+    SolveResult r = Planner().solve(p, o);
+    ASSERT_EQ(r.status, Status::Solved) << "mode " << mode;
+    ASSERT_EQ(r.plan->steps.size(), 2u);
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+    const auto & a = r.plan->steps[0];
+    const auto & b = r.plan->steps[1];
+    EXPECT_LT(a.time, b.time + b.duration);  // they overlap
+    EXPECT_LT(b.time, a.time + a.duration);
+  }
+  // Forcing M2: no plan, and that proves nothing
+  SolveOptions m2 = quick();
+  m2.engine = Engine::M2;
+  SolveResult f = Planner().solve(p, m2);
+  EXPECT_EQ(f.status, Status::NoPlanFound);
+  EXPECT_FALSE(has_code(f.diagnostics, "orchestrator.forced_m2"));  // simple by value
+  EXPECT_TRUE(has_code(f.diagnostics, "orchestrator.m2_incomplete"));
+}
+
+TEST(PlannerApiTest, SimpleByValueTaskWithoutPlanIsUnsolvableWithoutTimes)
+{
+  // Each robot grips only if the other has not: no order of the happenings reaches the goal
+  std::string d = kLiftTable;
+  d.replace(d.find("(at end (grip ?o))"), 18, "(at start (not (grip ?o))) (at end (grip ?o))");
+  Problem p = problem(d.c_str(),
+      "(define (problem p) (:domain lift) (:objects r1 r2 - robot)"
+      " (:init (partner r1 r2) (partner r2 r1)) (:goal (and (ready r1) (ready r2))))");
+  for (unsigned threads : {1u, 4u}) {
+    SolveOptions o = quick();
+    o.threads = threads;
+    SolveResult r = Planner().solve(p, o);
+    EXPECT_EQ(r.status, Status::Unsolvable) << threads << " threads";
+    EXPECT_FALSE(r.plan);
+  }
+}
+
 TEST(PlannerApiTest, OverAllConditionsHoldInTheOpenInterval)
 {
   // Time windows compiled as in IPC 2004's airport: a wrapper of 10 gives a phase marker over

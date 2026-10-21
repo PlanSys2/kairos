@@ -573,7 +573,10 @@ What `auto` does:
   default when the problem has no `:metric`, or `(:metric minimize (total-time))`), the M3
   portfolio then improves the makespan, since M2's improvements lower the sum of durations, which
   says little about the makespan. That is the elevator sample above: plan 1 from M2 (12.668),
-  plan 2 from M3 (9).
+  plan 2 from M3 (9). If M2 exhausts its space without a plan, that is no proof (a task simple
+  by value may still need actions to overlap, such as two robots that each grip a table at start
+  and need the other's grip at their end): Kairos searches the task without durations nor times
+  as below, and if that does not prove there is no plan, M3 searches the time left.
 - **Otherwise**: M3.
 
 The M3 portfolio (`--search auto` on M3): `lama` for 20% of the time left, `eager-lama` for 37.5%
@@ -585,10 +588,9 @@ Forcing an engine:
 - `--engine m1` on a temporal task: `error: engine M1 plans without durative actions or timed
   initial literals: use auto, m2 or m3 [unsupported.engine]`, exit 13.
 - `--engine m2` on a task that may need overlapping actions: a warning (`engine M2 forced on a
-  task that may need actions to overlap: plans may be missed`). If M2 then exhausts its space
-  without a plan and that is not a proof (variable durations, possible required concurrency), the
-  status is `no plan found` (exit 14). On a simple task without variable durations, it is a
-  proof: `unsolvable`.
+  task that may need actions to overlap: plans may be missed`). If M2 exhausts its space without
+  a plan, that is no proof on any task: the status is `unsolvable` only if the task without
+  durations nor times (below) has no path to the goal, otherwise `no plan found` (exit 14).
 - `--engine m3`: when M3 exhausts its space without a plan, Kairos searches the task without
   durations nor times (happenings in any order, the over all conditions checked between
   instants, no durative action overlapping itself, as in POPF). If that has no path to the goal,
