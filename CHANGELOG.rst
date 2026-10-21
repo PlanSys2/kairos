@@ -2,6 +2,15 @@
 Changelog for package kairos
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* Fixed: a temporal task simple by value where M2 ran out of states was reported unsolvable,
+  but such a task may still need actions to overlap (two robots that each grip a table at start
+  and need the other's grip at their end). M2 running out of states is no proof now: Kairos
+  searches the task without durations nor times and, if that does not prove there is no plan,
+  M3 searches the time left (also without anytime, with one search or several threads).
+* Contributors: Francisco Martín Rico
+
 1.0.4 (2026-10-18)
 ------------------
 * The validator with epsilon 0 (``ValidateOptions::epsilon``, ``kairos validate --epsilon 0``):
