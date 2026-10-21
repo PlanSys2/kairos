@@ -44,8 +44,9 @@ namespace kairos::heuristics
  *
  * A derived atom being false is reached when every rule that would make it true has a literal
  * that can be false (FD's negated axioms); with rules that read derived atoms or numbers it
- * counts as satisfied, as do non-linear comparisons and object comparisons (optimistic, so
- * hmax stays admissible).
+ * counts as satisfied, as do object comparisons (optimistic, so hmax stays admissible). A
+ * non-linear condition is its tangent in the state, reached also once through any action that
+ * changes one of its variables (a zero gradient is no dead end).
  */
 class RelaxedGraph
 {

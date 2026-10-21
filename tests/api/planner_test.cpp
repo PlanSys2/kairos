@@ -795,6 +795,24 @@ TEST(PlannerApiTest, PddlPlusWithTimedInitialLiterals)
   EXPECT_NE(Planner().solve(late, quick()).status, Status::Solved);
 }
 
+TEST(PlannerApiTest, NonLinearConditionWithAZeroGradientIsSolved)
+{
+  // x * y >= 4 from the origin: the tangent there sees no help from either increase
+  const char * domain =
+    "(define (domain nl) (:requirements :numeric-fluents) (:predicates (done))"
+    " (:functions (x) (y))"
+    " (:action incx :parameters () :precondition () :effect (increase (x) 1))"
+    " (:action incy :parameters () :precondition () :effect (increase (y) 1))"
+    " (:action fin :parameters () :precondition (>= (* (x) (y)) 4) :effect (done)))";
+  for (const char * goal : {"(done)", "(>= (* (x) (y)) 4)"}) {
+    Problem p = problem(domain, std::string("(define (problem p) (:domain nl)"
+        " (:init (= (x) 0) (= (y) 0)) (:goal ") + goal + "))");
+    SolveResult r = Planner().solve(p, quick());
+    ASSERT_EQ(r.status, Status::Solved) << goal;
+    EXPECT_TRUE(validate(p, *r.plan).valid());
+  }
+}
+
 // --- Temporal planning (engine M2) -----------------------------------------------------------
 
 const char * kTwoRobots =
