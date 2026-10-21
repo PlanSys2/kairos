@@ -2,8 +2,8 @@
 Changelog for package kairos
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
+1.0.6 (2026-10-21)
+------------------
 * Fixed: a non-linear condition whose tangent in the state shows no action helping (``x * y >= 4``
   from the origin, where the gradient is 0) made the relaxation report a dead end, and Kairos
   answered unsolvable on a task with a plan. Any action that changes a variable of a non-linear

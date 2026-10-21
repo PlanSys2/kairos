@@ -15,7 +15,7 @@
 cmake_minimum_required(VERSION 3.22)
 
 project(kairos
-  VERSION 1.0.5
+  VERSION 1.0.6
   DESCRIPTION "Modern temporal and numeric PDDL planner"
   LANGUAGES CXX)
 
