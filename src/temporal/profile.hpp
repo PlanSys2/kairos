@@ -29,8 +29,10 @@ namespace kairos::temporal
 struct TemporalProfile
 {
   bool durative = false;           // some durative action
-  /// @brief No plan needs actions to overlap: compressing each durative action into one
-  /// instantaneous step loses no plan (engine M2). Conservative: false when unsure.
+  /// @brief Simple by value (no other action reads a value only while it holds): compressing
+  /// each durative action into one instantaneous step is worth trying first (engine M2). Not a
+  /// completeness criterion: two actions that each need at end what the other sets at start
+  /// are simple by value too.
   bool simple = true;
   bool timed_initial_literals = false;
   bool variable_duration = false;  // a duration constraint that is not an equality
@@ -45,7 +47,7 @@ struct TemporalProfile
  * variable at start and again at end) and another action needs it then and only then (not
  * with the value before the action nor with the one after), or if timed
  * initial literals change what actions read. A false "may need" only costs time (M3 tries
- * too); a false "simple" would give plans the validator rejects.
+ * too); a false "simple" costs M2's search before M3 (every plan is validated).
  */
 TemporalProfile analyze(const sas::Task & task);
 

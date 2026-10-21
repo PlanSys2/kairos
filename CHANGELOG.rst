@@ -2,6 +2,15 @@
 Changelog for package kairos
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+Forthcoming
+-----------
+* Fixed: a non-linear condition whose tangent in the state shows no action helping (``x * y >= 4``
+  from the origin, where the gradient is 0) made the relaxation report a dead end, and Kairos
+  answered unsolvable on a task with a plan. Any action that changes a variable of a non-linear
+  condition now reaches it at least once (optimistic), so the relaxation never reports a false
+  dead end there.
+* Contributors: Francisco Martín Rico
+
 1.0.5 (2026-10-21)
 ------------------
 * Fixed: a temporal task simple by value where M2 ran out of states was reported unsolvable,

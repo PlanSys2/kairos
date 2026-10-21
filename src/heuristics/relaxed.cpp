@@ -544,7 +544,8 @@ double RelaxedGraph::change(uint32_t contributor, const NumNode & n, const EvalC
 }
 
 // Some change of a variable of e depends on the state: its effect in this state says nothing
-// about later states
+// about later states. Also any change of a non-linear condition's variable: its tangent here
+// says nothing about later states either (x * y at the origin)
 bool RelaxedGraph::state_dependent(uint32_t contributor, const NumNode & n) const
 {
   for (const auto & eff : contrib_[contributor].effects) {
@@ -556,7 +557,7 @@ bool RelaxedGraph::state_dependent(uint32_t contributor, const NumNode & n) cons
     bool constant = eff.value.linear && eff.value.linear->terms.empty() &&
       (eff.op == ast::AssignOp::Increase || eff.op == ast::AssignOp::Decrease ||
       eff.op == ast::AssignOp::Assign);
-    if (!constant) {
+    if (!constant || n.g) {
       return true;
     }
   }

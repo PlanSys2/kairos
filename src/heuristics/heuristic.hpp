@@ -88,8 +88,9 @@ bool metric_costs_apply(const sas::Task & task);
  *
  * The relaxed ones work on the delete relaxation of the SAS+ task with numeric subgoaling:
  * an unsatisfied linear condition is reached by an action that moves it the right way, repeated
- * as often as needed. Non-linear conditions and object comparisons count as satisfied
- * (optimistic). Returns nullptr for an unknown name.
+ * as often as needed. A non-linear condition is reached through its tangent in the state, and
+ * through any action that changes one of its variables at least once (optimistic); object
+ * comparisons count as satisfied. Returns nullptr for an unknown name.
  */
 std::unique_ptr<Heuristic> make_heuristic(
   const std::string & name, const sas::Task & task, const std::vector<double> & costs,

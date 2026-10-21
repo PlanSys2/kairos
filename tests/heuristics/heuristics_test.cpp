@@ -701,5 +701,28 @@ TEST(HeuristicsPropertiesTest, ChangesThatDependOnTheStateAreNeverFalseDeadEnds)
   }
 }
 
+TEST(HeuristicsPropertiesTest, NonLinearConditionsAreNeverFalseDeadEnds)
+{
+  const char * inc =
+    "(:action incx :parameters () :precondition () :effect (increase (x) 1))"
+    " (:action incy :parameters () :precondition () :effect (increase (total-cost) 1))";
+  // x * y at the origin: a zero gradient, as a goal and as a precondition
+  auto goal = bench(world(inc),
+      problem("(at s0) (= (x) 0) (= (total-cost) 0)", "(>= (* (x) (total-cost)) 4)"));
+  auto pre = bench(world(std::string(inc) +
+      " (:action fin :parameters () :precondition (>= (* (x) (total-cost)) 4) :effect (done))"),
+    problem("(at s0) (= (x) 0) (= (total-cost) 0)", "(done)"));
+  // x * x from -3: increasing x lowers it first (the gradient points the wrong way)
+  auto wrong = bench(world(inc),
+      problem("(at s0) (= (x) -3) (= (total-cost) 0)", "(>= (* (x) (x)) 16)"));
+  for (auto * b : {goal.get(), pre.get(), wrong.get()}) {
+    for (const char * name : {"hmax", "hadd", "ff"}) {
+      auto h = make_heuristic(name, b->p->sas, b->costs);
+      EXPECT_FALSE(b->eval(*h, b->reg->initial()).dead_end) << name;
+    }
+    EXPECT_TRUE(properties(*b));
+  }
+}
+
 }  // namespace
 }  // namespace kairos::heuristics
