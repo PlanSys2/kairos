@@ -303,6 +303,27 @@ docs/             documentation and images
 Internal modules are static libraries linked into `libkairos`; only symbols marked `KAIROS_API`
 are exported.
 
+## Citing Kairos
+
+If you use Kairos in your work, please cite the
+[article](https://arxiv.org/abs/2610.39454):
+
+```bibtex
+@misc{martinrico2026kairos,
+  title         = {Kairos: Semantics-Aware Orchestration of Planning Engines across Classical,
+                   Numeric, Temporal and Hybrid {PDDL}},
+  author        = {Mart{\'i}n Rico, Francisco and Aguado Gonz{\'a}lez, Esther and
+                   Moreno Olivo, Francisco Miguel and P{\'e}rez Rodr{\'i}guez, Rodrigo and
+                   Guerrero Hern{\'a}ndez, Jos{\'e} Miguel and Rodr{\'i}guez Lera, Francisco J.},
+  year          = {2026},
+  eprint        = {2610.39454},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.AI},
+  doi           = {10.48550/arXiv.2610.39454},
+  url           = {https://arxiv.org/abs/2610.39454}
+}
+```
+
 ## Contributing
 
 Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md): Apache-2.0, signed-off commits
