@@ -141,7 +141,7 @@ to run it.
 
 ### Learning PDDL
 
-[Planning and PDDL](https://fmrico.github.io/book_pddl_web/) is an open-access university textbook that
+[Planning and PDDL](https://fmrico.github.io/book_pddl_web/) is an open university textbook that
 teaches PDDL from 1.2 to PDDL+ with Kairos, in English and Spanish: more than 900 tested PDDL
 files, exercises with solutions and lecture slides.
 
