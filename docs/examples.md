@@ -10,6 +10,10 @@ seconds by default, printing every better plan it finds (anytime); add `--no-any
 the first one, `-v` to see progress and the time of the first plan, and validate a plan with
 `kairos validate DOMAIN PROBLEM PLAN`. See [cli.md](cli.md) for every option.
 
+To learn PDDL itself, from 1.2 to PDDL+, the textbook
+[Planning and PDDL](https://fmrico.github.io/book_pddl_web/) builds its examples step by step
+with Kairos; all of them can be downloaded from its website.
+
 - [Cooking](#cooking)
 - [Cooking with costs](#cooking-with-costs)
 - [Factory](#factory)

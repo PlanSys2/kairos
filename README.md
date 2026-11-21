@@ -139,6 +139,12 @@ minimizes their cost), a car factory, elevators, a road trip with fuel, an under
 derived predicates. [docs/examples.md](docs/examples.md) explains each one and gives the command
 to run it.
 
+### Learning PDDL
+
+[Planning and PDDL](https://fmrico.github.io/book_pddl_web/) is an open-access university textbook that
+teaches PDDL from 1.2 to PDDL+ with Kairos, in English and Spanish: more than 900 tested PDDL
+files, exercises with solutions and lecture slides.
+
 ## From Python
 
 `pip install kairos-planner` (Linux, x86-64 and arm64) gives the `kairos` module and command:
