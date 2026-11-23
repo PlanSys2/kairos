@@ -52,6 +52,7 @@ jobs:
           -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
           -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
           -DKAIROS_WARNINGS_AS_ERRORS=ON
+          -DKAIROS_INSTALL_CORE=ON
           "-DKAIROS_SANITIZE=${{ matrix.sanitize }}"
 
       - name: Build
@@ -72,6 +73,10 @@ jobs:
             -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_PREFIX_PATH="$PWD/install"
           cmake --build build-consumer
           LD_LIBRARY_PATH="$PWD/install/lib" ./build-consumer/kairos_consumer
+          cmake -S tests/install_core -B build-core-consumer -G Ninja \
+            -DCMAKE_CXX_COMPILER=${{ matrix.cxx }} -DCMAKE_PREFIX_PATH="$PWD/install"
+          cmake --build build-core-consumer
+          ./build-core-consumer/kairos_core_consumer
 
   memory-limited:
     name: tests in a 512 MB cgroup
