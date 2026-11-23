@@ -15,6 +15,8 @@
 include(GenerateExportHeader)
 
 option(KAIROS_SHARED "Build libkairos as a shared library" ON)
+option(KAIROS_INSTALL_CORE
+  "Install kairos::core, a static library of the planner with its internal headers" OFF)
 
 set(KAIROS_GENERATED_INCLUDE_DIR ${PROJECT_BINARY_DIR}/include)
 
@@ -110,5 +112,38 @@ install(TARGETS kairos EXPORT kairosTargets
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+# kairos::core: the whole planner as one static library, with the internal headers of src/
+# installed in include/kairos/internal. For planners built on Kairos' modules (parser, grounder,
+# heuristics, STN...). These headers have no API stability. Link it instead of kairos::kairos.
+if(KAIROS_INSTALL_CORE)
+  add_library(kairos_internal STATIC
+    api/check.cpp api/planner.cpp api/validate.cpp api/version.cpp)
+  add_library(kairos::core ALIAS kairos_internal)
+  foreach(module ${KAIROS_MODULES})
+    target_sources(kairos_internal PRIVATE $<TARGET_OBJECTS:${module}_objects>)
+  endforeach()
+  target_include_directories(kairos_internal PUBLIC
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    $<BUILD_INTERFACE:${KAIROS_GENERATED_INCLUDE_DIR}>
+    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/kairos/internal>)
+  target_compile_definitions(kairos_internal PRIVATE kairos_EXPORTS)
+  if(NOT KAIROS_SHARED)
+    target_compile_definitions(kairos_internal PUBLIC KAIROS_STATIC_DEFINE)
+  endif()
+  target_link_libraries(kairos_internal PUBLIC Threads::Threads)
+  set_target_properties(kairos_internal PROPERTIES
+    EXPORT_NAME core
+    POSITION_INDEPENDENT_CODE ON)
+  kairos_configure_target(kairos_internal)
+  install(TARGETS kairos_internal EXPORT kairosTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
+  install(DIRECTORY ${PROJECT_SOURCE_DIR}/src/
+    DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/kairos/internal
+    FILES_MATCHING PATTERN "*.hpp"
+    PATTERN "cli" EXCLUDE
+    PATTERN "api" EXCLUDE)
+endif()
 
 add_subdirectory(cli)
