@@ -1074,10 +1074,53 @@ private:
       derived.body = parse_gd(GdContext{});
       expect(TokenKind::RParen, "')' closing :derived");
       d.derived.push_back(std::move(derived));
-    } else {
+    } else if (!extend(keyword)) {
       error("parse.unknown_section", "unknown domain section " + std::string(k) +
         did_you_mean(SymbolTable::to_lower(k), to_vector(kDomainSections)), keyword);
     }
+  }
+
+  // The primitives a SectionExtension may use. Apart from the parser, so its own calls stay
+  // non-virtual.
+  class Extension : public Fragments
+  {
+public:
+    explicit Extension(Parser & parser)
+    : p_(parser) {}
+
+    const Token & peek() override {return p_.peek();}
+    Token next() override {return p_.next();}
+    bool at_close() override {return p_.at_close();}
+    Token expect(TokenKind kind, const std::string & what) override {return p_.expect(kind, what);}
+    std::vector<ast::TypedName> parameters() override {return p_.parse_parameters();}
+    ast::FormulaId condition(bool timed, bool constraints) override
+    {
+      return p_.parse_gd(GdContext{timed, constraints});
+    }
+    ast::TermId term() override {return p_.parse_term();}
+    ast::ExprId expression() override {return p_.parse_expr();}
+    Symbol intern(std::string_view name) override {return p_.symbols_.intern(name);}
+    [[noreturn]] void error(
+      const std::string & code, const std::string & message, const Token & at) override
+    {
+      p_.error(code, message, at);
+    }
+    void warning(const std::string & code, const std::string & message, const Token & at) override
+    {
+      p_.warning(code, message, at);
+    }
+
+private:
+    Parser & p_;
+  };
+
+  bool extend(const Token & keyword)
+  {
+    if (!options_.extension) {
+      return false;
+    }
+    Extension extension(*this);
+    return options_.extension(keyword, extension);
   }
 
   // "(name ?x - t ...)" for predicates, functions and derived heads
@@ -1271,7 +1314,7 @@ private:
       // PDDL 1 leftover: ignored
       warning("parse.ignored_section", ":length is ignored", keyword);
       recover(depth_);
-    } else {
+    } else if (!extend(keyword)) {
       error("parse.unknown_section", "unknown problem section " + std::string(k) +
         did_you_mean(SymbolTable::to_lower(k), to_vector(kProblemSections)), keyword);
     }

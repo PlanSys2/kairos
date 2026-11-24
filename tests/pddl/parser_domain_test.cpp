@@ -712,5 +712,58 @@ TEST(ParserDomainTest, DetectFileKind)
   EXPECT_EQ(detect_file_kind("define (domain d)"), FileKind::Unknown);
 }
 
+// A language built on PDDL parses its own sections with the parser's primitives
+TEST(ParserDomainTest, SectionExtension)
+{
+  struct Task
+  {
+    std::string name;
+    size_t params = 0;
+    ast::FormulaId condition;
+  };
+  std::vector<Task> tasks;
+  ParseOptions options;
+  options.extension = [&](const Token & keyword, Fragments & parser) {
+      if (keyword.text != ":task") {
+        return false;
+      }
+      Task task;
+      task.name = std::string(parser.expect(TokenKind::Name, "task name").text);
+      while (!parser.at_close()) {
+        Token key = parser.expect(TokenKind::Keyword, "task keyword");
+        if (key.text == ":parameters") {
+          task.params = parser.parameters().size();
+        } else if (key.text == ":precondition") {
+          task.condition = parser.condition(false, false);
+        } else {
+          parser.error("test.unknown_key", "unknown key", key);
+        }
+      }
+      parser.next();
+      tasks.push_back(task);
+      return true;
+    };
+  const char * text =
+    "(define (domain d) (:predicates (p ?x))\n"
+    " (:task deliver :parameters (?a ?b) :precondition (and (p ?a) (not (p ?b))))\n"
+    " (:action a :parameters (?x) :precondition (p ?x) :effect (not (p ?x))))";
+  auto r = parse_domain(text, "d.hddl", options);
+  ASSERT_TRUE(r.ok()) << dump(r.diagnostics());
+  ASSERT_EQ(tasks.size(), 1u);
+  EXPECT_EQ(tasks[0].name, "deliver");
+  EXPECT_EQ(tasks[0].params, 2u);
+  EXPECT_EQ(to_pddl(r.value().nodes, r.value().symbols, tasks[0].condition),
+    "(and (p ?a) (not (p ?b)))");
+  EXPECT_EQ(r.value().actions.size(), 1u);
+
+  // Without the extension, and for a section it declines, the usual error
+  EXPECT_EQ(errors_of(text), std::vector<std::string>{"parse.unknown_section@2:3"});
+  EXPECT_EQ(errors_of("(define (domain d) (:other x))", options),
+    std::vector<std::string>{"parse.unknown_section@1:21"});
+  // An error inside the extension skips the section and parsing goes on
+  EXPECT_EQ(errors_of("(define (domain d) (:task t :bad (x)) (:nope))", options),
+    (std::vector<std::string>{"test.unknown_key@1:29", "parse.unknown_section@1:40"}));
+}
+
 }  // namespace
 }  // namespace kairos::pddl
