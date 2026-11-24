@@ -2403,9 +2403,10 @@ private:
     }
     soft.insert(soft.end(), std::make_move_iterator(mon.soft.begin()),
       std::make_move_iterator(mon.soft.end()));
-    Condition goal = goal_condition(s, soft.empty() ? std::vector<FormulaId>{p_.goal} : hard);
-    if (!p_.goal.valid()) {
-      goal = Condition{};
+    // A problem without :goal has the empty goal: nothing to look at
+    Condition goal;
+    if (p_.goal.valid()) {
+      goal = goal_condition(s, soft.empty() ? std::vector<FormulaId>{p_.goal} : hard);
     }
     goal.literals.insert(goal.literals.end(), mon.goal.begin(), mon.goal.end());
     if (soft.empty()) {

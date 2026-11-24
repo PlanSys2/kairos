@@ -227,6 +227,20 @@ TEST(PlannerApiTest, ParseErrorsCarryTheFileName)
   EXPECT_EQ(p.diagnostics()[0].location->file, "prob.pddl");
 }
 
+// Nothing is asked for: the empty plan solves it
+TEST(PlannerApiTest, AProblemWithoutGoalIsSolvedByTheEmptyPlan)
+{
+  auto d = parse_domain(kRobots);
+  ASSERT_TRUE(d.ok());
+  auto p = parse_problem(
+    "(define (problem p) (:domain robots) (:objects r1 - robot) (:init))", *d);
+  ASSERT_TRUE(p.ok());
+  auto r = Planner().solve(*p, quick());
+  EXPECT_EQ(r.status, Status::Solved);
+  ASSERT_TRUE(r.plan.has_value());
+  EXPECT_TRUE(r.plan->steps.empty());
+}
+
 TEST(PlannerApiTest, LoadsFromFiles)
 {
   fs::path dir = temp_dir("load");
