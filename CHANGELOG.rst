@@ -9,6 +9,8 @@ Forthcoming
   These headers have no API stability.
 * ``kairos::core``: the parser takes a section extension (``ParseOptions::extension``), so that a
   language built on PDDL parses its own sections with the parser's primitives.
+* Fixed: a problem without ``:goal`` ended in a segmentation fault. It now has the empty goal,
+  which the empty plan solves.
 * Contributors: Francisco Martín Rico
 
 1.0.6 (2026-10-21)

@@ -710,6 +710,16 @@ TEST(NormalizeEquivalenceTest, RandomWalksOnAnAdlDomain)
   }
 }
 
+// A problem without :goal has the empty goal (it used to read a formula that is not there)
+TEST(NormalizeTest, ProblemWithoutGoal)
+{
+  auto n = normalize_text(domain_with(
+      "(:action act :parameters (?x - item) :precondition (p ?x) :effect (q ?x))"),
+      "(define (problem pr) (:domain d) (:objects a - item) (:init (p a)))");
+  EXPECT_TRUE(n->task.goal.literals.empty());
+  EXPECT_EQ(n->task.actions.size(), 1u);
+}
+
 TEST(NormalizeEquivalenceTest, RandomPreconditionsOnRandomStates)
 {
   // Random formulas over a fixed vocabulary, checked on random initial states
