@@ -19,18 +19,63 @@
 #define KAIROS__PDDL__PARSER_HPP_
 
 #include <cstdint>
+#include <functional>
+#include <string>
 #include <string_view>
+#include <vector>
 
 #include "kairos/result.hpp"
 #include "pddl/ast.hpp"
+#include "pddl/lexer.hpp"
 
 namespace kairos::pddl
 {
+
+/**
+ * @brief The parser's primitives, handed to a SectionExtension.
+ *
+ * An error is recorded and unwinds to the section, which is then skipped: the extension must not
+ * catch it. Nodes go to the Domain or Problem being parsed.
+ */
+class Fragments
+{
+public:
+  virtual ~Fragments() = default;
+
+  virtual const Token & peek() = 0;
+  virtual Token next() = 0;
+  /// @brief True at ')'. End of input is an error.
+  virtual bool at_close() = 0;
+  virtual Token expect(TokenKind kind, const std::string & what) = 0;
+
+  /// @brief "(" typed variables ")".
+  virtual std::vector<ast::TypedName> parameters() = 0;
+  /// @brief A goal description; `timed` allows at start, at end and over all, `constraints` the
+  /// PDDL 3 modal operators.
+  virtual ast::FormulaId condition(bool timed, bool constraints) = 0;
+  virtual ast::TermId term() = 0;
+  virtual ast::ExprId expression() = 0;
+
+  virtual Symbol intern(std::string_view name) = 0;
+  [[noreturn]] virtual void error(
+    const std::string & code, const std::string & message, const Token & at) = 0;
+  virtual void warning(
+    const std::string & code, const std::string & message, const Token & at) = 0;
+};
+
+/**
+ * @brief Parses a section the PDDL parser does not know, for languages built on PDDL.
+ *
+ * Called after "(:keyword" has been consumed. Returns false to decline (the section is then an
+ * unknown-section error) or parses up to and including the closing parenthesis.
+ */
+using SectionExtension = std::function<bool (const Token & keyword, Fragments & parser)>;
 
 struct ParseOptions
 {
   uint32_t max_errors = 50;   // stop after this many errors
   uint32_t max_depth = 1000;  // maximum parenthesis nesting
+  SectionExtension extension;  // empty: none
 };
 
 /**

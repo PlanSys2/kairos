@@ -7,6 +7,8 @@ Forthcoming
 * New build option ``KAIROS_INSTALL_CORE`` (off by default): installs ``kairos::core``, the
   planner as a static library with its internal headers, for planners built on Kairos' modules.
   These headers have no API stability.
+* ``kairos::core``: the parser takes a section extension (``ParseOptions::extension``), so that a
+  language built on PDDL parses its own sections with the parser's primitives.
 * Contributors: Francisco Martín Rico
 
 1.0.6 (2026-10-21)
