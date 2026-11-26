@@ -70,7 +70,11 @@ enum class PlanFormat : uint8_t
 {
   Ipc,   // VAL / IPC: "0.000: (a x) [5.000]", or "(a x)" per line if sequential
   Popf,  // what PlanSys2's POPF plugin parses: ";;;; Solution Found" and "t: (a x)  [d]"
-  Json   // one line: {"temporal":...,"cost":...,"makespan":...,"steps":[...]}
+  Json,  // one line: {"temporal":...,"cost":...,"makespan":...,"steps":[...]}
+  // To read, not to parse: a line per action in the order they start, with a bar from its
+  // start to its end on a common scale of time and how many others run while it does, so
+  // that what runs at once is seen at a glance. A plan without times says so.
+  Timeline
 };
 
 /**

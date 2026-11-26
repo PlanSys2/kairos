@@ -185,6 +185,69 @@ double Plan::makespan() const
   return last;
 }
 
+namespace
+{
+
+// A chart of the plan: see PlanFormat::Timeline
+std::string timeline(const Plan & plan, int precision)
+{
+  if (!plan.temporal) {
+    return "The plan has no times: its actions are executed one after another, in the order "
+           "of the plan.\n";
+  }
+  constexpr size_t kWidth = 60;
+  const double makespan = plan.makespan();
+  size_t widest = 0;
+  for (const PlanStep & s : plan.steps) {
+    widest = std::max(widest, s.action().size());
+  }
+  const size_t digits = std::to_string(plan.steps.size()).size();
+  auto column = [&](double t) {
+      return makespan <= 0.0 ? size_t{0} :
+             std::min(kWidth - 1, static_cast<size_t>(t / makespan * static_cast<double>(kWidth)));
+    };
+  std::string out;
+  size_t at_once = 0;
+  for (size_t i = 0; i < plan.steps.size(); ++i) {
+    const PlanStep & s = plan.steps[i];
+    const double end = s.time + s.duration;
+    // The others that run while it does (two that only touch at an instant do not)
+    size_t others = 0;
+    for (size_t j = 0; j < plan.steps.size(); ++j) {
+      const PlanStep & o = plan.steps[j];
+      others += j != i && o.time < end && s.time < o.time + o.duration;
+    }
+    at_once = std::max(at_once, others);
+    std::string number = std::to_string(i + 1);
+    number.insert(0, digits - number.size(), ' ');
+    std::string name = s.action();
+    name.append(widest - name.size(), ' ');
+    const size_t first = column(s.time);
+    const size_t last = s.duration > 0.0 ? std::max(first, column(end - 1e-9)) : first;
+    std::string bar;
+    for (size_t c = 0; c < kWidth; ++c) {
+      const bool inside = first <= c && c <= last;
+      bar += !inside ? "·" : s.duration > 0.0 ? "█" : "◆";
+    }
+    std::string from = fixed(s.time, precision);
+    from.insert(0, from.size() < 10 ? 10 - from.size() : 0, ' ');
+    out += number + "  " + name + "  " + bar + "  " + from + " → " + fixed(end, precision);
+    if (others > 0) {
+      out += "  with " + std::to_string(others) + (others == 1 ? " other" : " others");
+    }
+    out += "\n";
+  }
+  out += "\nmakespan " + fixed(makespan, precision) + "; " +
+    (at_once == 0 ? std::string("no two actions run at once") :
+    "up to " + std::to_string(at_once + 1) + " actions at once") + "\n";
+  if (plan.cost) {
+    out += "cost " + json_number(*plan.cost) + "\n";
+  }
+  return out;
+}
+
+}  // namespace
+
 std::string to_string(const Plan & plan, PlanFormat format, int precision)
 {
   precision = std::clamp(precision, 0, 9);
@@ -222,6 +285,8 @@ std::string to_string(const Plan & plan, PlanFormat format, int precision)
           fixed(s.duration, precision) + "]\n";
       }
       return out;
+    case PlanFormat::Timeline:
+      return timeline(plan, precision);
     case PlanFormat::Json: {
         out += "{\"temporal\":" + std::string(plan.temporal ? "true" : "false");
         out += ",\"cost\":" + (plan.cost ? json_number(*plan.cost) : std::string("null"));
