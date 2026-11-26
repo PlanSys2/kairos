@@ -15,8 +15,10 @@
 include(GenerateExportHeader)
 
 option(KAIROS_SHARED "Build libkairos as a shared library" ON)
+# On by default: planners built on Kairos (Klimax, in a PlanSys2 workspace) find it without
+# options. It reuses the objects of the library: only the archive and the headers are added
 option(KAIROS_INSTALL_CORE
-  "Install kairos::core, a static library of the planner with its internal headers" OFF)
+  "Install kairos::core, a static library of the planner with its internal headers" ON)
 
 set(KAIROS_GENERATED_INCLUDE_DIR ${PROJECT_BINARY_DIR}/include)
 
