@@ -177,7 +177,7 @@ stdout instead. Without a plan, stdout is empty.
 | [`--anytime`, `--no-anytime`](#--anytime---no-anytime) | flag (anytime) | keep improving after the first plan, or not |
 | [`--engine`](#engines---engine) | `auto` `m1` `m2` `m3` (`auto`) | planning engine |
 | [`--search`](#search-presets---search) | `auto` `ff` `lama` `eager-lama` `novelty` `lama-novelty` `ehc` `goals` (`auto`) | search configuration |
-| [`--format`](#--format-ipcpopfjson) | `ipc` `popf` `json` (`ipc`) | plan format |
+| [`--format`](#--format-ipcpopfjsontimeline) | `ipc` `popf` `json` `timeline` (`ipc`) | plan format |
 | [`--output`](#--output-file) | file (stdout) | write plans to files |
 | [`--memory`](#--memory-mb) | MB (half of what is available) | memory limit |
 | [`--threads`](#--threads-n) | count (cores, up to 4) | phases of the search at once |
@@ -236,13 +236,28 @@ Interactions:
 - `--no-improvement` and `--target-cost` only matter with anytime.
 - `--format popf` on stdout prints only the best plan at the end, anytime or not.
 
-#### `--format ipc|popf|json`
+#### `--format ipc|popf|json|timeline`
 
 | Format | Use | Sequential plan | Temporal plan |
 |--------|-----|-----------------|---------------|
 | `ipc` (default) | VAL, IPC tools, `kairos validate` | `; cost = 7` then `(a x y)` per line | `; cost`, `; makespan`, then `0.000: (a x y) [5.000]` |
 | `popf` | PlanSys2's POPF plugin | `;;;; Solution Found`, `; Cost: 7.000`, then `0.000: (a x)  [0.000]` with the position as time | `;;;; Solution Found`, `; Cost: 9.000`, then `0.000: (a x)  [1.500]` |
 | `json` | scripts | one line per plan | one line per plan |
+| `timeline` | reading | a sentence: the plan has no times | a chart, a line per action |
+
+`timeline` is to read a temporal plan, not to parse it: a line per action in the order they
+start, with a bar from its start to its end on a common scale of time, and how many others run
+while it does. What runs at once is seen at a glance. On a terminal it is in colour (not with
+`NO_COLOR` set). `--timeline` is short for `--format timeline`.
+
+```console
+$ kairos domain.pddl problem.pddl --format timeline --no-anytime
+1  (work ann)  ██████████████████████████████······························       0.000 → 5.000  with 1 other
+2  (work bob)  ██████████████████████████████······························       0.000 → 5.000  with 1 other
+3  (rest)      ······························██████████████████████████████       5.000 → 10.000
+
+makespan 10.000; up to 2 actions at once
+```
 
 Times and durations have 3 decimals in `ipc` and `popf`, unless rounding to 3 decimals would
 make the plan invalid: then 6 (or 9), as many as it needs. That happens with durations such as

@@ -287,6 +287,34 @@ TEST(PlanWriteTest, Json)
     "{\"temporal\":false,\"cost\":null,\"makespan\":0,\"steps\":[]}\n");
 }
 
+TEST(PlanWriteTest, Timeline)
+{
+  // Two actions at once and a third after them: a bar each on the same scale
+  Plan p{{step(0, 5, "work", {"ann"}), step(0, 5, "work", {"bob"}), step(5, 5, "rest", {})},
+    true, {}, {}};
+  const std::string text = to_string(p, PlanFormat::Timeline);
+  const std::string full(30, '#'), none(30, '.');
+  auto bar = [&](const std::string & a, const std::string & b) {
+      std::string out;
+      for (char c : a + b) {
+        out += c == '#' ? "█" : "·";
+      }
+      return out;
+    };
+  EXPECT_EQ(text,
+    "1  (work ann)  " + bar(full, none) + "       0.000 → 5.000  with 1 other\n"
+    "2  (work bob)  " + bar(full, none) + "       0.000 → 5.000  with 1 other\n"
+    "3  (rest)      " + bar(none, full) + "       5.000 → 10.000\n"
+    "\nmakespan 10.000; up to 2 actions at once\n");
+  // An action without duration is a mark; a plan without times says so
+  Plan instant{{step(0, 4, "a", {}), step(2, 0, "b", {})}, true, 3.0, {}};
+  const std::string marks = to_string(instant, PlanFormat::Timeline);
+  EXPECT_NE(marks.find("◆"), std::string::npos);
+  EXPECT_NE(marks.find("cost 3\n"), std::string::npos);
+  Plan sequential{{step(0, 0, "a", {}), step(1, 0, "b", {})}, false, {}, {}};
+  EXPECT_NE(to_string(sequential, PlanFormat::Timeline).find("no times"), std::string::npos);
+}
+
 // --- Round trips -----------------------------------------------------------------------------
 
 TEST(PlanRoundTripTest, IpcAndPopfReadBack)

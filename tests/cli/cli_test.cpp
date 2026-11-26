@@ -638,7 +638,8 @@ TEST_F(CompletionTest, OptionsOfEachCommand)
   EXPECT_EQ(complete({"--comp"}), std::vector<std::string>({"--completion"}));
   auto solve = complete({"domain.pddl", "problem.pddl", "--"});
   for (const char * o : {"--timeout", "--engine", "--search", "--format", "--output",
-      "--no-improvement", "--debug", "--dump", "--dump-dir", "--anytime", "--no-anytime"})
+      "--no-improvement", "--debug", "--dump", "--dump-dir", "--anytime", "--no-anytime",
+      "--timeline"})
   {
     EXPECT_TRUE(has(solve, o)) << o;
   }
@@ -788,6 +789,24 @@ TEST_F(CliTest, ValidateVerdicts)
   EXPECT_TRUE(contains(s.err, "goal"));
   EXPECT_EQ(run("validate " + solve_args() + " '" + path("garbage.plan") + "'").code, 2);
   EXPECT_EQ(run("validate " + solve_args()).code, 2);
+}
+
+TEST_F(CliTest, TimelineIsAChartOfThePlan)
+{
+  // A bar per action; --timeline is short for --format timeline. Not in colour to a pipe
+  std::string dir = std::string(KAIROS_EXAMPLES_DIR) + "/";
+  std::string pair = "'" + dir + "factory.pddl' '" + dir + "factory_problem_1.pddl'";
+  Outcome r = run(pair + " --no-anytime --timeline");
+  ASSERT_EQ(r.code, 0) << r.err;
+  EXPECT_TRUE(contains(r.out, "█")) << r.out;
+  EXPECT_TRUE(contains(r.out, "\nmakespan ")) << r.out;
+  EXPECT_FALSE(contains(r.out, "\x1b[")) << r.out;
+  Outcome f = run(pair + " --no-anytime --format timeline");
+  EXPECT_EQ(f.out, r.out);
+  // A plan without times says so
+  Outcome s = run(solve_args() + " --no-anytime --timeline");
+  ASSERT_EQ(s.code, 0) << s.err;
+  EXPECT_TRUE(contains(s.out, "The plan has no times")) << s.out;
 }
 
 TEST_F(CliTest, PrintedTemporalPlansStayValid)

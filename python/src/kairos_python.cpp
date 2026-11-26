@@ -217,7 +217,8 @@ NB_MODULE(_kairos, m)
   nb::enum_<kairos::PlanFormat>(m, "PlanFormat")
   .value("IPC", kairos::PlanFormat::Ipc)
   .value("POPF", kairos::PlanFormat::Popf)
-  .value("JSON", kairos::PlanFormat::Json);
+  .value("JSON", kairos::PlanFormat::Json)
+  .value("TIMELINE", kairos::PlanFormat::Timeline);
 
   nb::class_<kairos::Plan>(m, "Plan")
   .def(nb::init<>())

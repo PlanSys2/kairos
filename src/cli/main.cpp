@@ -14,6 +14,8 @@
 
 // The kairos command: plans to stdout, everything else to stderr. Uses the public API only.
 
+#include <unistd.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -71,7 +73,10 @@ const char * kUsage =
   "  --engine auto|m1|m2|m3\n"
   "  --search NAME           M1 search: auto (default), ff, lama, eager-lama, novelty,\n"
   "                          lama-novelty, ehc, goals\n"
-  "  --format ipc|popf|json  plan format (default ipc; popf on stdout: only the best plan)\n"
+  "  --format ipc|popf|json|timeline  plan format (default ipc; popf on stdout: only the best\n"
+  "                    plan; timeline: a chart to read, a bar per action from its start to\n"
+  "                    its end, to see what runs at once)\n"
+  "  --timeline        the same as --format timeline\n"
   "  --output FILE           write plans to FILE (anytime: FILE.1, FILE.2, ...)\n"
   "  --memory MB             memory limit (default: half of what is available)\n"
   "  --threads N             phases of the search at once (default: the cores, up to 4;\n"
@@ -138,9 +143,42 @@ const std::vector<std::string> kWithValue = {
   "--seed", "--target-cost", "--no-improvement", "--dump-dir", "--problem", "--search"};
 // Options with an optional "=value", and plain flags
 const std::vector<std::string> kOptionalValue = {"--debug", "--dump"};
-const std::vector<std::string> kFlags = {"--anytime", "--no-anytime"};
+const std::vector<std::string> kFlags = {"--anytime", "--no-anytime", "--timeline"};
 // Values of some options
-const std::vector<std::string> kFormats = {"ipc", "popf", "json"};
+const std::vector<std::string> kFormats = {"ipc", "popf", "json", "timeline"};
+
+// The chart of a plan (PlanFormat::Timeline) in colour on a terminal (not with NO_COLOR set):
+// the number of each action, and its bar in one colour if others run while it does and in
+// another if none does
+std::string coloured(const std::string & chart)
+{
+  if (isatty(STDOUT_FILENO) == 0 || std::getenv("NO_COLOR") != nullptr) {
+    return chart;
+  }
+  std::string out;
+  std::istringstream lines(chart);
+  for (std::string line; std::getline(lines, line); ) {
+    size_t from = std::string::npos;
+    size_t to = 0;
+    for (const char * mark : {"·", "█", "◆"}) {
+      const std::string m(mark);
+      if (const size_t first = line.find(m); first != std::string::npos) {
+        from = std::min(from, first);
+        to = std::max(to, line.rfind(m) + m.size());
+      }
+    }
+    const size_t number = line.find("  ");
+    if (from == std::string::npos || number == std::string::npos || number > from) {
+      out += line + "\n";
+      continue;
+    }
+    const bool alone = line.find("  with ", to) == std::string::npos;
+    out += "\x1b[36m" + line.substr(0, number) + "\x1b[0m" + line.substr(number, from - number) +
+      (alone ? "\x1b[32m" : "\x1b[33m") + line.substr(from, to - from) + "\x1b[0m" +
+      line.substr(to) + "\n";
+  }
+  return out;
+}
 const std::vector<std::string> kDumps = {"ast", "lifted", "ground", "sas", "plan-trace"};
 
 // What shell completion offers, from the lists the parser uses
@@ -461,9 +499,14 @@ int solve_command(const Args & a)
       format = PlanFormat::Popf;
     } else if (it->second == kFormats[2]) {
       format = PlanFormat::Json;
+    } else if (it->second == kFormats[3]) {
+      format = PlanFormat::Timeline;
     } else {
       error = "unknown format " + it->second;
     }
+  }
+  if (has(a, "--timeline")) {
+    format = PlanFormat::Timeline;  // short for --format timeline
   }
   // Logging to stderr: -v for progress, --debug for the debug channels
   auto t0 = std::chrono::steady_clock::now();
@@ -565,7 +608,7 @@ int solve_command(const Args & a)
       if (index > 0 && format != PlanFormat::Json) {
         std::cout << "; better plan " << index + 1 << "\n";
       }
-      std::cout << text << std::flush;
+      std::cout << (format == PlanFormat::Timeline ? coloured(text) : text) << std::flush;
     };
   kairos::Planner planner;
   std::signal(SIGINT, on_signal);
