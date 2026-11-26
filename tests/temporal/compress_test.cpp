@@ -229,5 +229,30 @@ TEST(ScheduleTest, AnEmptyPlan)
   EXPECT_TRUE(p->steps.empty());
 }
 
+TEST(CompressTest, PrecedencesKeepStepsThatWouldOverlapApart)
+{
+  // Two actions that share nothing start together; told that the first comes before the
+  // second, the second starts when the first has ended
+  const char * domain =
+    "(define (domain d) (:requirements :durative-actions) (:predicates (one) (two))"
+    " (:durative-action first :parameters () :duration (= ?duration 4)"
+    "  :condition (and) :effect (at end (one)))"
+    " (:durative-action second :parameters () :duration (= ?duration 3)"
+    "  :condition (and) :effect (at end (two))))";
+  auto b = bench(domain, "(define (problem x) (:domain d) (:init) (:goal (and (one) (two))))");
+  const std::vector<uint32_t> ids{b->action("(first)"), b->action("(second)")};
+  auto free = schedule(b->p->sas, b->c, *b->space, ids, 0.001);
+  ASSERT_TRUE(free.has_value());
+  EXPECT_DOUBLE_EQ(free->makespan(), 4.0);
+  auto ordered = schedule(b->p->sas, b->c, *b->space, ids, 0.001, {}, {{0, 1}});
+  ASSERT_TRUE(ordered.has_value());
+  ASSERT_EQ(ordered->steps.size(), 2u);
+  EXPECT_EQ(ordered->steps[1].name, "second");
+  EXPECT_DOUBLE_EQ(ordered->steps[1].time, 4.0);
+  EXPECT_DOUBLE_EQ(ordered->makespan(), 7.0);
+  // A pair against the order of the plan is refused
+  EXPECT_FALSE(schedule(b->p->sas, b->c, *b->space, ids, 0.001, {}, {{1, 0}}).has_value());
+}
+
 }  // namespace
 }  // namespace kairos::temporal

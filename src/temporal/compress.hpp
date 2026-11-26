@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <utility>
 #include <vector>
 
 #include "kairos/plan.hpp"
@@ -66,11 +67,17 @@ Compressed compress(const sas::Task & task);
  * and given back at end) do not order happenings by themselves. Each step that touches one is
  * placed without those orderings when the plan so far stays valid, and with them otherwise:
  * steps overlap as far as the capacities allow (umts: a makespan of 922 became ~530).
+ *
+ * `precedences`: pairs of positions in `actions`, the first before the second, of steps that
+ * may not overlap whatever they read and write: the second starts when the first has ended, or
+ * later (an order the caller knows, as that of the subtasks of a method in a hierarchical
+ * plan). nullopt if a pair is not in the order of the plan.
  */
 std::optional<Plan> schedule(
   const sas::Task & original, const Compressed & compressed, state::StateSpace & space,
   const std::vector<uint32_t> & actions, double epsilon,
-  const std::function<bool(const Plan &)> & prefix_valid = {});
+  const std::function<bool(const Plan &)> & prefix_valid = {},
+  const std::vector<std::pair<uint32_t, uint32_t>> & precedences = {});
 
 /**
  * @brief A schedule of the partial plans of a search on the compressed task, kept per state:

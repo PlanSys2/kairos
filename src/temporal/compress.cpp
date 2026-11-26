@@ -466,9 +466,18 @@ Access without(const Access & acc, const std::vector<uint8_t> & res, bool & touc
 std::optional<Plan> schedule(
   const sas::Task & original, const Compressed & compressed, state::StateSpace & space,
   const std::vector<uint32_t> & actions, double epsilon,
-  const std::function<bool(const Plan &)> & prefix_valid)
+  const std::function<bool(const Plan &)> & prefix_valid,
+  const std::vector<std::pair<uint32_t, uint32_t>> & precedences)
 {
   auto bases = derived_bases(original);
+  // Per step, the earlier steps that must have ended when it starts
+  std::vector<std::vector<uint32_t>> after(actions.size());
+  for (auto [first, second] : precedences) {
+    if (first >= second || second >= actions.size()) {
+      return std::nullopt;  // not in the order of the plan
+    }
+    after[second].push_back(first);
+  }
   // (each placement validates the plan so far: quadratic, so not for very long plans)
   constexpr size_t kMaxSteps = 500;
   std::vector<uint8_t> res = prefix_valid && actions.size() <= kMaxSteps ?
@@ -616,6 +625,9 @@ std::optional<Plan> schedule(
             return true;
           };
         ok = ok && constrain(st.start, free_start) && (!durative || constrain(st.end, free_end));
+        for (size_t i = 0; ok && i < after[k].size(); ++i) {
+          ok = stn.at_least(steps[after[k][i]].end, st.start, 0.0);
+        }
         for (size_t i = 0; ok && attempt == 1 && i < mine.size(); ++i) {
           for (Stn::Node p : res_starts[mine[i]]) {
             ok = ok && stn.at_least(p, st.start, epsilon);
@@ -670,6 +682,11 @@ std::optional<Plan> schedule(
     }
     if (!happen(st.start, k, at_start) || (durative && !happen(st.end, k, at_end))) {
       return std::nullopt;
+    }
+    for (uint32_t first : after[k]) {
+      if (!stn.at_least(steps[first].end, st.start, 0.0)) {
+        return std::nullopt;
+      }
     }
     for (auto v : mine_all) {
       for (Stn::Node p : res_all[v]) {
