@@ -16,6 +16,7 @@
 kairos_add_module(kairos_validate
   SOURCES
     validator.cpp
+    world.cpp
   DEPENDS
     kairos_semantic
     kairos_plan)
