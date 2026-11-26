@@ -211,11 +211,13 @@ std::string timeline(const Plan & plan, int precision)
   for (size_t i = 0; i < plan.steps.size(); ++i) {
     const PlanStep & s = plan.steps[i];
     const double end = s.time + s.duration;
-    // The others that run while it does (two that only touch at an instant do not)
+    // The others that run while it does (two that only touch at an instant do not, even when
+    // the sums of the times round apart: 5.001 + 5 > 10.001)
+    constexpr double kTouch = 1e-6;
     size_t others = 0;
     for (size_t j = 0; j < plan.steps.size(); ++j) {
       const PlanStep & o = plan.steps[j];
-      others += j != i && o.time < end && s.time < o.time + o.duration;
+      others += j != i && o.time < end - kTouch && s.time < o.time + o.duration - kTouch;
     }
     at_once = std::max(at_once, others);
     std::string number = std::to_string(i + 1);

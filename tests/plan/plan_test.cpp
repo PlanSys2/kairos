@@ -311,6 +311,12 @@ TEST(PlanWriteTest, Timeline)
   const std::string marks = to_string(instant, PlanFormat::Timeline);
   EXPECT_NE(marks.find("◆"), std::string::npos);
   EXPECT_NE(marks.find("cost 3\n"), std::string::npos);
+  // Two that only touch do not overlap, even where the sum of the times rounds past the start
+  // of the next one: 5.001 + 5 > 10.001
+  Plan touching{{step(5.001, 5, "a", {}), step(10.001, 2, "b", {})}, true, {}, {}};
+  const std::string touch = to_string(touching, PlanFormat::Timeline);
+  EXPECT_EQ(touch.find("other"), std::string::npos) << touch;
+  EXPECT_NE(touch.find("no two actions run at once"), std::string::npos) << touch;
   Plan sequential{{step(0, 0, "a", {}), step(1, 0, "b", {})}, false, {}, {}};
   EXPECT_NE(to_string(sequential, PlanFormat::Timeline).find("no times"), std::string::npos);
 }
