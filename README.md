@@ -239,7 +239,7 @@ Requirements:
 | `KAIROS_WARNINGS_AS_ERRORS` | OFF | `-Werror` (ON in CI) |
 | `KAIROS_COVERAGE` | OFF | Coverage instrumentation |
 | `KAIROS_BUILD_PYTHON` | OFF | The Python module (nanobind; `pip install .` turns it on) |
-| `KAIROS_INSTALL_CORE` | OFF | Also install `kairos::core`: the planner as a static library with its internal headers (`include/kairos/internal`, no API stability), for planners built on Kairos' modules |
+| `KAIROS_INSTALL_CORE` | ON | Also install `kairos::core`: the planner as a static library with its internal headers (`include/kairos/internal`, no API stability), for planners built on Kairos' modules |
 
 ### Using Kairos from another CMake project
 
