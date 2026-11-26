@@ -793,9 +793,10 @@ TEST_F(CliTest, ValidateVerdicts)
 
 TEST_F(CliTest, TimelineIsAChartOfThePlan)
 {
-  // A bar per action; --timeline is short for --format timeline. Not in colour to a pipe
+  // A bar per action; --timeline is short for --format timeline. Not in colour to a pipe.
+  // One thread: the phases at once may find another plan in the second run, under load
   std::string dir = std::string(KAIROS_EXAMPLES_DIR) + "/";
-  std::string pair = "'" + dir + "factory.pddl' '" + dir + "factory_problem_1.pddl'";
+  std::string pair = "'" + dir + "factory.pddl' '" + dir + "factory_problem_1.pddl' --threads 1";
   Outcome r = run(pair + " --no-anytime --timeline");
   ASSERT_EQ(r.code, 0) << r.err;
   EXPECT_TRUE(contains(r.out, "█")) << r.out;
