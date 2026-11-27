@@ -2,15 +2,23 @@
 Changelog for package kairos
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Forthcoming
------------
-* New build option ``KAIROS_INSTALL_CORE`` (off by default): installs ``kairos::core``, the
-  planner as a static library with its internal headers, for planners built on Kairos' modules.
-  These headers have no API stability.
+1.0.7 (2026-11-27)
+------------------
+* ``kairos::core``: the planner as a static library with its internal headers, for planners built
+  on Kairos' modules (as Klimax). Installed by default (``KAIROS_INSTALL_CORE``, on); its headers
+  have no API stability.
 * ``kairos::core``: the parser takes a section extension (``ParseOptions::extension``), so that a
-  language built on PDDL parses its own sections with the parser's primitives.
+  language built on PDDL parses its own sections with the parser's primitives; the validator's
+  states and evaluator are a module of their own.
+* ``kairos::core``: ``temporal::schedule`` takes precedences between steps that the caller knows,
+  and ``TemporalFilter::plan`` bounds between the happenings of a sequence (``lo <= t[to] -
+  t[from] <= hi``): the orderings of a hierarchy, two starts at once.
+* ``--timeline`` (``--format timeline``): the plan as a chart of time, a bar per action and how
+  many run at once. Two actions that only touch do not overlap, even where the sum of a start and
+  a duration rounds past the next start.
 * Fixed: a problem without ``:goal`` ended in a segmentation fault. It now has the empty goal,
   which the empty plan solves.
+* How to cite Kairos, and the Planning and PDDL textbook linked from the README and the examples.
 * Contributors: Francisco Martín Rico
 
 1.0.6 (2026-10-21)
