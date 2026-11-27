@@ -155,6 +155,29 @@ TEST(SnapTest, RequiredConcurrencyAndItsPlan)
   EXPECT_EQ(plan->steps[1].duration, 5.0);
 }
 
+TEST(SnapTest, BoundsOnTheTimesOfASequence)
+{
+  auto b = bench(kCellar, kCellarProblem);
+  ASSERT_TRUE(b->take("start (light-match m1)"));
+  ASSERT_TRUE(b->take("start (mend f1 m1)"));
+  ASSERT_TRUE(b->take("end (mend f1 m1)"));
+  ASSERT_TRUE(b->take("end (light-match m1)"));
+  // Mending starts 2 after the match is lit, or later
+  auto plan = b->filter->plan(b->taken, {{0, 1, 2.0}});
+  ASSERT_TRUE(plan);
+  ASSERT_EQ(plan->steps.size(), 2u);
+  EXPECT_EQ(plan->steps[1].action(), "(mend f1 m1)");
+  EXPECT_DOUBLE_EQ(plan->steps[1].time, 2.0);
+  // At 4 it would end after the match goes out
+  EXPECT_FALSE(b->filter->plan(b->taken, {{0, 1, 4.0}}));
+  // Exactly at once: both at 0
+  plan = b->filter->plan(b->taken, {{0, 1, 0.0, 0.0}});
+  ASSERT_TRUE(plan);
+  EXPECT_DOUBLE_EQ(plan->steps[1].time, 0.0);
+  // A position outside the sequence
+  EXPECT_FALSE(b->filter->plan(b->taken, {{0, 9, 0.0}}));
+}
+
 TEST(SnapTest, ANestedActionThatDoesNotFit)
 {
   // Mending takes 10, the match burns 8: never possible inside it

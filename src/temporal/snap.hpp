@@ -120,8 +120,21 @@ public:
   double makespan(
     state::StateId parent, uint32_t action, state::StateId child, double fallback) const;
 
-  /// @brief The temporal plan of a sequence of snap actions (nullopt if inconsistent).
-  std::optional<Plan> plan(const std::vector<uint32_t> & actions);
+  /// @brief Of two happenings of a sequence, by their positions in it: lo <= t[to] - t[from]
+  /// <= hi. What a caller knows of the times and the task does not say (the orderings of a
+  /// hierarchy, two starts at once).
+  struct Bound
+  {
+    size_t from = 0;
+    size_t to = 0;
+    double lo = 0.0;
+    double hi = Stn::kInfinity;
+  };
+
+  /// @brief The temporal plan of a sequence of snap actions, its times also within `extra`
+  /// (nullopt if inconsistent).
+  std::optional<Plan> plan(
+    const std::vector<uint32_t> & actions, const std::vector<Bound> & extra = {});
 
 private:
   struct Node

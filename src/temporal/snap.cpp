@@ -1037,7 +1037,8 @@ double TemporalFilter::makespan(
   return it == makespans_.end() ? fallback : it->second;
 }
 
-std::optional<Plan> TemporalFilter::plan(const std::vector<uint32_t> & actions)
+std::optional<Plan> TemporalFilter::plan(
+  const std::vector<uint32_t> & actions, const std::vector<Bound> & extra)
 {
   Builder b(snap_.running.size());
   std::vector<Stn::Node> node(actions.size());
@@ -1056,6 +1057,13 @@ std::optional<Plan> TemporalFilter::plan(const std::vector<uint32_t> & actions)
       return std::nullopt;
     }
     s = *next;
+  }
+  for (const Bound & bound : extra) {
+    if (bound.from >= actions.size() || bound.to >= actions.size() ||
+      !b.stn.between(node[bound.from], node[bound.to], bound.lo, bound.hi))
+    {
+      return std::nullopt;
+    }
   }
   Plan plan;
   plan.temporal = true;
